@@ -2,3 +2,4 @@ opencv-python
 qrcode
 fastapi
 uvicorn
+python-multipart
