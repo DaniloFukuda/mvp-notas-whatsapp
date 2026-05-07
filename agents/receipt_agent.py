@@ -4,14 +4,21 @@ from dataclasses import dataclass
 @dataclass
 class ReceiptProcessingResult:
     success: bool
+    extracted_data: str | None
     message: str
-    data: str = ""
 
 
 class ReceiptAgent:
-    def process(self, image_path: str) -> ReceiptProcessingResult:
+    def process_receipt(self, image_path: str) -> ReceiptProcessingResult:
+        if not image_path.strip():
+            return ReceiptProcessingResult(
+                success=False,
+                extracted_data=None,
+                message="Erro: informe o caminho da imagem do recibo/comprovante.",
+            )
+
         return ReceiptProcessingResult(
-            success=False,
-            message="O processamento de recibos/comprovantes será implementado depois.",
-            data="",
+            success=True,
+            extracted_data=f"Arquivo recebido: {image_path}",
+            message="Recibo/comprovante recebido e registrado para processamento futuro.",
         )

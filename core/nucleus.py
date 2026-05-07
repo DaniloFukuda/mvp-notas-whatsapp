@@ -29,11 +29,11 @@ class Nucleus:
             return result
 
         if document_type == "2":
-            receipt_result = self.receipt_agent.process(image_path)
+            receipt_result = self.receipt_agent.process_receipt(image_path)
             result = NucleusResult(
                 success=receipt_result.success,
                 message=receipt_result.message,
-                data=receipt_result.data,
+                data=receipt_result.extracted_data or "",
             )
             self._save_result("recibo_comprovante", image_path, result)
             return result
