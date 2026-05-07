@@ -11,6 +11,12 @@ CSV_COLUMNS = [
     "sucesso",
     "mensagem",
     "dados_extraidos",
+    "data_documento",
+    "fornecedor",
+    "valor",
+    "categoria",
+    "responsavel",
+    "observacao",
 ]
 
 
@@ -20,6 +26,12 @@ def save_processing_result(
     sucesso: bool,
     mensagem: str,
     dados_extraidos: str = "",
+    data_documento: str = "",
+    fornecedor: str = "",
+    valor: str = "",
+    categoria: str = "",
+    responsavel: str = "",
+    observacao: str = "",
 ) -> None:
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     file_exists = os.path.exists(CSV_PATH)
@@ -38,5 +50,11 @@ def save_processing_result(
                 "sucesso": sucesso,
                 "mensagem": mensagem,
                 "dados_extraidos": dados_extraidos,
+                "data_documento": data_documento,
+                "fornecedor": fornecedor,
+                "valor": valor,
+                "categoria": categoria,
+                "responsavel": responsavel,
+                "observacao": observacao,
             }
         )
