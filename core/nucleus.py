@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from agents.invoice_agent import InvoiceAgent
 from agents.receipt_agent import ReceiptAgent
+from core.storage import save_processing_result
 
 
 @dataclass
@@ -18,22 +19,42 @@ class Nucleus:
 
     def process_document(self, document_type: str, image_path: str) -> NucleusResult:
         if document_type == "1":
-            result = self.invoice_agent.read_qr_code(image_path)
-            return NucleusResult(
-                success=result.success,
-                message=result.message,
-                data=result.qr_code_data,
+            invoice_result = self.invoice_agent.read_qr_code(image_path)
+            result = NucleusResult(
+                success=invoice_result.success,
+                message=invoice_result.message,
+                data=invoice_result.qr_code_data,
             )
+            self._save_result("nota_fiscal", image_path, result)
+            return result
 
         if document_type == "2":
-            result = self.receipt_agent.process(image_path)
-            return NucleusResult(
-                success=result.success,
-                message=result.message,
-                data=result.data,
+            receipt_result = self.receipt_agent.process(image_path)
+            result = NucleusResult(
+                success=receipt_result.success,
+                message=receipt_result.message,
+                data=receipt_result.data,
             )
+            self._save_result("recibo_comprovante", image_path, result)
+            return result
 
-        return NucleusResult(
+        result = NucleusResult(
             success=False,
             message="Tipo de documento inválido. Informe 1 para nota fiscal ou 2 para recibo/comprovante.",
+        )
+        self._save_result("tipo_invalido", image_path, result)
+        return result
+
+    def _save_result(
+        self,
+        document_type: str,
+        image_path: str,
+        result: NucleusResult,
+    ) -> None:
+        save_processing_result(
+            tipo_documento=document_type,
+            caminho_imagem=image_path,
+            sucesso=result.success,
+            mensagem=result.message,
+            dados_extraidos=result.data,
         )
