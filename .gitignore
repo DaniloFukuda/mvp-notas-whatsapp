@@ -4,3 +4,5 @@ __pycache__/
 venv/
 .env
 output/*.csv
+data/app.db
+data/documentos/uploads/
