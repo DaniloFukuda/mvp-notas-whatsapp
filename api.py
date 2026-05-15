@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from pydantic import BaseModel
 
 from core.nucleus import Nucleus
@@ -57,9 +57,26 @@ def processar_documento(request: ProcessDocumentRequest) -> dict[str, str | bool
 
 @app.post("/processar-upload")
 async def processar_upload(
-    tipo_documento: str = Form(...),
+    tipo_documento_form: str | None = Form(None, alias="tipo_documento"),
+    tipo_documento_query: str | None = Query(None, alias="tipo_documento"),
     arquivo: UploadFile = File(...),
 ) -> dict[str, str | bool]:
+    tipo_documento = tipo_documento_form or tipo_documento_query
+    if not tipo_documento:
+        message = "O tipo do documento não foi informado."
+        whatsapp_message = build_whatsapp_message(
+            success=False,
+            tipo_documento="",
+            message=message,
+        )
+        return {
+            "success": False,
+            "message": message,
+            "data": "",
+            "saved_path": "",
+            "whatsapp_message": whatsapp_message,
+        }
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     suffix = Path(arquivo.filename or "").suffix

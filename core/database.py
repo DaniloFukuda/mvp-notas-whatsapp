@@ -111,6 +111,17 @@ def _ensure_columns(connection: sqlite3.Connection) -> None:
 
 
 def parse_nfce_qr_data(dados_extraidos: str) -> dict:
+    structured_data = _parse_structured_data(dados_extraidos)
+    if structured_data:
+        qr_code_data = (
+            structured_data.get("qr_code_data")
+            or structured_data.get("url_consulta")
+            or structured_data.get("qr")
+            or ""
+        )
+        if qr_code_data:
+            return parse_nfce_qr_data(str(qr_code_data))
+
     if not dados_extraidos or not dados_extraidos.startswith(("http://", "https://")):
         return {
             "url_consulta": "",
@@ -136,6 +147,7 @@ def save_processed_document(record: dict) -> None:
 
     dados_extraidos = str(record.get("dados_extraidos") or "")
     structured_data = _parse_structured_data(dados_extraidos)
+    ocr_data = structured_data.get("ocr") if isinstance(structured_data.get("ocr"), dict) else {}
     nfce_data = parse_nfce_qr_data(dados_extraidos)
     record_value_total = _to_float(record.get("valor_total"))
     valor_total = nfce_data["valor_total"]
@@ -143,6 +155,8 @@ def save_processed_document(record: dict) -> None:
         valor_total = record_value_total
     if valor_total is None:
         valor_total = _to_float(structured_data.get("valor_total"))
+    if valor_total is None:
+        valor_total = _to_float(ocr_data.get("valor_total"))
 
     data = {
         "data_processamento": record.get("data_processamento") or "",
@@ -156,14 +170,14 @@ def save_processed_document(record: dict) -> None:
         "chave_acesso": record.get("chave_acesso") or nfce_data["chave_acesso"],
         "url_consulta": record.get("url_consulta") or nfce_data["url_consulta"],
         "valor_total": valor_total,
-        "data_documento": record.get("data_documento") or structured_data.get("data_documento") or "",
+        "data_documento": record.get("data_documento") or structured_data.get("data_documento") or ocr_data.get("data_documento") or "",
         "fornecedor": record.get("fornecedor") or "",
         "categoria": record.get("categoria") or "",
         "responsavel": record.get("responsavel") or "",
         "observacao": record.get("observacao") or "",
         "status_conferencia": record.get("status_conferencia") or "pendente",
         "document_kind": record.get("document_kind") or structured_data.get("document_kind") or "",
-        "hora_documento": record.get("hora_documento") or structured_data.get("hora_documento") or "",
+        "hora_documento": record.get("hora_documento") or structured_data.get("hora_documento") or ocr_data.get("hora_documento") or "",
         "favorecido": record.get("favorecido") or structured_data.get("favorecido") or "",
         "id_transacao": record.get("id_transacao") or structured_data.get("id_transacao") or "",
         "comentario": record.get("comentario") or structured_data.get("comentario") or "",
@@ -283,6 +297,98 @@ def list_processed_documents(limit: int = 50, include_invalid: bool = False) -> 
     return [document for document in documents if is_useful_document(document)]
 
 
+def get_processed_document_by_id(documento_id: int) -> dict | None:
+    init_database()
+
+    try:
+        safe_id = int(documento_id)
+    except (TypeError, ValueError):
+        return None
+
+    columns = ",\n                ".join(TABLE_COLUMNS)
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            f"""
+            SELECT
+                {columns}
+            FROM documentos_processados
+            WHERE id = ?
+            """,
+            (safe_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def update_processed_document(documento_id: int, dados: dict) -> bool:
+    init_database()
+
+    try:
+        safe_id = int(documento_id)
+    except (TypeError, ValueError):
+        return False
+
+    allowed_fields = {
+        "tipo_documento",
+        "fornecedor",
+        "valor_total",
+        "data_documento",
+        "categoria",
+        "responsavel",
+        "observacao",
+        "status_conferencia",
+    }
+    update_data = {
+        field: dados.get(field)
+        for field in allowed_fields
+        if field in dados
+    }
+    if not update_data:
+        return False
+
+    set_clause = ", ".join(f"{field} = ?" for field in update_data)
+    values = list(update_data.values())
+    values.append(safe_id)
+
+    with sqlite3.connect(DB_PATH) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE documentos_processados
+            SET {set_clause}
+            WHERE id = ?
+            """,
+            values,
+        )
+        connection.commit()
+
+    return cursor.rowcount > 0
+
+
+def delete_processed_document(documento_id: int) -> bool:
+    init_database()
+
+    try:
+        safe_id = int(documento_id)
+    except (TypeError, ValueError):
+        return False
+
+    with sqlite3.connect(DB_PATH) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM documentos_processados
+            WHERE id = ?
+            """,
+            (safe_id,),
+        )
+        connection.commit()
+
+    return cursor.rowcount > 0
+
+
 def list_invalid_documents(limit: int = 50) -> list[dict]:
     documents = list_processed_documents(limit=limit, include_invalid=True)
     return [document for document in documents if not is_useful_document(document)]
@@ -376,7 +482,7 @@ def get_documents_summary() -> dict:
             summary["quantidade_recibos_comprovantes"] += 1
             summary["total_recibos_comprovantes"] += valor_total
 
-        if _is_truthy(row["needs_review"]):
+        if _is_pending_review_status(row.get("status_conferencia")):
             summary["quantidade_pendentes_revisao"] += 1
 
     return summary
@@ -419,6 +525,10 @@ def _is_truthy(value: object) -> bool:
         return value.strip().lower() in ("1", "true", "sim", "yes")
 
     return bool(value)
+
+
+def _is_pending_review_status(value: object) -> bool:
+    return str(value or "").strip().lower() != "revisado"
 
 
 def _has_useful_extracted_data(record: dict) -> bool:
