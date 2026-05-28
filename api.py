@@ -5,10 +5,12 @@ from uuid import uuid4
 from fastapi import FastAPI, File, Form, Query, UploadFile
 from pydantic import BaseModel
 
+from api_whatsapp import router as whatsapp_router
 from core.nucleus import Nucleus
 
 
 app = FastAPI()
+app.include_router(whatsapp_router)
 UPLOAD_DIR = Path("data/documentos/uploads")
 
 

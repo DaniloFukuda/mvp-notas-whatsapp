@@ -3,3 +3,5 @@ qrcode
 fastapi
 uvicorn
 python-multipart
+requests
+python-dotenv

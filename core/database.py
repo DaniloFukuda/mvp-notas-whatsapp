@@ -31,6 +31,11 @@ TABLE_COLUMNS = [
     "conta_origem",
     "texto_extraido",
     "needs_review",
+    "whatsapp_message_id",
+    "whatsapp_media_id",
+    "whatsapp_image_sha256",
+    "whatsapp_timestamp",
+    "data_hora_recebimento",
 ]
 
 
@@ -64,11 +69,30 @@ def init_database() -> None:
                 comentario TEXT,
                 conta_origem TEXT,
                 texto_extraido TEXT,
-                needs_review INTEGER
+                needs_review INTEGER,
+                whatsapp_message_id TEXT,
+                whatsapp_media_id TEXT,
+                whatsapp_image_sha256 TEXT,
+                whatsapp_timestamp TEXT,
+                data_hora_recebimento TEXT
             )
             """
         )
         _ensure_columns(connection)
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_documentos_whatsapp_message_id
+            ON documentos_processados (whatsapp_message_id)
+            WHERE whatsapp_message_id IS NOT NULL AND whatsapp_message_id != ''
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_documentos_whatsapp_image_sender
+            ON documentos_processados (whatsapp_image_sha256, observacao)
+            WHERE whatsapp_image_sha256 IS NOT NULL AND whatsapp_image_sha256 != ''
+            """
+        )
         connection.commit()
 
 
@@ -101,6 +125,11 @@ def _ensure_columns(connection: sqlite3.Connection) -> None:
         "conta_origem": "TEXT",
         "texto_extraido": "TEXT",
         "needs_review": "INTEGER",
+        "whatsapp_message_id": "TEXT",
+        "whatsapp_media_id": "TEXT",
+        "whatsapp_image_sha256": "TEXT",
+        "whatsapp_timestamp": "TEXT",
+        "data_hora_recebimento": "TEXT",
     }
 
     for column_name, column_type in required_columns.items():
@@ -184,63 +213,24 @@ def save_processed_document(record: dict) -> None:
         "conta_origem": record.get("conta_origem") or structured_data.get("conta_origem") or "",
         "texto_extraido": record.get("texto_extraido") or structured_data.get("texto_extraido") or "",
         "needs_review": _to_int_bool(record.get("needs_review", structured_data.get("needs_review", False))),
+        "whatsapp_message_id": record.get("whatsapp_message_id") or "",
+        "whatsapp_media_id": record.get("whatsapp_media_id") or "",
+        "whatsapp_image_sha256": record.get("whatsapp_image_sha256") or "",
+        "whatsapp_timestamp": record.get("whatsapp_timestamp") or "",
+        "data_hora_recebimento": record.get("data_hora_recebimento") or "",
     }
 
     with sqlite3.connect(DB_PATH) as connection:
+        columns = [column for column in TABLE_COLUMNS if column != "id"]
+        placeholders = ", ".join("?" for _ in columns)
         connection.execute(
-            """
+            f"""
             INSERT INTO documentos_processados (
-                data_processamento,
-                tipo_documento,
-                caminho_arquivo,
-                sucesso,
-                mensagem,
-                dados_extraidos,
-                chave_acesso,
-                url_consulta,
-                valor_total,
-                data_documento,
-                fornecedor,
-                categoria,
-                responsavel,
-                observacao,
-                status_conferencia,
-                document_kind,
-                hora_documento,
-                favorecido,
-                id_transacao,
-                comentario,
-                conta_origem,
-                texto_extraido,
-                needs_review
+                {", ".join(columns)}
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({placeholders})
             """,
-            (
-                data["data_processamento"],
-                data["tipo_documento"],
-                data["caminho_arquivo"],
-                data["sucesso"],
-                data["mensagem"],
-                data["dados_extraidos"],
-                data["chave_acesso"],
-                data["url_consulta"],
-                data["valor_total"],
-                data["data_documento"],
-                data["fornecedor"],
-                data["categoria"],
-                data["responsavel"],
-                data["observacao"],
-                data["status_conferencia"],
-                data["document_kind"],
-                data["hora_documento"],
-                data["favorecido"],
-                data["id_transacao"],
-                data["comentario"],
-                data["conta_origem"],
-                data["texto_extraido"],
-                data["needs_review"],
-            ),
+            tuple(data[column] for column in columns),
         )
         connection.commit()
 
@@ -256,33 +246,11 @@ def list_processed_documents(limit: int = 50, include_invalid: bool = False) -> 
 
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
+        columns = ",\n                ".join(TABLE_COLUMNS)
         rows = connection.execute(
-            """
+            f"""
             SELECT
-                id,
-                data_processamento,
-                tipo_documento,
-                caminho_arquivo,
-                sucesso,
-                mensagem,
-                dados_extraidos,
-                chave_acesso,
-                url_consulta,
-                valor_total,
-                data_documento,
-                fornecedor,
-                categoria,
-                responsavel,
-                observacao,
-                status_conferencia,
-                document_kind,
-                hora_documento,
-                favorecido,
-                id_transacao,
-                comentario,
-                conta_origem,
-                texto_extraido,
-                needs_review
+                {columns}
             FROM documentos_processados
             ORDER BY id DESC
             LIMIT ?
@@ -316,6 +284,67 @@ def get_processed_document_by_id(documento_id: int) -> dict | None:
             WHERE id = ?
             """,
             (safe_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def get_processed_document_by_whatsapp_message_id(message_id: str) -> dict | None:
+    init_database()
+
+    safe_message_id = str(message_id or "").strip()
+    if not safe_message_id:
+        return None
+
+    columns = ",\n                ".join(TABLE_COLUMNS)
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            f"""
+            SELECT
+                {columns}
+            FROM documentos_processados
+            WHERE whatsapp_message_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (safe_message_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def get_processed_document_by_whatsapp_image_sha256_sender(
+    image_sha256: str,
+    sender_phone: str,
+) -> dict | None:
+    init_database()
+
+    safe_sha256 = str(image_sha256 or "").strip()
+    safe_sender_phone = str(sender_phone or "").strip()
+    if not safe_sha256 or not safe_sender_phone:
+        return None
+
+    columns = ",\n                ".join(TABLE_COLUMNS)
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            f"""
+            SELECT
+                {columns}
+            FROM documentos_processados
+            WHERE whatsapp_image_sha256 = ?
+              AND observacao LIKE ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (safe_sha256, f"%telefone_remetente: {safe_sender_phone}%"),
         ).fetchone()
 
     if row is None:
@@ -430,33 +459,11 @@ def get_documents_summary() -> dict:
         init_database()
         with sqlite3.connect(DB_PATH) as connection:
             connection.row_factory = sqlite3.Row
+            columns = ",\n                    ".join(TABLE_COLUMNS)
             rows = connection.execute(
-                """
+                f"""
                 SELECT
-                    id,
-                    data_processamento,
-                    tipo_documento,
-                    caminho_arquivo,
-                    sucesso,
-                    mensagem,
-                    dados_extraidos,
-                    chave_acesso,
-                    url_consulta,
-                    valor_total,
-                    data_documento,
-                    fornecedor,
-                    categoria,
-                    responsavel,
-                    observacao,
-                    status_conferencia,
-                    document_kind,
-                    hora_documento,
-                    favorecido,
-                    id_transacao,
-                    comentario,
-                    conta_origem,
-                    texto_extraido,
-                    needs_review
+                    {columns}
                 FROM documentos_processados
                 """
             ).fetchall()

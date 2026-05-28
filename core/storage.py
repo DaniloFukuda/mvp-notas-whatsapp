@@ -1,5 +1,6 @@
 import csv
 import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,11 @@ CSV_COLUMNS = [
     "conta_origem",
     "texto_extraido",
     "needs_review",
+    "whatsapp_message_id",
+    "whatsapp_media_id",
+    "whatsapp_image_sha256",
+    "whatsapp_timestamp",
+    "data_hora_recebimento",
 ]
 
 
@@ -51,6 +57,11 @@ def save_processing_result(
     conta_origem: str = "",
     texto_extraido: str = "",
     needs_review: bool = False,
+    whatsapp_message_id: str = "",
+    whatsapp_media_id: str = "",
+    whatsapp_image_sha256: str = "",
+    whatsapp_timestamp: str = "",
+    data_hora_recebimento: str = "",
 ) -> None:
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     _ensure_csv_columns()
@@ -79,8 +90,23 @@ def save_processing_result(
         "conta_origem": conta_origem,
         "texto_extraido": texto_extraido,
         "needs_review": needs_review,
+        "whatsapp_message_id": whatsapp_message_id,
+        "whatsapp_media_id": whatsapp_media_id,
+        "whatsapp_image_sha256": whatsapp_image_sha256,
+        "whatsapp_timestamp": whatsapp_timestamp,
+        "data_hora_recebimento": data_hora_recebimento,
         "status_conferencia": "pendente",
     }
+
+    try:
+        save_processed_document(record)
+    except sqlite3.IntegrityError as exc:
+        if record["whatsapp_message_id"] or record["whatsapp_image_sha256"]:
+            print("Documento WhatsApp duplicado ignorado pelo SQLite.")
+            return
+        print(f"Erro ao salvar documento no SQLite: {exc}")
+    except Exception as exc:
+        print(f"Erro ao salvar documento no SQLite: {exc}")
 
     with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS)
@@ -110,13 +136,13 @@ def save_processing_result(
                 "conta_origem": record["conta_origem"],
                 "texto_extraido": record["texto_extraido"],
                 "needs_review": record["needs_review"],
+                "whatsapp_message_id": record["whatsapp_message_id"],
+                "whatsapp_media_id": record["whatsapp_media_id"],
+                "whatsapp_image_sha256": record["whatsapp_image_sha256"],
+                "whatsapp_timestamp": record["whatsapp_timestamp"],
+                "data_hora_recebimento": record["data_hora_recebimento"],
             }
         )
-
-    try:
-        save_processed_document(record)
-    except Exception as exc:
-        print(f"Erro ao salvar documento no SQLite: {exc}")
 
 
 def _resolve_valor_total(dados_extraidos: str, valor_manual: str) -> str:

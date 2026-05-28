@@ -6,3 +6,5 @@ venv/
 output/*.csv
 data/app.db
 data/documentos/uploads/
+
+.env

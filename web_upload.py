@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from api_whatsapp import router as whatsapp_router
 from core.database import (
     delete_processed_document,
     get_processed_document_by_id,
@@ -20,9 +21,29 @@ from core.nucleus import Nucleus
 
 
 app = FastAPI(title="Envio de Documentos")
+app.include_router(whatsapp_router)
 UPLOAD_DIR = Path("data/documentos/uploads")
-DOCUMENT_TABLE_COLUMNS = ["ID", "Tipo", "Fornecedor", "Valor", "Data", "Categoria", "Responsavel", "Acoes"]
-ERROR_TABLE_COLUMNS = ["ID", "Tipo", "Mensagem", "Valor", "Data", "Acoes"]
+DOCUMENT_TABLE_COLUMNS = [
+    "ID",
+    "Tipo",
+    "Fornecedor",
+    "Valor",
+    "Data do Documento",
+    "Recebido Em",
+    "Categoria",
+    "Responsavel",
+    "Acoes",
+]
+ERROR_TABLE_COLUMNS = [
+    "ID",
+    "Tipo",
+    "Mensagem",
+    "Valor",
+    "Data do Documento",
+    "Recebido Em",
+    "Origem",
+    "Acoes",
+]
 
 
 def html_page(content: str, title: str = "Envio de Documentos") -> str:
@@ -796,6 +817,7 @@ def _document_row(documento: dict) -> str:
           <td>{html.escape(str(documento.get("fornecedor") or ""))}</td>
           <td>{html.escape(valor_total_text)}</td>
           <td>{html.escape(str(documento.get("data_documento") or ""))}</td>
+          <td>{html.escape(format_datetime_display(documento.get("data_hora_recebimento")))}</td>
           <td>{html.escape(str(documento.get("categoria") or ""))}</td>
           <td>{html.escape(str(documento.get("responsavel") or ""))}</td>
           <td class="actions-cell">{_action_buttons(documento_id, "/documentos")}</td>
@@ -815,6 +837,8 @@ def _error_document_row(documento: dict) -> str:
           <td class="message-cell">{html.escape(str(documento.get("mensagem") or ""))}</td>
           <td>{html.escape(valor_total_text)}</td>
           <td>{html.escape(str(documento.get("data_documento") or ""))}</td>
+          <td>{html.escape(format_datetime_display(documento.get("data_hora_recebimento")))}</td>
+          <td>{html.escape(str(documento.get("responsavel") or ""))}</td>
           <td class="actions-cell">{_action_buttons(documento_id, "/documentos/erros")}</td>
         </tr>
 """
@@ -930,3 +954,25 @@ def format_brl(value: float) -> str:
     formatted = f"{float(value or 0):,.2f}"
     formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {formatted}"
+
+
+def format_datetime_display(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    try:
+        parsed_display = datetime.strptime(text, "%d/%m/%Y %H:%M")
+    except ValueError:
+        parsed_display = None
+
+    if parsed_display is not None:
+        return parsed_display.strftime("%d/%m/%Y %H:%M")
+
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text
+
+    return parsed.strftime("%d/%m/%Y %H:%M")

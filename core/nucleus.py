@@ -86,6 +86,11 @@ class Nucleus:
             conta_origem=metadata.get("conta_origem", ""),
             texto_extraido=metadata.get("texto_extraido", ""),
             needs_review=metadata.get("needs_review", False),
+            whatsapp_message_id=metadata.get("whatsapp_message_id", ""),
+            whatsapp_media_id=metadata.get("whatsapp_media_id", ""),
+            whatsapp_image_sha256=metadata.get("whatsapp_image_sha256", ""),
+            whatsapp_timestamp=metadata.get("whatsapp_timestamp", ""),
+            data_hora_recebimento=metadata.get("data_hora_recebimento", ""),
         )
 
     def _merge_receipt_metadata(self, manual_metadata: dict, ocr_metadata: dict) -> dict:
