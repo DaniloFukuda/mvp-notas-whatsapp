@@ -836,9 +836,9 @@ def _filter_documents(documents: list[dict], filters: dict) -> list[dict]:
         and _matches_text(document.get("tipo_documento"), filters.get("tipo_documento"))
         and _matches_text(document.get("categoria"), filters.get("categoria"))
         and _matches_responsavel_origem(document, filters.get("responsavel_origem"))
-        and _matches_received_date(document, filters.get("data_recebimento"))
-        and _matches_received_time_range(
+        and _matches_received_filters(
             document,
+            filters.get("data_recebimento"),
             filters.get("hora_inicio"),
             filters.get("hora_fim"),
         )
@@ -918,8 +918,23 @@ def _filters_form(filters: dict) -> str:
     return f"""
     <form class="filters-form" action="/documentos" method="get">
       <label>
+        Data de recebimento
+        <input name="data_recebimento" type="date" value="{_form_value(filters.get("data_recebimento"))}">
+      </label>
+
+      <label>
         M&ecirc;s/Ano
         <input name="mes_ano" type="month" value="{_form_value(filters.get("mes_ano"))}">
+      </label>
+
+      <label>
+        Hora inicial
+        <input name="hora_inicio" type="time" value="{_form_value(filters.get("hora_inicio"))}">
+      </label>
+
+      <label>
+        Hora final
+        <input name="hora_fim" type="time" value="{_form_value(filters.get("hora_fim"))}">
       </label>
 
       <label>
@@ -939,21 +954,6 @@ def _filters_form(filters: dict) -> str:
       <label>
         Responsavel/Origem
         <input name="responsavel_origem" type="text" value="{_form_value(filters.get("responsavel_origem"))}" placeholder="Ex.: whatsapp">
-      </label>
-
-      <label>
-        Data de recebimento
-        <input name="data_recebimento" type="date" value="{_form_value(filters.get("data_recebimento"))}">
-      </label>
-
-      <label>
-        Hora inicial
-        <input name="hora_inicio" type="time" value="{_form_value(filters.get("hora_inicio"))}">
-      </label>
-
-      <label>
-        Hora final
-        <input name="hora_fim" type="time" value="{_form_value(filters.get("hora_fim"))}">
       </label>
 
       <button type="submit">Filtrar</button>
@@ -1162,30 +1162,24 @@ def _matches_responsavel_origem(document: dict, expected: object) -> bool:
     return any(expected_text in str(value or "").lower() for value in searchable_values)
 
 
-def _matches_received_date(document: dict, date_filter: object) -> bool:
+def _matches_received_filters(
+    document: dict,
+    date_filter: object,
+    start_filter: object,
+    end_filter: object,
+) -> bool:
     expected_date = str(date_filter or "").strip()
-    if not expected_date:
+    start_time = _parse_time_filter(start_filter)
+    end_time = _parse_time_filter(end_filter)
+    has_received_filter = bool(expected_date or start_time is not None or end_time is not None)
+    if not has_received_filter:
         return True
 
     received_at = _parse_received_datetime(document.get("data_hora_recebimento"))
     if received_at is None:
         return False
 
-    return received_at.strftime("%Y-%m-%d") == expected_date
-
-
-def _matches_received_time_range(
-    document: dict,
-    start_filter: object,
-    end_filter: object,
-) -> bool:
-    start_time = _parse_time_filter(start_filter)
-    end_time = _parse_time_filter(end_filter)
-    if start_time is None and end_time is None:
-        return True
-
-    received_at = _parse_received_datetime(document.get("data_hora_recebimento"))
-    if received_at is None:
+    if expected_date and received_at.strftime("%Y-%m-%d") != expected_date:
         return False
 
     received_time = received_at.time().replace(second=0, microsecond=0)
