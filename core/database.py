@@ -242,7 +242,7 @@ def list_processed_documents(limit: int = 50, include_invalid: bool = False) -> 
     except (TypeError, ValueError):
         safe_limit = 50
 
-    safe_limit = max(1, min(safe_limit, 500))
+    safe_limit = max(1, min(safe_limit, 5000))
 
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row

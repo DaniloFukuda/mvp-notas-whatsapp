@@ -11,7 +11,6 @@ from api_whatsapp import router as whatsapp_router
 from core.database import (
     delete_processed_document,
     get_processed_document_by_id,
-    get_documents_summary,
     list_invalid_documents,
     list_processed_documents,
     save_processed_document,
@@ -24,12 +23,11 @@ app = FastAPI(title="Envio de Documentos")
 app.include_router(whatsapp_router)
 UPLOAD_DIR = Path("data/documentos/uploads")
 DOCUMENT_TABLE_COLUMNS = [
-    "ID",
+    "Data do Documento",
+    "Recebido Em",
     "Tipo",
     "Fornecedor",
     "Valor",
-    "Data do Documento",
-    "Recebido Em",
     "Categoria",
     "Responsavel",
     "Acoes",
@@ -91,6 +89,16 @@ def html_page(content: str, title: str = "Envio de Documentos") -> str:
       gap: 16px;
     }}
 
+    .filters-form {{
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      align-items: end;
+      margin-bottom: 24px;
+      padding: 16px;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #f8fafc;
+    }}
+
     label {{
       display: grid;
       gap: 6px;
@@ -105,6 +113,8 @@ def html_page(content: str, title: str = "Envio de Documentos") -> str:
 
     select,
     input[type="date"],
+    input[type="month"],
+    input[type="time"],
     input[type="file"],
     input[type="number"],
     input[type="text"],
@@ -214,6 +224,35 @@ def html_page(content: str, title: str = "Envio de Documentos") -> str:
       font-size: 22px;
       font-weight: 700;
       color: #102a43;
+    }}
+
+    .category-summary {{
+      margin-bottom: 24px;
+    }}
+
+    .category-summary h2 {{
+      margin: 0 0 12px;
+      font-size: 18px;
+    }}
+
+    .category-list {{
+      display: grid;
+      gap: 8px;
+      margin: 0;
+    }}
+
+    .category-row {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 12px;
+      border: 1px solid #d9e2ec;
+      border-radius: 6px;
+      background: #ffffff;
+    }}
+
+    .category-row strong {{
+      overflow-wrap: anywhere;
     }}
 
     .notice {{
@@ -573,9 +612,28 @@ def salvar_lancamento_manual(
 
 
 @app.get("/documentos", response_class=HTMLResponse)
-def listar_documentos(atualizado: str = Query("")) -> str:
-    summary = get_documents_summary()
-    documentos = list_processed_documents(limit=50)
+def listar_documentos(
+    atualizado: str = Query(""),
+    mes_ano: str = Query(""),
+    tipo_documento: str = Query(""),
+    categoria: str = Query(""),
+    responsavel_origem: str = Query(""),
+    data_recebimento: str = Query(""),
+    hora_inicio: str = Query(""),
+    hora_fim: str = Query(""),
+) -> str:
+    filters = {
+        "mes_ano": mes_ano.strip(),
+        "tipo_documento": tipo_documento.strip(),
+        "categoria": categoria.strip(),
+        "responsavel_origem": responsavel_origem.strip(),
+        "data_recebimento": data_recebimento.strip(),
+        "hora_inicio": hora_inicio.strip(),
+        "hora_fim": hora_fim.strip(),
+    }
+    documentos = _filter_documents(list_processed_documents(limit=5000), filters)
+    summary = _build_documents_summary(documentos)
+    category_totals = _build_category_totals(documentos)
     update_notice = (
         '<p class="status success">Documento atualizado com sucesso.</p>'
         if atualizado == "1"
@@ -597,7 +655,11 @@ def listar_documentos(atualizado: str = Query("")) -> str:
 
     {update_notice}
 
+    {_filters_form(filters)}
+
     {_summary_cards(summary)}
+
+    {_category_totals_section(category_totals)}
 
     <p class="notice">Registros incompletos ou com erro não aparecem nesta lista principal. <a href="/documentos/erros">Ver registros ocultos</a>.</p>
 
@@ -766,6 +828,64 @@ def apagar_documento(documento_id: int, origem: str = Form("/documentos")):
     return RedirectResponse(redirect_to, status_code=303)
 
 
+def _filter_documents(documents: list[dict], filters: dict) -> list[dict]:
+    return [
+        document
+        for document in documents
+        if _matches_month(document, filters.get("mes_ano"))
+        and _matches_text(document.get("tipo_documento"), filters.get("tipo_documento"))
+        and _matches_text(document.get("categoria"), filters.get("categoria"))
+        and _matches_responsavel_origem(document, filters.get("responsavel_origem"))
+        and _matches_received_date(document, filters.get("data_recebimento"))
+        and _matches_received_time_range(
+            document,
+            filters.get("hora_inicio"),
+            filters.get("hora_fim"),
+        )
+    ]
+
+
+def _build_documents_summary(documents: list[dict]) -> dict:
+    summary = {
+        "total_geral": 0.0,
+        "total_notas_fiscais": 0.0,
+        "total_recibos_comprovantes": 0.0,
+        "quantidade_total_documentos": 0,
+        "quantidade_notas_fiscais": 0,
+        "quantidade_recibos_comprovantes": 0,
+        "quantidade_pendentes_revisao": 0,
+    }
+
+    for document in documents:
+        tipo_documento = str(document.get("tipo_documento") or "").lower()
+        valor_total = _document_value(document)
+
+        summary["quantidade_total_documentos"] += 1
+        summary["total_geral"] += valor_total
+
+        if "nota" in tipo_documento:
+            summary["quantidade_notas_fiscais"] += 1
+            summary["total_notas_fiscais"] += valor_total
+
+        if "recibo" in tipo_documento or "comprovante" in tipo_documento:
+            summary["quantidade_recibos_comprovantes"] += 1
+            summary["total_recibos_comprovantes"] += valor_total
+
+        if _is_pending_review(document.get("status_conferencia")):
+            summary["quantidade_pendentes_revisao"] += 1
+
+    return summary
+
+
+def _build_category_totals(documents: list[dict]) -> list[tuple[str, float]]:
+    totals: dict[str, float] = {}
+    for document in documents:
+        category = str(document.get("categoria") or "").strip() or "Sem categoria"
+        totals[category] = totals.get(category, 0.0) + _document_value(document)
+
+    return sorted(totals.items(), key=lambda item: item[1], reverse=True)
+
+
 def _summary_cards(summary: dict) -> str:
     return f"""
     <section class="summary-grid" aria-label="Resumo financeiro">
@@ -793,6 +913,84 @@ def _summary_cards(summary: dict) -> str:
 """
 
 
+def _filters_form(filters: dict) -> str:
+    tipo_documento = str(filters.get("tipo_documento") or "")
+    return f"""
+    <form class="filters-form" action="/documentos" method="get">
+      <label>
+        M&ecirc;s/Ano
+        <input name="mes_ano" type="month" value="{_form_value(filters.get("mes_ano"))}">
+      </label>
+
+      <label>
+        Tipo do documento
+        <select name="tipo_documento">
+          <option value="">Todos</option>
+          {_select_option("nota_fiscal", tipo_documento, "nota_fiscal")}
+          {_select_option("recibo_comprovante", tipo_documento, "recibo_comprovante")}
+        </select>
+      </label>
+
+      <label>
+        Categoria
+        <input name="categoria" type="text" value="{_form_value(filters.get("categoria"))}" placeholder="Ex.: alimenta&ccedil;&atilde;o">
+      </label>
+
+      <label>
+        Responsavel/Origem
+        <input name="responsavel_origem" type="text" value="{_form_value(filters.get("responsavel_origem"))}" placeholder="Ex.: whatsapp">
+      </label>
+
+      <label>
+        Data de recebimento
+        <input name="data_recebimento" type="date" value="{_form_value(filters.get("data_recebimento"))}">
+      </label>
+
+      <label>
+        Hora inicial
+        <input name="hora_inicio" type="time" value="{_form_value(filters.get("hora_inicio"))}">
+      </label>
+
+      <label>
+        Hora final
+        <input name="hora_fim" type="time" value="{_form_value(filters.get("hora_fim"))}">
+      </label>
+
+      <button type="submit">Filtrar</button>
+      <a class="button-link" href="/documentos">Limpar filtros</a>
+    </form>
+"""
+
+
+def _category_totals_section(category_totals: list[tuple[str, float]]) -> str:
+    if category_totals:
+        rows = "\n".join(
+            f"""
+      <div class="category-row">
+        <strong>{html.escape(category)}</strong>
+        <span>{html.escape(format_brl(total))}</span>
+      </div>
+"""
+            for category, total in category_totals
+        )
+    else:
+        rows = """
+      <div class="category-row">
+        <strong>Nenhuma categoria encontrada</strong>
+        <span>R$ 0,00</span>
+      </div>
+"""
+
+    return f"""
+    <section class="category-summary" aria-label="Total por categoria">
+      <h2>Total por categoria</h2>
+      <div class="category-list">
+        {rows}
+      </div>
+    </section>
+"""
+
+
 def _document_table_header(columns: list[str]) -> str:
     headers = "\n".join(
         f'            <th class="{_column_class(column)}">{html.escape(humanizar_texto(column))}</th>'
@@ -812,12 +1010,11 @@ def _document_row(documento: dict) -> str:
 
     return f"""
         <tr>
-          <td>{html.escape(documento_id)}</td>
+          <td>{html.escape(str(documento.get("data_documento") or ""))}</td>
+          <td>{html.escape(format_datetime_display(documento.get("data_hora_recebimento")))}</td>
           <td>{html.escape(humanizar_texto(documento.get("tipo_documento")))}</td>
           <td>{html.escape(str(documento.get("fornecedor") or ""))}</td>
           <td>{html.escape(valor_total_text)}</td>
-          <td>{html.escape(str(documento.get("data_documento") or ""))}</td>
-          <td>{html.escape(format_datetime_display(documento.get("data_hora_recebimento")))}</td>
           <td>{html.escape(str(documento.get("categoria") or ""))}</td>
           <td>{html.escape(str(documento.get("responsavel") or ""))}</td>
           <td class="actions-cell">{_action_buttons(documento_id, "/documentos")}</td>
@@ -930,6 +1127,139 @@ def _normalizar_valor_total(value: str) -> tuple[float | None, str | None]:
         return float(value.replace(",", ".")), None
     except ValueError:
         return None, "Valor Total deve ficar vazio ou conter um numero."
+
+
+def _matches_month(document: dict, month_filter: object) -> bool:
+    expected_month = str(month_filter or "").strip()
+    if not expected_month:
+        return True
+
+    document_date = _parse_document_date(document.get("data_documento"))
+    if document_date is None:
+        return False
+
+    return document_date.strftime("%Y-%m") == expected_month
+
+
+def _matches_text(value: object, expected: object) -> bool:
+    expected_text = str(expected or "").strip().lower()
+    if not expected_text:
+        return True
+
+    return expected_text in str(value or "").strip().lower()
+
+
+def _matches_responsavel_origem(document: dict, expected: object) -> bool:
+    expected_text = str(expected or "").strip().lower()
+    if not expected_text:
+        return True
+
+    searchable_values = (
+        document.get("responsavel"),
+        document.get("observacao"),
+        document.get("conta_origem"),
+    )
+    return any(expected_text in str(value or "").lower() for value in searchable_values)
+
+
+def _matches_received_date(document: dict, date_filter: object) -> bool:
+    expected_date = str(date_filter or "").strip()
+    if not expected_date:
+        return True
+
+    received_at = _parse_received_datetime(document.get("data_hora_recebimento"))
+    if received_at is None:
+        return False
+
+    return received_at.strftime("%Y-%m-%d") == expected_date
+
+
+def _matches_received_time_range(
+    document: dict,
+    start_filter: object,
+    end_filter: object,
+) -> bool:
+    start_time = _parse_time_filter(start_filter)
+    end_time = _parse_time_filter(end_filter)
+    if start_time is None and end_time is None:
+        return True
+
+    received_at = _parse_received_datetime(document.get("data_hora_recebimento"))
+    if received_at is None:
+        return False
+
+    received_time = received_at.time().replace(second=0, microsecond=0)
+    if start_time is not None and received_time < start_time:
+        return False
+
+    if end_time is not None and received_time > end_time:
+        return False
+
+    return True
+
+
+def _document_value(document: dict) -> float:
+    value = document.get("valor_total")
+    if value in (None, ""):
+        return 0.0
+
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_document_date(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    for date_format in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m"):
+        try:
+            return datetime.strptime(text, date_format)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _parse_received_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    for date_format in ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text, date_format)
+        except ValueError:
+            continue
+
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_time_filter(value: object):
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    for time_format in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(text, time_format).time().replace(
+                second=0,
+                microsecond=0,
+            )
+        except ValueError:
+            continue
+
+    return None
+
+
+def _is_pending_review(value: object) -> bool:
+    return str(value or "").strip().lower() != "revisado"
 
 
 def humanizar_texto(valor: object) -> str:
