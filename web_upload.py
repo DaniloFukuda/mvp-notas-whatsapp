@@ -1,11 +1,13 @@
 import html
+import csv
+import io
 import shutil
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Query, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from api_whatsapp import router as whatsapp_router
 from core.database import (
@@ -616,21 +618,25 @@ def listar_documentos(
     atualizado: str = Query(""),
     mes_ano: str = Query(""),
     tipo_documento: str = Query(""),
+    tipo: str = Query(""),
     categoria: str = Query(""),
     responsavel_origem: str = Query(""),
+    responsavel: str = Query(""),
     data_recebimento: str = Query(""),
     hora_inicio: str = Query(""),
     hora_fim: str = Query(""),
 ) -> str:
-    filters = {
-        "mes_ano": mes_ano.strip(),
-        "tipo_documento": tipo_documento.strip(),
-        "categoria": categoria.strip(),
-        "responsavel_origem": responsavel_origem.strip(),
-        "data_recebimento": data_recebimento.strip(),
-        "hora_inicio": hora_inicio.strip(),
-        "hora_fim": hora_fim.strip(),
-    }
+    filters = _build_document_filters(
+        mes_ano=mes_ano,
+        tipo_documento=tipo_documento,
+        tipo=tipo,
+        categoria=categoria,
+        responsavel_origem=responsavel_origem,
+        responsavel=responsavel,
+        data_recebimento=data_recebimento,
+        hora_inicio=hora_inicio,
+        hora_fim=hora_fim,
+    )
     documentos = _filter_documents(list_processed_documents(limit=5000), filters)
     summary = _build_documents_summary(documentos)
     category_totals = _build_category_totals(documentos)
@@ -677,6 +683,41 @@ def listar_documentos(
     <a class="nav-link" href="/">Voltar ao inicio</a>
 """,
         title="Documentos Processados",
+    )
+
+
+@app.get("/documentos/exportar.csv")
+def exportar_documentos_csv(
+    mes_ano: str = Query(""),
+    tipo_documento: str = Query(""),
+    tipo: str = Query(""),
+    categoria: str = Query(""),
+    responsavel_origem: str = Query(""),
+    responsavel: str = Query(""),
+    data_recebimento: str = Query(""),
+    hora_inicio: str = Query(""),
+    hora_fim: str = Query(""),
+) -> Response:
+    filters = _build_document_filters(
+        mes_ano=mes_ano,
+        tipo_documento=tipo_documento,
+        tipo=tipo,
+        categoria=categoria,
+        responsavel_origem=responsavel_origem,
+        responsavel=responsavel,
+        data_recebimento=data_recebimento,
+        hora_inicio=hora_inicio,
+        hora_fim=hora_fim,
+    )
+    documentos = _filter_documents(list_processed_documents(limit=5000), filters)
+    csv_content = _documents_csv(documentos)
+
+    return Response(
+        content=csv_content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={
+            "Content-Disposition": 'attachment; filename="documentos_filtrados.csv"'
+        },
     )
 
 
@@ -828,6 +869,28 @@ def apagar_documento(documento_id: int, origem: str = Form("/documentos")):
     return RedirectResponse(redirect_to, status_code=303)
 
 
+def _build_document_filters(
+    mes_ano: str = "",
+    tipo_documento: str = "",
+    tipo: str = "",
+    categoria: str = "",
+    responsavel_origem: str = "",
+    responsavel: str = "",
+    data_recebimento: str = "",
+    hora_inicio: str = "",
+    hora_fim: str = "",
+) -> dict:
+    return {
+        "mes_ano": mes_ano.strip(),
+        "tipo_documento": (tipo_documento or tipo).strip(),
+        "categoria": categoria.strip(),
+        "responsavel_origem": (responsavel_origem or responsavel).strip(),
+        "data_recebimento": data_recebimento.strip(),
+        "hora_inicio": hora_inicio.strip(),
+        "hora_fim": hora_fim.strip(),
+    }
+
+
 def _filter_documents(documents: list[dict], filters: dict) -> list[dict]:
     return [
         document
@@ -843,6 +906,51 @@ def _filter_documents(documents: list[dict], filters: dict) -> list[dict]:
             filters.get("hora_fim"),
         )
     ]
+
+
+def _documents_csv(documents: list[dict]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(
+        [
+            "id",
+            "tipo_documento",
+            "fornecedor",
+            "valor",
+            "data_documento",
+            "data_hora_recebimento",
+            "categoria",
+            "responsavel",
+            "origem",
+            "observacao",
+            "sucesso",
+            "mensagem",
+        ]
+    )
+
+    for document in documents:
+        writer.writerow(
+            [
+                _csv_value(document.get("id")),
+                _csv_value(document.get("tipo_documento")),
+                _csv_value(document.get("fornecedor")),
+                _format_csv_decimal(document.get("valor_total")),
+                _csv_value(document.get("data_documento")),
+                format_datetime_display(document.get("data_hora_recebimento")),
+                _csv_value(document.get("categoria")),
+                _csv_value(document.get("responsavel")),
+                _document_origin(document),
+                _csv_value(document.get("observacao")),
+                _csv_value(document.get("sucesso")),
+                _csv_value(document.get("mensagem")),
+            ]
+        )
+
+    return output.getvalue()
+
+
+def _document_origin(document: dict) -> object:
+    return document.get("conta_origem") or document.get("responsavel") or ""
 
 
 def _build_documents_summary(documents: list[dict]) -> dict:
@@ -957,6 +1065,7 @@ def _filters_form(filters: dict) -> str:
       </label>
 
       <button type="submit">Filtrar</button>
+      <button type="submit" formaction="/documentos/exportar.csv">Exportar CSV</button>
       <a class="button-link" href="/documentos">Limpar filtros</a>
     </form>
 """
@@ -1109,6 +1218,20 @@ def _form_value(value: object) -> str:
 
 
 def _format_optional_decimal(value: object) -> str:
+    if value in (None, ""):
+        return ""
+
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _csv_value(value: object) -> object:
+    return "" if value is None else value
+
+
+def _format_csv_decimal(value: object) -> str:
     if value in (None, ""):
         return ""
 
