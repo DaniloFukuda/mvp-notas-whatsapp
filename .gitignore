@@ -1,10 +1,29 @@
+# Ambiente
+.venv/
+env/
+venv/
 __pycache__/
 *.pyc
-.venv/
-venv/
-.env
-output/*.csv
-data/app.db
-data/documentos/uploads/
 
+# Variaveis sensiveis
 .env
+
+# Banco local
+*.db
+*.sqlite
+data/app.db
+
+# Arquivos gerados e dados locais
+output/
+data/documentos/uploads/
+uploads/
+
+# Arquivos de teste/imagens/documentos locais
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.pdf
+
+# Logs
+*.log
