@@ -70,6 +70,10 @@ filtros por semana e status, totais consolidados e pendencias de revisao. O
 relatorio semanal tambem esta disponivel em
 `/ciclus/rdv/relatorio-semanal`.
 
+A exportacao Excel semanal fica em
+`/ciclus/rdv/relatorio-semanal.xlsx` e gera as abas `Lancamentos`,
+`Resumo por Colaborador`, `Resumo por Categoria` e `Pendencias`.
+
 O cadastro inicial cria Danilo, Marcelo, Henrique e Anderson com telefones
 deliberadamente ficticios. Em um ambiente real, esses telefones devem ser
 substituidos no cadastro persistente, sem incluir dados pessoais no codigo.
@@ -88,6 +92,7 @@ python scripts/test_rdv_service.py
 python scripts/test_whatsapp_rdv_flow.py
 python scripts/test_rdv_collaborators.py
 python scripts/test_ciclus_rdv_web.py
+python scripts/test_rdv_excel_export.py
 ```
 
 ## Como rodar localmente

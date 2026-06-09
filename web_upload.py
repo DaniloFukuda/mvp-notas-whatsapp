@@ -27,6 +27,7 @@ from services.rdv_service import (
     RDVService,
     calculate_week_reference,
 )
+from services.rdv_excel_service import build_weekly_rdv_workbook
 
 
 app = FastAPI(title="Envio de Documentos")
@@ -1166,6 +1167,10 @@ def listar_rdv_ciclus(
 
     {_ciclus_rdv_filters_form(filters, collaborators)}
 
+    <nav class="actions">
+      <a class="button-link" href="{_ciclus_excel_url(filters)}">Baixar relatorio Excel</a>
+    </nav>
+
     <section class="summary-grid" aria-label="Resumo semanal do RDV">
       <div class="summary-card">
         <strong>Total geral</strong>
@@ -1224,6 +1229,32 @@ def relatorio_semanal_rdv_ciclus(
         week=semana.strip(),
         collaborator_id=colaborador_id.strip(),
         status=status.strip(),
+    )
+
+
+@app.get("/ciclus/rdv/relatorio-semanal.xlsx")
+def exportar_relatorio_semanal_rdv_excel(
+    semana: str = Query(""),
+    colaborador_id: str = Query(""),
+    status: str = Query(""),
+) -> Response:
+    report_data = rdv_service.weekly_report_data(
+        week=semana.strip(),
+        collaborator_id=colaborador_id.strip(),
+        status=status.strip(),
+    )
+    content = build_weekly_rdv_workbook(report_data)
+    safe_week = report_data["semana"].replace("-", "_")
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="rdv_ciclus_agro_{safe_week}.xlsx"'
+            )
+        },
     )
 
 
@@ -1878,6 +1909,22 @@ def _ciclus_rdv_filters_form(filters: dict, collaborators: list[dict]) -> str:
       <a class="button-link" href="/ciclus/rdv">Limpar filtros</a>
     </form>
 """
+
+
+def _ciclus_excel_url(filters: dict) -> str:
+    parameters = [
+        f"semana={html.escape(str(filters.get('week') or ''), quote=True)}",
+    ]
+    if filters.get("collaborator_id"):
+        parameters.append(
+            "colaborador_id="
+            + html.escape(str(filters["collaborator_id"]), quote=True)
+        )
+    if filters.get("status"):
+        parameters.append(
+            "status=" + html.escape(str(filters["status"]), quote=True)
+        )
+    return "/ciclus/rdv/relatorio-semanal.xlsx?" + "&amp;".join(parameters)
 
 
 def _ciclus_rdv_row(launch: dict) -> str:

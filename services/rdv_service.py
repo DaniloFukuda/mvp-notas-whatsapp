@@ -431,12 +431,12 @@ class RDVService:
         collaborator_id: int | str = "",
         status: str = "",
     ) -> dict:
-        selected_week = str(week or "").strip() or calculate_week_reference(date.today())
-        expenses = self.list_launches(
+        dataset = self.weekly_report_data(
+            week=week,
             collaborator_id=collaborator_id,
             status=status,
-            week=selected_week,
         )
+        expenses = dataset["lancamentos"]
         summary = _summarize_expenses(expenses)
         completed = [
             expense
@@ -444,7 +444,7 @@ class RDVService:
             if expense.get("status_fluxo") in {"completo", "revisao"}
         ]
         return {
-            "semana": selected_week,
+            "semana": dataset["semana"],
             "total_geral": summary["total_geral"],
             "por_colaborador": summary["por_colaborador"],
             "por_categoria": summary["por_categoria"],
@@ -456,12 +456,73 @@ class RDVService:
                 for expense in completed
             ),
             "quantidade_lancamentos": len(expenses),
-            "pendentes_revisao": sum(
-                1
-                for expense in expenses
-                if expense.get("status_fluxo") in {"completo", "revisao"}
-                and expense.get("status_revisao") == "pendente"
+            "pendentes_revisao": len(dataset["pendencias"]),
+        }
+
+    def weekly_report_data(
+        self,
+        week: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        selected_week = str(week or "").strip() or calculate_week_reference(date.today())
+        expenses = self.list_launches(
+            collaborator_id=collaborator_id,
+            status=status,
+            week=selected_week,
+        )
+        by_collaborator: dict[str, dict] = {}
+        by_category: dict[str, dict] = {}
+        pending = []
+        for expense in expenses:
+            value = float(expense.get("valor") or 0)
+            distance = float(
+                expense.get("quilometragem") or expense.get("km_rodado") or 0
+            )
+            collaborator = str(expense.get("colaborador") or "Nao informado")
+            category = str(expense.get("categoria") or "outro")
+
+            collaborator_summary = by_collaborator.setdefault(
+                collaborator,
+                {
+                    "colaborador": collaborator,
+                    "total": 0.0,
+                    "quantidade": 0,
+                    "quilometragem_total": 0.0,
+                    "pendentes": 0,
+                },
+            )
+            collaborator_summary["total"] += value
+            collaborator_summary["quantidade"] += 1
+            collaborator_summary["quilometragem_total"] += distance
+
+            category_summary = by_category.setdefault(
+                category,
+                {
+                    "categoria": category,
+                    "total": 0.0,
+                    "quantidade": 0,
+                },
+            )
+            category_summary["total"] += value
+            category_summary["quantidade"] += 1
+
+            if _is_pending_launch(expense):
+                pending.append(expense)
+                collaborator_summary["pendentes"] += 1
+
+        return {
+            "semana": selected_week,
+            "lancamentos": expenses,
+            "resumo_colaboradores": sorted(
+                by_collaborator.values(),
+                key=lambda item: item["colaborador"],
             ),
+            "resumo_categorias": sorted(
+                by_category.values(),
+                key=lambda item: item["categoria"],
+            ),
+            "pendencias": pending,
         }
 
     def export_csv(
@@ -801,6 +862,14 @@ def _summarize_expenses(expenses: list[dict]) -> dict:
         "por_semana": by_week,
         "por_categoria": by_category,
     }
+
+
+def _is_pending_launch(expense: dict) -> bool:
+    return (
+        expense.get("status_fluxo")
+        in {"pendente", "aguardando_valor", "aguardando_categoria", "revisao"}
+        or expense.get("status_revisao") == "pendente"
+    )
 
 
 def _add_total(totals: dict[str, float], key: object, value: float) -> None:
