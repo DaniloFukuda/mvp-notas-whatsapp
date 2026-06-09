@@ -19,11 +19,18 @@ from core.database import (
     update_processed_document,
 )
 from core.nucleus import Nucleus
+from services.rdv_service import (
+    CATEGORIES as RDV_CATEGORIES,
+    COLLABORATORS as RDV_COLLABORATORS,
+    REVIEW_STATUSES as RDV_REVIEW_STATUSES,
+    RDVService,
+)
 
 
 app = FastAPI(title="Envio de Documentos")
 app.include_router(whatsapp_router)
 UPLOAD_DIR = Path("data/documentos/uploads")
+rdv_service = RDVService()
 DOCUMENT_TABLE_COLUMNS = [
     "Data do Documento",
     "Recebido Em",
@@ -357,6 +364,7 @@ def home_page() -> str:
       <a class="button-link" href="/lancamento-manual">Fazer lan&ccedil;amento manual</a>
       <a class="button-link" href="/documentos">Ver documentos processados</a>
       <a class="button-link" href="/documentos/erros">Ver documentos com erro</a>
+      <a class="button-link" href="/rdv">Ciclus Agro - RDV</a>
     </nav>
 """,
         title="Documentos",
@@ -867,6 +875,246 @@ def apagar_documento(documento_id: int, origem: str = Form("/documentos")):
     delete_processed_document(documento_id)
     redirect_to = "/documentos/erros" if origem == "/documentos/erros" else "/documentos"
     return RedirectResponse(redirect_to, status_code=303)
+
+
+@app.get("/rdv", response_class=HTMLResponse)
+def listar_rdv(
+    colaborador: str = Query(""),
+    semana: str = Query(""),
+    categoria: str = Query(""),
+    status: str = Query(""),
+) -> str:
+    filters = {
+        "colaborador": colaborador.strip(),
+        "semana": semana.strip(),
+        "categoria": categoria.strip(),
+        "status": status.strip(),
+    }
+    expenses = rdv_service.list_expenses(**filters)
+    summary = rdv_service.summarize(**filters)
+    rows = "\n".join(_rdv_row(expense) for expense in expenses)
+    if not rows:
+        rows = '<tr><td colspan="8">Nenhuma despesa encontrada.</td></tr>'
+
+    category_rows = "\n".join(
+        f"""
+        <div class="category-row">
+          <strong>{html.escape(humanizar_texto(category))}</strong>
+          <span>{html.escape(format_brl(total))}</span>
+        </div>
+"""
+        for category, total in sorted(summary["por_categoria"].items())
+    )
+    if not category_rows:
+        category_rows = """
+        <div class="category-row">
+          <strong>Nenhuma categoria encontrada</strong>
+          <span>R$ 0,00</span>
+        </div>
+"""
+
+    return html_page(
+        f"""
+    <h1>Ciclus Agro - RDV</h1>
+
+    <nav class="actions">
+      <a class="button-link" href="/rdv/novo">Nova despesa</a>
+    </nav>
+
+    {_rdv_filters_form(filters)}
+
+    <section class="summary-grid">
+      <div class="summary-card">
+        <strong>Total geral</strong>
+        <span>{html.escape(format_brl(summary["total_geral"]))}</span>
+      </div>
+      <div class="summary-card">
+        <strong>Despesas</strong>
+        <span>{html.escape(str(summary["quantidade"]))}</span>
+      </div>
+    </section>
+
+    <section class="category-summary">
+      <h2>Total por categoria</h2>
+      <div class="category-list">{category_rows}</div>
+    </section>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Semana</th>
+            <th>Colaborador</th>
+            <th>Categoria</th>
+            <th>Valor</th>
+            <th>Quilometragem</th>
+            <th>Status</th>
+            <th class="actions-cell">Acoes</th>
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+
+    <a class="nav-link" href="/">Voltar ao inicio</a>
+""",
+        title="Ciclus Agro - RDV",
+    )
+
+
+@app.get("/rdv/novo", response_class=HTMLResponse)
+def nova_despesa_rdv_page() -> str:
+    return html_page(
+        f"""
+    <h1>Nova despesa de RDV</h1>
+
+    <form action="/rdv/novo" method="post">
+      <label>Colaborador
+        <select name="colaborador" required>{_rdv_options(RDV_COLLABORATORS)}</select>
+      </label>
+      <label>Data da despesa
+        <input name="data_despesa" type="date" value="{datetime.now().date().isoformat()}" required>
+      </label>
+      <label>Categoria
+        <select name="categoria" required>{_rdv_options(RDV_CATEGORIES)}</select>
+      </label>
+      <label>Valor
+        <input name="valor" type="text" inputmode="decimal" placeholder="Ex.: 125,50">
+      </label>
+      <label>Fornecedor
+        <input name="fornecedor" type="text">
+      </label>
+      <label>Cidade de origem
+        <input name="cidade_origem" type="text">
+      </label>
+      <label>Cidade de destino
+        <input name="cidade_destino" type="text">
+      </label>
+      <label>Km inicial
+        <input name="km_inicio" type="number" step="0.01">
+      </label>
+      <label>Km final
+        <input name="km_fim" type="number" step="0.01">
+      </label>
+      <label>Observacao
+        <textarea name="observacao"></textarea>
+      </label>
+      <button type="submit">Salvar despesa</button>
+    </form>
+
+    <a class="nav-link" href="/rdv">Voltar ao RDV</a>
+""",
+        title="Nova despesa de RDV",
+    )
+
+
+@app.post("/rdv/novo", response_class=HTMLResponse)
+def salvar_nova_despesa_rdv(
+    colaborador: str = Form(...),
+    data_despesa: str = Form(...),
+    categoria: str = Form(...),
+    valor: str = Form(""),
+    fornecedor: str = Form(""),
+    cidade_origem: str = Form(""),
+    cidade_destino: str = Form(""),
+    km_inicio: str = Form(""),
+    km_fim: str = Form(""),
+    observacao: str = Form(""),
+):
+    try:
+        expense = rdv_service.register_manual_expense(
+            colaborador=colaborador,
+            data_despesa=data_despesa,
+            categoria=categoria,
+            valor=valor,
+            fornecedor=fornecedor,
+            cidade_origem=cidade_origem,
+            cidade_destino=cidade_destino,
+            km_inicio=km_inicio,
+            km_fim=km_fim,
+            observacao=observacao,
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            html_page(
+                f"""
+    <h1>Nova despesa de RDV</h1>
+    <p class="status error">{html.escape(str(exc))}</p>
+    <a class="button-link" href="/rdv/novo">Voltar ao formulario</a>
+""",
+                title="Erro no RDV",
+            ),
+            status_code=400,
+        )
+    return RedirectResponse(f"/rdv/{expense['id']}", status_code=303)
+
+
+@app.get("/rdv/exportar.csv")
+def exportar_rdv_csv(
+    colaborador: str = Query(""),
+    semana: str = Query(""),
+    categoria: str = Query(""),
+    status: str = Query(""),
+) -> Response:
+    csv_content = rdv_service.export_csv(
+        colaborador=colaborador,
+        semana=semana,
+        categoria=categoria,
+        status=status,
+    )
+    return Response(
+        content=csv_content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": 'attachment; filename="rdv_ciclus_agro.csv"'},
+    )
+
+
+@app.get("/rdv/{expense_id}", response_class=HTMLResponse)
+def detalhe_rdv(expense_id: int):
+    expense = rdv_service.get_expense(expense_id)
+    if expense is None:
+        return HTMLResponse(
+            html_page(
+                '<h1>Despesa nao encontrada</h1><a class="nav-link" href="/rdv">Voltar ao RDV</a>',
+                title="Despesa nao encontrada",
+            ),
+            status_code=404,
+        )
+
+    fields = "\n".join(
+        f"<dt>{html.escape(humanizar_texto(field))}</dt>"
+        f"<dd>{html.escape(_rdv_display_value(field, expense.get(field)))}</dd>"
+        for field in expense
+    )
+    return html_page(
+        f"""
+    <h1>Despesa RDV #{expense_id}</h1>
+    <dl>{fields}</dl>
+    <div class="actions">
+      <form action="/rdv/{expense_id}/aprovar" method="post">
+        <button type="submit">Aprovar</button>
+      </form>
+      <form action="/rdv/{expense_id}/rejeitar" method="post">
+        <button class="delete-action" type="submit">Rejeitar</button>
+      </form>
+    </div>
+    <a class="nav-link" href="/rdv">Voltar ao RDV</a>
+""",
+        title=f"Despesa RDV #{expense_id}",
+    )
+
+
+@app.post("/rdv/{expense_id}/aprovar")
+def aprovar_rdv(expense_id: int):
+    rdv_service.update_review_status(expense_id, "aprovado")
+    return RedirectResponse(f"/rdv/{expense_id}", status_code=303)
+
+
+@app.post("/rdv/{expense_id}/rejeitar")
+def rejeitar_rdv(expense_id: int):
+    rdv_service.update_review_status(expense_id, "rejeitado")
+    return RedirectResponse(f"/rdv/{expense_id}", status_code=303)
 
 
 def _build_document_filters(
@@ -1423,3 +1671,68 @@ def format_datetime_display(value: object) -> str:
         return text
 
     return parsed.strftime("%d/%m/%Y %H:%M")
+
+
+def _rdv_filters_form(filters: dict) -> str:
+    return f"""
+    <form class="filters-form" action="/rdv" method="get">
+      <label>Semana
+        <input name="semana" type="week" value="{_form_value(filters.get("semana"))}">
+      </label>
+      <label>Colaborador
+        <select name="colaborador">
+          <option value="">Todos</option>
+          {_rdv_options(RDV_COLLABORATORS, filters.get("colaborador"))}
+        </select>
+      </label>
+      <label>Categoria
+        <select name="categoria">
+          <option value="">Todas</option>
+          {_rdv_options(RDV_CATEGORIES, filters.get("categoria"))}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="">Todos</option>
+          {_rdv_options(RDV_REVIEW_STATUSES, filters.get("status"))}
+        </select>
+      </label>
+      <button type="submit">Filtrar</button>
+      <button type="submit" formaction="/rdv/exportar.csv">Exportar CSV</button>
+      <a class="button-link" href="/rdv">Limpar filtros</a>
+    </form>
+"""
+
+
+def _rdv_options(options: tuple[str, ...], current: object = "") -> str:
+    current_text = str(current or "")
+    return "".join(
+        _select_option(option, current_text, option)
+        for option in options
+    )
+
+
+def _rdv_row(expense: dict) -> str:
+    expense_id = int(expense["id"])
+    return f"""
+        <tr>
+          <td>{html.escape(str(expense.get("data_despesa") or ""))}</td>
+          <td>{html.escape(str(expense.get("semana_referencia") or ""))}</td>
+          <td>{html.escape(str(expense.get("colaborador") or ""))}</td>
+          <td>{html.escape(humanizar_texto(expense.get("categoria")))}</td>
+          <td>{html.escape(format_brl(expense.get("valor") or 0))}</td>
+          <td>{html.escape(_rdv_display_value("km_rodado", expense.get("km_rodado")))}</td>
+          <td>{html.escape(humanizar_texto(expense.get("status_revisao")))}</td>
+          <td class="actions-cell"><a class="table-action" href="/rdv/{expense_id}">Ver detalhe</a></td>
+        </tr>
+"""
+
+
+def _rdv_display_value(field: str, value: object) -> str:
+    if value in (None, ""):
+        return "-"
+    if field == "valor":
+        return format_brl(float(value))
+    if field in {"km_inicio", "km_fim", "km_rodado"}:
+        return f"{float(value):.2f} km"
+    return str(value)

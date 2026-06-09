@@ -52,6 +52,24 @@ A arquitetura atual combina componentes simples:
 - Resposta automatica pelo WhatsApp quando possivel.
 - Mascaramento/cuidado com token, telefone, IDs e logs sensiveis.
 
+## Modulo Ciclus Agro - RDV por WhatsApp
+
+O primeiro modulo de RDV registra despesas manuais e comprovantes recebidos pelo
+WhatsApp. A tela `/rdv` permite filtrar por semana, colaborador, categoria e
+status, revisar despesas, consultar totais e exportar CSV.
+
+No WhatsApp, as mensagens `menu`, `oi`, `rdv` ou `despesa` abrem o menu da
+Ciclus Agro. A opcao de envio de despesa coleta colaborador, categoria e valor
+antes de solicitar o comprovante. O arquivo fica salvo na area local ignorada
+pelo Git e a despesa entra como pendente de revisao.
+
+Validacoes locais do modulo:
+
+```powershell
+python scripts/test_rdv_service.py
+python scripts/test_whatsapp_rdv_flow.py
+```
+
 ## Como rodar localmente
 
 Crie e ative um ambiente virtual:
@@ -93,8 +111,9 @@ Variaveis usadas pelo projeto:
 
 ```env
 WHATSAPP_VERIFY_TOKEN=
-WHATSAPP_TOKEN=
+WHATSAPP_ACCESS_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_BUSINESS_ACCOUNT_ID=
 WHATSAPP_GRAPH_API_VERSION=
 WHATSAPP_TEST_RECIPIENT_PHONE=
 BASE_PUBLIC_URL=
@@ -103,11 +122,18 @@ BASE_PUBLIC_URL=
 Observacoes:
 
 - `WHATSAPP_VERIFY_TOKEN` deve bater com o token configurado no painel do webhook da Meta.
-- `WHATSAPP_TOKEN` e um token sensivel e deve ficar somente no ambiente local/seguro.
+- `WHATSAPP_ACCESS_TOKEN` e um token sensivel e deve ficar somente no ambiente local/seguro.
 - `WHATSAPP_PHONE_NUMBER_ID` identifica o numero usado pela Cloud API.
+- `WHATSAPP_BUSINESS_ACCOUNT_ID` identifica a conta empresarial do WhatsApp.
 - `WHATSAPP_GRAPH_API_VERSION` define a versao da Graph API usada nas chamadas.
 - `WHATSAPP_TEST_RECIPIENT_PHONE` pode ser usado por scripts de teste de envio.
 - `BASE_PUBLIC_URL` ajuda a montar links publicos quando o webhook estiver exposto via ngrok ou ambiente similar.
+
+Diagnostico seguro da Cloud API:
+
+```powershell
+python scripts\diagnose_whatsapp_cloud_api.py
+```
 
 ## Seguranca e privacidade
 

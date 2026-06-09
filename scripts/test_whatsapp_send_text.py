@@ -6,32 +6,30 @@ import requests
 from dotenv import load_dotenv
 
 
-TEST_WA_ID_FROM_REAL_PAYLOAD = "556198266551"
-DEFAULT_TEST_RECIPIENT_PHONE = "5561998266551"
 MESSAGE_BODY = "Teste enviado pelo backend do MVP \u2705"
 
 
 def main() -> int:
     load_dotenv()
 
-    token = os.getenv("WHATSAPP_TOKEN", "").strip()
+    token = (
+        os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+        or os.getenv("WHATSAPP_TOKEN", "").strip()
+    )
     phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
     api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", "").strip()
-    test_recipient_phone = os.getenv("WHATSAPP_TEST_RECIPIENT_PHONE", "").strip()
-    recipient = test_recipient_phone or DEFAULT_TEST_RECIPIENT_PHONE
-    recipient_strategy = (
-        "destinatario via WHATSAPP_TEST_RECIPIENT_PHONE"
-        if test_recipient_phone
-        else "destinatario padrao de teste"
-    )
+    recipient = os.getenv("WHATSAPP_TEST_RECIPIENT_PHONE", "").strip()
+    recipient_strategy = "destinatario via WHATSAPP_TEST_RECIPIENT_PHONE"
 
     missing_vars = []
     if not token:
-        missing_vars.append("WHATSAPP_TOKEN")
+        missing_vars.append("WHATSAPP_ACCESS_TOKEN")
     if not phone_number_id:
         missing_vars.append("WHATSAPP_PHONE_NUMBER_ID")
     if not api_version:
         missing_vars.append("WHATSAPP_GRAPH_API_VERSION")
+    if not recipient:
+        missing_vars.append("WHATSAPP_TEST_RECIPIENT_PHONE")
 
     if missing_vars:
         print("Variaveis ausentes no .env:")
@@ -76,9 +74,20 @@ def format_json_response(response: requests.Response) -> str:
     try:
         payload = response.json()
     except ValueError:
-        return response.text
+        body = response.text
+    else:
+        body = json.dumps(payload, indent=2, ensure_ascii=False)
 
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    sensitive_values = (
+        os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip(),
+        os.getenv("WHATSAPP_TOKEN", "").strip(),
+        os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip(),
+        os.getenv("WHATSAPP_TEST_RECIPIENT_PHONE", "").strip(),
+    )
+    for value in sensitive_values:
+        if value:
+            body = body.replace(value, mask_sensitive(value))
+    return body
 
 
 def mask_phone(phone: str) -> str:
@@ -86,6 +95,12 @@ def mask_phone(phone: str) -> str:
     if len(phone) <= 4:
         return "***"
     return f"***{phone[-4:]}"
+
+
+def mask_sensitive(value: str) -> str:
+    if len(value) > 40:
+        return f"{value[:6]}...{value[-4:]}"
+    return mask_phone(value)
 
 
 if __name__ == "__main__":

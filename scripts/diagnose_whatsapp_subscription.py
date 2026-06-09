@@ -12,12 +12,15 @@ DEFAULT_GRAPH_API_VERSION = "v21.0"
 def main() -> int:
     load_dotenv()
 
-    token = os.getenv("WHATSAPP_TOKEN", "").strip()
+    token = (
+        os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+        or os.getenv("WHATSAPP_TOKEN", "").strip()
+    )
     api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION).strip()
     waba_id = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "").strip()
 
     if not token:
-        print("WHATSAPP_TOKEN nao encontrado no .env.")
+        print("WHATSAPP_ACCESS_TOKEN nao encontrado no .env.")
         return 1
 
     if not waba_id:

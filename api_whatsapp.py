@@ -3,8 +3,9 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,12 @@ from core.database import (
 )
 from core.storage import save_processing_result
 from services.document_processing_service import process_document_file
+from services.rdv_service import (
+    CATEGORIES as RDV_CATEGORIES,
+    COLLABORATORS as RDV_COLLABORATORS,
+    RDVService,
+    calculate_week_reference,
+)
 
 
 try:
@@ -27,10 +34,24 @@ if load_dotenv is not None:
     load_dotenv()
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
+RDV_MENU = "\n".join(
+    [
+        "Ciclus Agro - RDV por WhatsApp",
+        "",
+        "1. Enviar despesa",
+        "2. Informar quilometragem",
+        "3. Ver resumo da semana",
+        "4. Falar com responsavel",
+    ]
+)
+rdv_service = RDVService()
+_rdv_sessions: dict[str, dict] = {}
+_rdv_sessions_lock = threading.Lock()
 
 
 @router.get("/webhook/whatsapp")
@@ -71,7 +92,14 @@ async def receive_whatsapp_webhook(
         logger.info("Webhook WhatsApp recebido")
         _log_whatsapp_webhook_summary(payload)
 
-        for message in _extract_messages(payload):
+        messages = _extract_messages(payload)
+        status_count = _count_status_events(payload)
+        logger.info(
+            "Webhook WhatsApp interpretado: mensagens=%s status=%s",
+            len(messages),
+            status_count,
+        )
+        for message in messages:
             background_tasks.add_task(_handle_whatsapp_message, message)
     except Exception:
         logger.exception("Erro ao interpretar payload do webhook WhatsApp.")
@@ -81,7 +109,7 @@ async def receive_whatsapp_webhook(
 
 def get_media_url(media_id: str) -> str:
     requests = _requests_module()
-    token = _required_env("WHATSAPP_TOKEN")
+    token = _whatsapp_access_token()
     api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
     response = requests.get(
         f"https://graph.facebook.com/{api_version}/{media_id}",
@@ -94,7 +122,7 @@ def get_media_url(media_id: str) -> str:
 
 def download_media(media_id: str, destino: str | Path) -> Path:
     requests = _requests_module()
-    token = _required_env("WHATSAPP_TOKEN")
+    token = _whatsapp_access_token()
     media_url = get_media_url(media_id)
     if not media_url:
         raise RuntimeError("URL da midia nao retornada pela WhatsApp Cloud API.")
@@ -114,11 +142,14 @@ def download_media(media_id: str, destino: str | Path) -> Path:
 
 def send_whatsapp_text(to: str, message: str) -> None:
     requests = _requests_module()
-    token = _required_env("WHATSAPP_TOKEN")
+    token = _whatsapp_access_token()
     phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
     api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
     message_type = "text"
-    recipient, recipient_strategy = _resolve_whatsapp_reply_recipient(to)
+    recipient = str(to or "").strip()
+    recipient_strategy = "destinatario via from/wa_id do webhook"
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
 
     try:
         response = requests.post(
@@ -142,7 +173,7 @@ def send_whatsapp_text(to: str, message: str) -> None:
             message_type,
             recipient_strategy,
         )
-        return
+        raise
 
     logger.info(
         "Resposta da Meta ao envio WhatsApp: status_code=%s to=%s type=%s estrategia=%s",
@@ -160,6 +191,14 @@ def send_whatsapp_text(to: str, message: str) -> None:
             recipient_strategy,
             _safe_response_body(response),
         )
+        response.raise_for_status()
+        return
+
+    logger.info(
+        "Mensagem WhatsApp enviada com sucesso: status_code=%s to=%s",
+        response.status_code,
+        _mask_phone(recipient),
+    )
 
 
 def _handle_whatsapp_message(message: dict) -> None:
@@ -195,10 +234,8 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     if message_type == "text":
-        _safe_send_text(
-            sender_phone,
-            _text_message_reply(),
-        )
+        reply = handle_rdv_text_message(sender_phone, text)
+        _safe_send_text(sender_phone, reply or _text_message_reply())
         return
 
     if message_type not in ("image", "document") or not media_id:
@@ -208,7 +245,10 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    if _was_whatsapp_message_processed(message_id):
+    if (
+        _was_whatsapp_message_processed(message_id)
+        or rdv_service.get_by_whatsapp_message_id(message_id) is not None
+    ):
         logger.info(
             "Mensagem WhatsApp duplicada ignorada: from=%s message_id=%s",
             _mask_phone(sender_phone),
@@ -233,24 +273,12 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    document_type = _classify_document_type(caption)
-    logger.info(
-        "Legenda WhatsApp classificada: original=%s normalizada=%s tipo=%s message_id=%s image_sha256=%s",
-        _safe_text_for_log(caption),
-        _safe_text_for_log(normalized_caption),
-        document_type or "-",
-        _mask_message_id(message_id),
-        _mask_sha256(image_sha256),
-    )
-    if not document_type:
-        _safe_send_text(sender_phone, _missing_type_message())
-        return
-
     destination = _build_media_destination(
         sender_phone=sender_phone,
         media_id=media_id,
         mime_type=mime_type,
     )
+    document_type = _classify_document_type(caption)
 
     try:
         downloaded_path = download_media(media_id, destination)
@@ -274,6 +302,34 @@ def _handle_whatsapp_message(message: dict) -> None:
             data_hora_recebimento=data_hora_recebimento,
         )
         _safe_send_text(sender_phone, _processing_error_message())
+        return
+
+    try:
+        rdv_expense = _register_received_media_as_rdv(
+            sender_phone=sender_phone,
+            caminho_arquivo=str(downloaded_path),
+            whatsapp_message_id=message_id,
+        )
+    except Exception:
+        logger.exception(
+            "Erro ao registrar despesa RDV recebida pelo WhatsApp: message_id=%s",
+            _mask_message_id(message_id),
+        )
+        _safe_send_text(
+            sender_phone,
+            "Recebi o arquivo, mas nao consegui registrar a despesa. Tente novamente.",
+        )
+        return
+    logger.info(
+        "Legenda WhatsApp classificada: original=%s normalizada=%s tipo=%s message_id=%s image_sha256=%s",
+        _safe_text_for_log(caption),
+        _safe_text_for_log(normalized_caption),
+        document_type or "-",
+        _mask_message_id(message_id),
+        _mask_sha256(image_sha256),
+    )
+    if not document_type:
+        _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
         return
 
     try:
@@ -306,10 +362,196 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     if result.sucesso:
-        _safe_send_text(sender_phone, _success_message(result))
+        _safe_send_text(
+            sender_phone,
+            f"{_rdv_received_message(rdv_expense)}\n\n{_success_message(result)}",
+        )
         return
 
-    _safe_send_text(sender_phone, _review_needed_message())
+    _safe_send_text(
+        sender_phone,
+        f"{_rdv_received_message(rdv_expense)}\n\n{_review_needed_message()}",
+    )
+
+
+def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
+    normalized = _normalize_caption(text)
+    if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
+        with _rdv_sessions_lock:
+            _rdv_sessions.pop(sender_phone, None)
+        return RDV_MENU
+
+    with _rdv_sessions_lock:
+        session = dict(_rdv_sessions.get(sender_phone) or {})
+
+    if not session:
+        if normalized == "1":
+            _set_rdv_session(sender_phone, {"state": "awaiting_collaborator"})
+            return _collaborator_prompt()
+        if normalized == "2":
+            return "A informacao de quilometragem sera incluida na proxima etapa do MVP."
+        if normalized == "3":
+            return _weekly_summary_message()
+        if normalized == "4":
+            return "Sua solicitacao foi registrada. Procure o responsavel pelo RDV da Ciclus Agro."
+        return None
+
+    state = session.get("state")
+    if state == "awaiting_collaborator":
+        collaborator = _match_numbered_choice(text, RDV_COLLABORATORS)
+        if collaborator is None:
+            return _collaborator_prompt("Colaborador invalido.")
+        session.update(
+            {
+                "state": "awaiting_category",
+                "colaborador": collaborator,
+            }
+        )
+        _set_rdv_session(sender_phone, session)
+        return _category_prompt()
+
+    if state == "awaiting_category":
+        category = _match_numbered_choice(text, RDV_CATEGORIES)
+        if category is None:
+            return _category_prompt("Categoria invalida.")
+        session.update(
+            {
+                "state": "awaiting_value",
+                "categoria": category,
+            }
+        )
+        _set_rdv_session(sender_phone, session)
+        return "Informe o valor da despesa. Exemplo: 125,50"
+
+    if state == "awaiting_value":
+        value = _parse_rdv_value(text)
+        if value is None:
+            return "Valor invalido. Informe somente o valor, por exemplo: 125,50"
+        session.update(
+            {
+                "state": "awaiting_receipt",
+                "valor": value,
+            }
+        )
+        _set_rdv_session(sender_phone, session)
+        return "Agora envie a foto ou o documento do comprovante."
+
+    if state == "awaiting_receipt":
+        return "Envie a foto ou o documento do comprovante para concluir a despesa."
+
+    return RDV_MENU
+
+
+def clear_rdv_sessions() -> None:
+    with _rdv_sessions_lock:
+        _rdv_sessions.clear()
+
+
+def _register_received_media_as_rdv(
+    sender_phone: str,
+    caminho_arquivo: str,
+    whatsapp_message_id: str,
+) -> dict:
+    existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
+    if existing is not None:
+        return existing
+
+    with _rdv_sessions_lock:
+        session = dict(_rdv_sessions.get(sender_phone) or {})
+
+    has_context = session.get("state") == "awaiting_receipt"
+    data = {
+        "colaborador": session.get("colaborador") if has_context else "Outro",
+        "categoria": session.get("categoria") if has_context else "outro",
+        "valor": session.get("valor") if has_context else None,
+        "data_despesa": date.today().isoformat(),
+        "caminho_arquivo": caminho_arquivo,
+        "whatsapp_message_id": whatsapp_message_id,
+        "observacao": (
+            "comprovante recebido pelo fluxo de RDV"
+            if has_context
+            else "arquivo recebido sem contexto de RDV"
+        ),
+    }
+    try:
+        expense = rdv_service.register_whatsapp_expense(**data)
+    except Exception:
+        existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
+        if existing is not None:
+            return existing
+        raise
+
+    if has_context:
+        with _rdv_sessions_lock:
+            _rdv_sessions.pop(sender_phone, None)
+    return expense
+
+
+def _rdv_received_message(expense: dict) -> str:
+    return "\n".join(
+        [
+            "Despesa recebida e salva para revisao.",
+            f"RDV: #{expense.get('id', '-')}",
+            f"Colaborador: {expense.get('colaborador') or '-'}",
+            f"Categoria: {expense.get('categoria') or '-'}",
+            f"Valor: {_format_brl_text(expense.get('valor'))}",
+        ]
+    )
+
+
+def _weekly_summary_message() -> str:
+    week = calculate_week_reference(date.today())
+    summary = rdv_service.summarize(semana=week)
+    return "\n".join(
+        [
+            f"Resumo da semana {week}",
+            f"Despesas: {summary['quantidade']}",
+            f"Total: {_format_brl_text(summary['total_geral'])}",
+        ]
+    )
+
+
+def _collaborator_prompt(prefix: str = "") -> str:
+    return _numbered_prompt(prefix, "Quem e o colaborador?", RDV_COLLABORATORS)
+
+
+def _category_prompt(prefix: str = "") -> str:
+    return _numbered_prompt(prefix, "Qual e a categoria?", RDV_CATEGORIES)
+
+
+def _numbered_prompt(prefix: str, title: str, choices: tuple[str, ...]) -> str:
+    lines = [line for line in (prefix, title) if line]
+    lines.extend(f"{index}. {choice}" for index, choice in enumerate(choices, start=1))
+    return "\n".join(lines)
+
+
+def _match_numbered_choice(value: str, choices: tuple[str, ...]) -> str | None:
+    normalized = _normalize_caption(value)
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(choices):
+            return choices[index]
+
+    for choice in choices:
+        if normalized == _normalize_caption(choice):
+            return choice
+    return None
+
+
+def _parse_rdv_value(value: str) -> float | None:
+    normalized = str(value or "").strip().lower().replace("r$", "").replace(" ", "")
+    if "," in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
+    try:
+        parsed = float(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _set_rdv_session(sender_phone: str, session: dict) -> None:
+    with _rdv_sessions_lock:
+        _rdv_sessions[sender_phone] = dict(session)
 
 
 def _extract_messages(payload: dict) -> list[dict]:
@@ -330,6 +572,25 @@ def _extract_messages(payload: dict) -> list[dict]:
                 if isinstance(message, dict):
                     messages.append(message)
     return messages
+
+
+def _count_status_events(payload: dict) -> int:
+    count = 0
+    if not isinstance(payload, dict):
+        return count
+
+    for entry in payload.get("entry", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes", []) or []:
+            if not isinstance(change, dict):
+                continue
+            value = change.get("value") or {}
+            if isinstance(value, dict):
+                count += sum(
+                    1 for status in value.get("statuses", []) or [] if isinstance(status, dict)
+                )
+    return count
 
 
 def _log_whatsapp_webhook_summary(payload: dict) -> None:
@@ -657,12 +918,21 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _resolve_whatsapp_reply_recipient(webhook_from: str) -> tuple[str, str]:
-    test_recipient = os.getenv("WHATSAPP_TEST_RECIPIENT_PHONE", "").strip()
-    if test_recipient:
-        return test_recipient, "destinatario via WHATSAPP_TEST_RECIPIENT_PHONE"
+def _whatsapp_access_token() -> str:
+    token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    if token:
+        return token
 
-    return str(webhook_from or "").strip(), "destinatario via from/wa_id do webhook"
+    legacy_token = os.getenv("WHATSAPP_TOKEN", "").strip()
+    if legacy_token:
+        logger.warning(
+            "WHATSAPP_TOKEN esta obsoleto; renomeie para WHATSAPP_ACCESS_TOKEN no .env."
+        )
+        return legacy_token
+
+    raise RuntimeError(
+        "Variavel de ambiente obrigatoria nao configurada: WHATSAPP_ACCESS_TOKEN"
+    )
 
 
 def _requests_module():
