@@ -58,16 +58,36 @@ O primeiro modulo de RDV registra despesas manuais e comprovantes recebidos pelo
 WhatsApp. A tela `/rdv` permite filtrar por semana, colaborador, categoria e
 status, revisar despesas, consultar totais e exportar CSV.
 
-No WhatsApp, as mensagens `menu`, `oi`, `rdv` ou `despesa` abrem o menu da
-Ciclus Agro. A opcao de envio de despesa coleta colaborador, categoria e valor
-antes de solicitar o comprovante. O arquivo fica salvo na area local ignorada
-pelo Git e a despesa entra como pendente de revisao.
+No WhatsApp, as mensagens `menu`, `oi`, `rdv` ou `despesa` orientam o
+colaborador cadastrado a enviar o comprovante. O arquivo fica salvo na area
+local ignorada pelo Git e o lancamento avanca de forma persistente pelas etapas
+de valor, categoria, conclusao e revisao.
+
+### Fluxo operacional por colaborador
+
+A rota `/ciclus/rdv` apresenta os lancamentos recebidos por colaborador, com
+filtros por semana e status, totais consolidados e pendencias de revisao. O
+relatorio semanal tambem esta disponivel em
+`/ciclus/rdv/relatorio-semanal`.
+
+O cadastro inicial cria Danilo, Marcelo, Henrique e Anderson com telefones
+deliberadamente ficticios. Em um ambiente real, esses telefones devem ser
+substituidos no cadastro persistente, sem incluir dados pessoais no codigo.
+
+Para um colaborador ativo e identificado pelo telefone do remetente, o fluxo e:
+
+1. enviar a foto ou o documento do comprovante;
+2. informar o valor solicitado;
+3. escolher a categoria;
+4. receber a confirmacao do lancamento completo e pendente de revisao.
 
 Validacoes locais do modulo:
 
 ```powershell
 python scripts/test_rdv_service.py
 python scripts/test_whatsapp_rdv_flow.py
+python scripts/test_rdv_collaborators.py
+python scripts/test_ciclus_rdv_web.py
 ```
 
 ## Como rodar localmente

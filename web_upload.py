@@ -22,8 +22,10 @@ from core.nucleus import Nucleus
 from services.rdv_service import (
     CATEGORIES as RDV_CATEGORIES,
     COLLABORATORS as RDV_COLLABORATORS,
+    FLOW_STATUSES as RDV_FLOW_STATUSES,
     REVIEW_STATUSES as RDV_REVIEW_STATUSES,
     RDVService,
+    calculate_week_reference,
 )
 
 
@@ -365,6 +367,7 @@ def home_page() -> str:
       <a class="button-link" href="/documentos">Ver documentos processados</a>
       <a class="button-link" href="/documentos/erros">Ver documentos com erro</a>
       <a class="button-link" href="/rdv">Ciclus Agro - RDV</a>
+      <a class="button-link" href="/ciclus/rdv">RDV por colaborador</a>
     </nav>
 """,
         title="Documentos",
@@ -1117,6 +1120,113 @@ def rejeitar_rdv(expense_id: int):
     return RedirectResponse(f"/rdv/{expense_id}", status_code=303)
 
 
+@app.get("/ciclus/rdv", response_class=HTMLResponse)
+def listar_rdv_ciclus(
+    colaborador_id: str = Query(""),
+    status: str = Query(""),
+    semana: str = Query(""),
+) -> str:
+    selected_week = semana.strip() or calculate_week_reference(datetime.now().date())
+    filters = {
+        "collaborator_id": colaborador_id.strip(),
+        "status": status.strip(),
+        "week": selected_week,
+    }
+    collaborators = rdv_service.list_collaborators()
+    launches = rdv_service.list_launches(**filters)
+    report = rdv_service.weekly_report(
+        week=filters["week"],
+        collaborator_id=filters["collaborator_id"],
+        status=filters["status"],
+    )
+    rows = "\n".join(_ciclus_rdv_row(launch) for launch in launches)
+    if not rows:
+        rows = '<tr><td colspan="8">Nenhum lancamento encontrado.</td></tr>'
+
+    collaborator_totals = "\n".join(
+        f"""
+        <div class="category-row">
+          <strong>{html.escape(name)}</strong>
+          <span>{html.escape(format_brl(total))}</span>
+        </div>
+"""
+        for name, total in sorted(report["por_colaborador"].items())
+    )
+    if not collaborator_totals:
+        collaborator_totals = """
+        <div class="category-row">
+          <strong>Nenhum colaborador no periodo</strong>
+          <span>R$ 0,00</span>
+        </div>
+"""
+
+    return html_page(
+        f"""
+    <h1>Ciclus Agro - RDV por colaborador</h1>
+
+    {_ciclus_rdv_filters_form(filters, collaborators)}
+
+    <section class="summary-grid" aria-label="Resumo semanal do RDV">
+      <div class="summary-card">
+        <strong>Total geral</strong>
+        <span>{html.escape(format_brl(report["total_geral"]))}</span>
+      </div>
+      <div class="summary-card">
+        <strong>Comprovantes</strong>
+        <span>{html.escape(str(report["quantidade_comprovantes"]))}</span>
+      </div>
+      <div class="summary-card">
+        <strong>Pendentes de revisao</strong>
+        <span>{html.escape(str(report["pendentes_revisao"]))}</span>
+      </div>
+      <div class="summary-card">
+        <strong>Quilometragem</strong>
+        <span>{html.escape(f'{report["quilometragem_total"]:.2f} km')}</span>
+      </div>
+    </section>
+
+    <section class="category-summary">
+      <h2>Totais por colaborador</h2>
+      <div class="category-list">{collaborator_totals}</div>
+    </section>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Recebido em</th>
+            <th>Colaborador</th>
+            <th>Entrada</th>
+            <th>Categoria</th>
+            <th>Valor</th>
+            <th>Status</th>
+            <th>Comprovante</th>
+            <th class="actions-cell">Acoes</th>
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+
+    <a class="nav-link" href="/">Voltar ao inicio</a>
+""",
+        title="Ciclus Agro - RDV por colaborador",
+    )
+
+
+@app.get("/ciclus/rdv/relatorio-semanal")
+def relatorio_semanal_rdv_ciclus(
+    semana: str = Query(""),
+    colaborador_id: str = Query(""),
+    status: str = Query(""),
+) -> dict:
+    return rdv_service.weekly_report(
+        week=semana.strip(),
+        collaborator_id=colaborador_id.strip(),
+        status=status.strip(),
+    )
+
+
 def _build_document_filters(
     mes_ano: str = "",
     tipo_documento: str = "",
@@ -1736,3 +1846,52 @@ def _rdv_display_value(field: str, value: object) -> str:
     if field in {"km_inicio", "km_fim", "km_rodado"}:
         return f"{float(value):.2f} km"
     return str(value)
+
+
+def _ciclus_rdv_filters_form(filters: dict, collaborators: list[dict]) -> str:
+    collaborator_options = "".join(
+        _select_option(
+            str(collaborator["id"]),
+            str(filters.get("collaborator_id") or ""),
+            collaborator["nome"],
+        )
+        for collaborator in collaborators
+    )
+    return f"""
+    <form class="filters-form" action="/ciclus/rdv" method="get">
+      <label>Semana
+        <input name="semana" type="week" value="{_form_value(filters.get("week"))}">
+      </label>
+      <label>Colaborador
+        <select name="colaborador_id">
+          <option value="">Todos</option>
+          {collaborator_options}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="">Todos</option>
+          {_rdv_options(RDV_FLOW_STATUSES, filters.get("status"))}
+        </select>
+      </label>
+      <button type="submit">Filtrar</button>
+      <a class="button-link" href="/ciclus/rdv">Limpar filtros</a>
+    </form>
+"""
+
+
+def _ciclus_rdv_row(launch: dict) -> str:
+    expense_id = int(launch["id"])
+    receipt = "Sim" if launch.get("caminho_arquivo") else "Nao"
+    return f"""
+        <tr>
+          <td>{html.escape(format_datetime_display(launch.get("recebido_em")))}</td>
+          <td>{html.escape(str(launch.get("colaborador") or ""))}</td>
+          <td>{html.escape(humanizar_texto(launch.get("tipo_entrada")))}</td>
+          <td>{html.escape(humanizar_texto(launch.get("categoria")))}</td>
+          <td>{html.escape(format_brl(launch.get("valor") or 0))}</td>
+          <td>{html.escape(humanizar_texto(launch.get("status_fluxo")))}</td>
+          <td>{receipt}</td>
+          <td class="actions-cell"><a class="table-action" href="/rdv/{expense_id}">Ver detalhe</a></td>
+        </tr>
+"""

@@ -3,7 +3,6 @@ import logging
 import mimetypes
 import os
 import re
-import threading
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
@@ -16,10 +15,8 @@ from core.database import (
     get_processed_document_by_whatsapp_message_id,
 )
 from core.storage import save_processing_result
-from services.document_processing_service import process_document_file
 from services.rdv_service import (
     CATEGORIES as RDV_CATEGORIES,
-    COLLABORATORS as RDV_COLLABORATORS,
     RDVService,
     calculate_week_reference,
 )
@@ -43,15 +40,13 @@ RDV_MENU = "\n".join(
     [
         "Ciclus Agro - RDV por WhatsApp",
         "",
-        "1. Enviar despesa",
-        "2. Informar quilometragem",
-        "3. Ver resumo da semana",
-        "4. Falar com responsavel",
+        "Envie uma foto ou documento do comprovante para iniciar.",
+        "Depois vou pedir o valor e a categoria da despesa.",
+        "",
+        "Digite resumo para consultar a semana atual.",
     ]
 )
 rdv_service = RDVService()
-_rdv_sessions: dict[str, dict] = {}
-_rdv_sessions_lock = threading.Lock()
 
 
 @router.get("/webhook/whatsapp")
@@ -215,8 +210,6 @@ def _handle_whatsapp_message(message: dict) -> None:
     mime_type = str((media or {}).get("mime_type") or "")
     whatsapp_timestamp = str(message.get("timestamp") or "").strip()
     data_hora_recebimento = _received_at_from_whatsapp_timestamp(whatsapp_timestamp)
-    normalized_caption = _normalize_caption(caption)
-
     logger.info(
         "Mensagem WhatsApp extraida: from=%s message_id=%s type=%s has_text=%s has_caption=%s media_id=%s image_sha256=%s mime_type=%s",
         _mask_phone(sender_phone),
@@ -231,6 +224,19 @@ def _handle_whatsapp_message(message: dict) -> None:
 
     if not sender_phone:
         logger.warning("Mensagem WhatsApp sem remetente ignorada.")
+        return
+
+    collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
+    if collaborator is None:
+        logger.info(
+            "Remetente WhatsApp nao cadastrado no RDV: from=%s",
+            _mask_phone(sender_phone),
+        )
+        _safe_send_text(
+            sender_phone,
+            "Seu telefone ainda nao esta cadastrado no RDV da Ciclus Agro. "
+            "Procure o responsavel pelo cadastro.",
+        )
         return
 
     if message_type == "text":
@@ -309,6 +315,8 @@ def _handle_whatsapp_message(message: dict) -> None:
             sender_phone=sender_phone,
             caminho_arquivo=str(downloaded_path),
             whatsapp_message_id=message_id,
+            message_type=message_type,
+            received_at=data_hora_recebimento,
         )
     except Exception:
         logger.exception(
@@ -321,208 +329,144 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
     logger.info(
-        "Legenda WhatsApp classificada: original=%s normalizada=%s tipo=%s message_id=%s image_sha256=%s",
-        _safe_text_for_log(caption),
-        _safe_text_for_log(normalized_caption),
-        document_type or "-",
+        "Comprovante RDV registrado: from=%s message_id=%s rdv_id=%s",
+        _mask_phone(sender_phone),
         _mask_message_id(message_id),
-        _mask_sha256(image_sha256),
+        rdv_expense.get("id"),
     )
-    if not document_type:
-        _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
-        return
-
-    try:
-        result = process_document_file(
-            tipo_documento=document_type,
-            caminho_arquivo=str(downloaded_path),
-            origem="whatsapp",
-            telefone_remetente=sender_phone,
-            whatsapp_message_id=message_id,
-            whatsapp_media_id=media_id,
-            whatsapp_image_sha256=image_sha256,
-            whatsapp_timestamp=whatsapp_timestamp,
-            data_hora_recebimento=data_hora_recebimento,
-        )
-    except Exception as exc:
-        logger.exception("Erro ao processar midia do WhatsApp.")
-        _register_processing_error(
-            document_type=document_type,
-            caminho_arquivo=str(destination),
-            message=f"Erro no processamento via WhatsApp: {exc}",
-            sender_phone=sender_phone,
-            caption=caption,
-            whatsapp_message_id=message_id,
-            whatsapp_media_id=media_id,
-            whatsapp_image_sha256=image_sha256,
-            whatsapp_timestamp=whatsapp_timestamp,
-            data_hora_recebimento=data_hora_recebimento,
-        )
-        _safe_send_text(sender_phone, _processing_error_message())
-        return
-
-    if result.sucesso:
-        _safe_send_text(
-            sender_phone,
-            f"{_rdv_received_message(rdv_expense)}\n\n{_success_message(result)}",
-        )
-        return
-
-    _safe_send_text(
-        sender_phone,
-        f"{_rdv_received_message(rdv_expense)}\n\n{_review_needed_message()}",
-    )
+    _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
 
 
 def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
+    collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
+    if collaborator is None:
+        return (
+            "Seu telefone ainda nao esta cadastrado no RDV da Ciclus Agro. "
+            "Procure o responsavel pelo cadastro."
+        )
+
     normalized = _normalize_caption(text)
-    if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
-        with _rdv_sessions_lock:
-            _rdv_sessions.pop(sender_phone, None)
+    pending = rdv_service.get_open_launch_by_phone(sender_phone)
+    if pending is None:
+        if normalized in {"resumo", "3"}:
+            return _weekly_summary_message(collaborator["id"])
+        if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
+            return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
         return RDV_MENU
 
-    with _rdv_sessions_lock:
-        session = dict(_rdv_sessions.get(sender_phone) or {})
-
-    if not session:
-        if normalized == "1":
-            _set_rdv_session(sender_phone, {"state": "awaiting_collaborator"})
-            return _collaborator_prompt()
-        if normalized == "2":
-            return "A informacao de quilometragem sera incluida na proxima etapa do MVP."
-        if normalized == "3":
-            return _weekly_summary_message()
-        if normalized == "4":
-            return "Sua solicitacao foi registrada. Procure o responsavel pelo RDV da Ciclus Agro."
-        return None
-
-    state = session.get("state")
-    if state == "awaiting_collaborator":
-        collaborator = _match_numbered_choice(text, RDV_COLLABORATORS)
-        if collaborator is None:
-            return _collaborator_prompt("Colaborador invalido.")
-        session.update(
-            {
-                "state": "awaiting_category",
-                "colaborador": collaborator,
-            }
-        )
-        _set_rdv_session(sender_phone, session)
-        return _category_prompt()
-
-    if state == "awaiting_category":
-        category = _match_numbered_choice(text, RDV_CATEGORIES)
-        if category is None:
-            return _category_prompt("Categoria invalida.")
-        session.update(
-            {
-                "state": "awaiting_value",
-                "categoria": category,
-            }
-        )
-        _set_rdv_session(sender_phone, session)
-        return "Informe o valor da despesa. Exemplo: 125,50"
-
-    if state == "awaiting_value":
+    state = pending.get("status_fluxo")
+    if state == "aguardando_valor":
         value = _parse_rdv_value(text)
         if value is None:
             return "Valor invalido. Informe somente o valor, por exemplo: 125,50"
-        session.update(
-            {
-                "state": "awaiting_receipt",
-                "valor": value,
-            }
-        )
-        _set_rdv_session(sender_phone, session)
-        return "Agora envie a foto ou o documento do comprovante."
+        rdv_service.save_launch_value(pending["id"], value)
+        return _category_prompt()
 
-    if state == "awaiting_receipt":
-        return "Envie a foto ou o documento do comprovante para concluir a despesa."
+    if state == "aguardando_categoria":
+        category = _match_numbered_choice(text, RDV_CATEGORIES)
+        if category is None:
+            return _category_prompt("Categoria invalida.")
+        completed = rdv_service.complete_launch_category(
+            pending["id"],
+            category,
+        )
+        return "\n".join(
+            [
+                "RDV registrado com sucesso.",
+                f"Lancamento: #{completed['id']}",
+                f"Colaborador: {completed['colaborador']}",
+                f"Valor: {_format_brl_text(completed['valor'])}",
+                f"Categoria: {_category_label(completed['categoria'])}",
+                "Status: completo e pendente de revisao.",
+            ]
+        )
 
     return RDV_MENU
 
 
 def clear_rdv_sessions() -> None:
-    with _rdv_sessions_lock:
-        _rdv_sessions.clear()
+    """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
 
 
 def _register_received_media_as_rdv(
     sender_phone: str,
     caminho_arquivo: str,
     whatsapp_message_id: str,
+    message_type: str = "document",
+    received_at: str | datetime | None = None,
 ) -> dict:
     existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
     if existing is not None:
         return existing
 
-    with _rdv_sessions_lock:
-        session = dict(_rdv_sessions.get(sender_phone) or {})
+    collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
+    if collaborator is None:
+        raise ValueError("Remetente nao cadastrado como colaborador RDV.")
 
-    has_context = session.get("state") == "awaiting_receipt"
-    data = {
-        "colaborador": session.get("colaborador") if has_context else "Outro",
-        "categoria": session.get("categoria") if has_context else "outro",
-        "valor": session.get("valor") if has_context else None,
-        "data_despesa": date.today().isoformat(),
-        "caminho_arquivo": caminho_arquivo,
-        "whatsapp_message_id": whatsapp_message_id,
-        "observacao": (
-            "comprovante recebido pelo fluxo de RDV"
-            if has_context
-            else "arquivo recebido sem contexto de RDV"
-        ),
-    }
+    input_type = message_type if message_type in {"image", "document"} else "document"
+    input_type = {"image": "imagem", "document": "documento"}[input_type]
     try:
-        expense = rdv_service.register_whatsapp_expense(**data)
+        return rdv_service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=sender_phone,
+            input_type=input_type,
+            file_path=caminho_arquivo,
+            whatsapp_message_id=whatsapp_message_id,
+            received_at=received_at,
+        )
     except Exception:
         existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
         if existing is not None:
             return existing
         raise
 
-    if has_context:
-        with _rdv_sessions_lock:
-            _rdv_sessions.pop(sender_phone, None)
-    return expense
-
 
 def _rdv_received_message(expense: dict) -> str:
     return "\n".join(
         [
-            "Despesa recebida e salva para revisao.",
+            "Comprovante recebido.",
             f"RDV: #{expense.get('id', '-')}",
             f"Colaborador: {expense.get('colaborador') or '-'}",
-            f"Categoria: {expense.get('categoria') or '-'}",
-            f"Valor: {_format_brl_text(expense.get('valor'))}",
+            "Agora informe o valor da despesa. Exemplo: 125,50",
         ]
     )
 
 
-def _weekly_summary_message() -> str:
+def _weekly_summary_message(collaborator_id: int | str = "") -> str:
     week = calculate_week_reference(date.today())
-    summary = rdv_service.summarize(semana=week)
+    summary = rdv_service.weekly_report(
+        week=week,
+        collaborator_id=collaborator_id,
+    )
     return "\n".join(
         [
             f"Resumo da semana {week}",
-            f"Despesas: {summary['quantidade']}",
+            f"Lancamentos: {summary['quantidade_lancamentos']}",
+            f"Comprovantes: {summary['quantidade_comprovantes']}",
             f"Total: {_format_brl_text(summary['total_geral'])}",
         ]
     )
 
 
-def _collaborator_prompt(prefix: str = "") -> str:
-    return _numbered_prompt(prefix, "Quem e o colaborador?", RDV_COLLABORATORS)
-
-
 def _category_prompt(prefix: str = "") -> str:
-    return _numbered_prompt(prefix, "Qual e a categoria?", RDV_CATEGORIES)
-
-
-def _numbered_prompt(prefix: str, title: str, choices: tuple[str, ...]) -> str:
-    lines = [line for line in (prefix, title) if line]
-    lines.extend(f"{index}. {choice}" for index, choice in enumerate(choices, start=1))
+    lines = [line for line in (prefix, "Qual e a categoria?") if line]
+    lines.extend(
+        f"{index}. {_category_label(category)}"
+        for index, category in enumerate(RDV_CATEGORIES, start=1)
+    )
     return "\n".join(lines)
+
+
+def _category_label(category: str) -> str:
+    labels = {
+        "combustivel": "Combustivel",
+        "alimentacao": "Alimentacao",
+        "pedagio": "Pedagio",
+        "hospedagem": "Hospedagem",
+        "manutencao": "Manutencao",
+        "outro": "Outro",
+    }
+    return labels.get(str(category or ""), str(category or "").title())
 
 
 def _match_numbered_choice(value: str, choices: tuple[str, ...]) -> str | None:
@@ -547,11 +491,6 @@ def _parse_rdv_value(value: str) -> float | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
-
-
-def _set_rdv_session(sender_phone: str, session: dict) -> None:
-    with _rdv_sessions_lock:
-        _rdv_sessions[sender_phone] = dict(session)
 
 
 def _extract_messages(payload: dict) -> list[dict]:

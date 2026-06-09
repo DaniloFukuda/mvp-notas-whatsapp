@@ -1,5 +1,6 @@
 import csv
 import io
+import re
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime
@@ -10,16 +11,33 @@ DEFAULT_DB_PATH = Path("data/app.db")
 CATEGORIES = (
     "combustivel",
     "alimentacao",
-    "hotel",
     "pedagio",
+    "hospedagem",
     "manutencao",
     "outro",
 )
 COLLABORATORS = ("Marcelo", "Henrique", "Anderson", "Danilo", "Outro")
 REVIEW_STATUSES = ("pendente", "aprovado", "rejeitado")
+FLOW_STATUSES = (
+    "pendente",
+    "aguardando_valor",
+    "aguardando_categoria",
+    "completo",
+    "revisao",
+)
+INPUT_TYPES = ("texto", "imagem", "documento")
+DEMO_COLLABORATORS = (
+    ("Danilo", "5500000000001"),
+    ("Marcelo", "5500000000002"),
+    ("Henrique", "5500000000003"),
+    ("Anderson", "5500000000004"),
+)
 RDV_COLUMNS = (
     "id",
+    "colaborador_id",
     "colaborador",
+    "telefone_origem",
+    "tipo_entrada",
     "data_despesa",
     "semana_referencia",
     "categoria",
@@ -30,11 +48,14 @@ RDV_COLUMNS = (
     "km_inicio",
     "km_fim",
     "km_rodado",
+    "quilometragem",
     "observacao",
     "origem",
     "whatsapp_message_id",
     "caminho_arquivo",
+    "status_fluxo",
     "status_revisao",
+    "recebido_em",
     "created_at",
     "updated_at",
 )
@@ -49,9 +70,23 @@ class RDVService:
         with closing(self._connect()) as connection:
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS rdv_colaboradores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL UNIQUE,
+                    telefone_whatsapp TEXT NOT NULL UNIQUE,
+                    ativo INTEGER NOT NULL DEFAULT 1,
+                    criado_em TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS rdv_despesas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    colaborador_id INTEGER,
                     colaborador TEXT NOT NULL,
+                    telefone_origem TEXT,
+                    tipo_entrada TEXT NOT NULL DEFAULT 'texto',
                     data_despesa TEXT NOT NULL,
                     semana_referencia TEXT NOT NULL,
                     categoria TEXT NOT NULL,
@@ -62,16 +97,21 @@ class RDVService:
                     km_inicio REAL,
                     km_fim REAL,
                     km_rodado REAL,
+                    quilometragem REAL,
                     observacao TEXT,
                     origem TEXT NOT NULL DEFAULT 'web',
                     whatsapp_message_id TEXT,
                     caminho_arquivo TEXT,
+                    status_fluxo TEXT NOT NULL DEFAULT 'completo',
                     status_revisao TEXT NOT NULL DEFAULT 'pendente',
+                    recebido_em TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (colaborador_id) REFERENCES rdv_colaboradores (id)
                 )
                 """
             )
+            self._migrate_expense_columns(connection)
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_rdv_whatsapp_message_id
@@ -91,16 +131,190 @@ class RDVService:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rdv_fluxo_telefone
+                ON rdv_despesas (telefone_origem, status_fluxo, id)
+                """
+            )
+            self._seed_demo_collaborators(connection)
             connection.commit()
+
+    def list_collaborators(self, active_only: bool = True) -> list[dict]:
+        self.init_database()
+        where_clause = "WHERE ativo = 1" if active_only else ""
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, nome, telefone_whatsapp, ativo, criado_em
+                FROM rdv_colaboradores
+                {where_clause}
+                ORDER BY nome
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_collaborator(self, collaborator_id: int) -> dict | None:
+        self.init_database()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT id, nome, telefone_whatsapp, ativo, criado_em
+                FROM rdv_colaboradores
+                WHERE id = ?
+                """,
+                (int(collaborator_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_collaborator_by_phone(self, phone: str) -> dict | None:
+        self.init_database()
+        normalized_phone = normalize_phone(phone)
+        if not normalized_phone:
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT id, nome, telefone_whatsapp, ativo, criado_em
+                FROM rdv_colaboradores
+                WHERE telefone_whatsapp = ? AND ativo = 1
+                """,
+                (normalized_phone,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def save_collaborator(
+        self,
+        nome: str,
+        telefone_whatsapp: str,
+        ativo: bool = True,
+    ) -> dict:
+        self.init_database()
+        safe_name = _clean(nome)
+        safe_phone = normalize_phone(telefone_whatsapp)
+        if not safe_name:
+            raise ValueError("Nome do colaborador e obrigatorio.")
+        if not safe_phone:
+            raise ValueError("Telefone do colaborador e obrigatorio.")
+
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO rdv_colaboradores (
+                    nome, telefone_whatsapp, ativo, criado_em
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(nome) DO UPDATE SET
+                    telefone_whatsapp = excluded.telefone_whatsapp,
+                    ativo = excluded.ativo
+                """,
+                (safe_name, safe_phone, int(bool(ativo)), now),
+            )
+            connection.commit()
+            row = connection.execute(
+                """
+                SELECT id, nome, telefone_whatsapp, ativo, criado_em
+                FROM rdv_colaboradores
+                WHERE nome = ?
+                """,
+                (safe_name,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
 
     def register_manual_expense(self, **data) -> dict:
         data["origem"] = "web"
+        data.setdefault("tipo_entrada", "texto")
+        data.setdefault("status_fluxo", "completo")
         return self._register_expense(data)
 
     def register_whatsapp_expense(self, **data) -> dict:
         data["origem"] = "whatsapp"
         data.setdefault("status_revisao", "pendente")
         return self._register_expense(data)
+
+    def create_whatsapp_receipt(
+        self,
+        collaborator_id: int,
+        phone: str,
+        input_type: str,
+        file_path: str,
+        whatsapp_message_id: str,
+        received_at: str | datetime | None = None,
+        observation: str = "",
+    ) -> dict:
+        collaborator = self.get_collaborator(collaborator_id)
+        if collaborator is None or not collaborator["ativo"]:
+            raise ValueError("Colaborador inativo ou nao encontrado.")
+
+        safe_input_type = _validate_choice(input_type, INPUT_TYPES, "tipo de entrada")
+        return self.register_whatsapp_expense(
+            colaborador_id=collaborator["id"],
+            colaborador=collaborator["nome"],
+            telefone_origem=normalize_phone(phone),
+            tipo_entrada=safe_input_type,
+            data_despesa=_date_from_received_at(received_at).isoformat(),
+            categoria="outro",
+            valor=None,
+            caminho_arquivo=file_path,
+            whatsapp_message_id=whatsapp_message_id,
+            status_fluxo="aguardando_valor",
+            recebido_em=_normalize_datetime(received_at),
+            observacao=observation or "comprovante recebido pelo WhatsApp",
+        )
+
+    def get_open_launch_by_phone(self, phone: str) -> dict | None:
+        self.init_database()
+        normalized_phone = normalize_phone(phone)
+        if not normalized_phone:
+            return None
+        placeholders = ", ".join("?" for _ in ("aguardando_valor", "aguardando_categoria"))
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"""
+                SELECT {", ".join(RDV_COLUMNS)}
+                FROM rdv_despesas
+                WHERE telefone_origem = ?
+                  AND status_fluxo IN ({placeholders})
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_phone, "aguardando_valor", "aguardando_categoria"),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def save_launch_value(self, expense_id: int, value: object) -> dict:
+        parsed_value = _to_float(value)
+        if parsed_value is None or parsed_value < 0:
+            raise ValueError("Valor da despesa invalido.")
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_valor",
+            updates={
+                "valor": parsed_value,
+                "status_fluxo": "aguardando_categoria",
+            },
+        )
+
+    def complete_launch_category(self, expense_id: int, category: str) -> dict:
+        normalized_category = _normalize_category(category)
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_categoria",
+            updates={
+                "categoria": normalized_category,
+                "status_fluxo": "completo",
+                "status_revisao": "pendente",
+            },
+        )
+
+    def mark_launch_for_review(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            updates={
+                "status_fluxo": "revisao",
+                "status_revisao": "pendente",
+            },
+        )
 
     def list_expenses(
         self,
@@ -123,18 +337,27 @@ class RDVService:
                 clauses.append(f"{column} = ?")
                 values.append(normalized)
 
-        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT {", ".join(RDV_COLUMNS)}
-                FROM rdv_despesas
-                {where_clause}
-                ORDER BY data_despesa DESC, id DESC
-                """,
-                values,
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self._select_expenses(clauses, values)
+
+    def list_launches(
+        self,
+        collaborator_id: int | str = "",
+        status: str = "",
+        week: str = "",
+    ) -> list[dict]:
+        self.init_database()
+        clauses = []
+        values = []
+        if str(collaborator_id or "").strip():
+            clauses.append("colaborador_id = ?")
+            values.append(int(collaborator_id))
+        if str(status or "").strip():
+            clauses.append("status_fluxo = ?")
+            values.append(_validate_choice(status, FLOW_STATUSES, "status"))
+        if str(week or "").strip():
+            clauses.append("semana_referencia = ?")
+            values.append(str(week).strip())
+        return self._select_expenses(clauses, values)
 
     def get_expense(self, expense_id: int) -> dict | None:
         self.init_database()
@@ -172,10 +395,7 @@ class RDVService:
         return dict(row) if row is not None else None
 
     def update_review_status(self, expense_id: int, status: str) -> bool:
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status not in REVIEW_STATUSES:
-            raise ValueError("Status de revisao invalido.")
-
+        normalized_status = _validate_choice(status, REVIEW_STATUSES, "status de revisao")
         self.init_database()
         now = datetime.now().isoformat(timespec="seconds")
         with closing(self._connect()) as connection:
@@ -203,23 +423,45 @@ class RDVService:
             categoria=categoria,
             status=status,
         )
-        by_collaborator: dict[str, float] = {}
-        by_week: dict[str, float] = {}
-        by_category: dict[str, float] = {}
-        total = 0.0
-        for expense in expenses:
-            value = float(expense.get("valor") or 0)
-            total += value
-            _add_total(by_collaborator, expense.get("colaborador"), value)
-            _add_total(by_week, expense.get("semana_referencia"), value)
-            _add_total(by_category, expense.get("categoria"), value)
+        return _summarize_expenses(expenses)
 
+    def weekly_report(
+        self,
+        week: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        selected_week = str(week or "").strip() or calculate_week_reference(date.today())
+        expenses = self.list_launches(
+            collaborator_id=collaborator_id,
+            status=status,
+            week=selected_week,
+        )
+        summary = _summarize_expenses(expenses)
+        completed = [
+            expense
+            for expense in expenses
+            if expense.get("status_fluxo") in {"completo", "revisao"}
+        ]
         return {
-            "total_geral": total,
-            "quantidade": len(expenses),
-            "por_colaborador": by_collaborator,
-            "por_semana": by_week,
-            "por_categoria": by_category,
+            "semana": selected_week,
+            "total_geral": summary["total_geral"],
+            "por_colaborador": summary["por_colaborador"],
+            "por_categoria": summary["por_categoria"],
+            "quantidade_comprovantes": sum(
+                1 for expense in expenses if expense.get("caminho_arquivo")
+            ),
+            "quilometragem_total": sum(
+                float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
+                for expense in completed
+            ),
+            "quantidade_lancamentos": len(expenses),
+            "pendentes_revisao": sum(
+                1
+                for expense in expenses
+                if expense.get("status_fluxo") in {"completo", "revisao"}
+                and expense.get("status_revisao") == "pendente"
+            ),
         }
 
     def export_csv(
@@ -245,20 +487,30 @@ class RDVService:
     def _register_expense(self, data: dict) -> dict:
         self.init_database()
         data_despesa = _normalize_date(data.get("data_despesa"))
-        colaborador = _validate_choice(
-            data.get("colaborador") or "Outro",
-            COLLABORATORS,
-            "colaborador",
-        )
-        categoria = _validate_choice(
-            str(data.get("categoria") or "outro").lower(),
-            CATEGORIES,
-            "categoria",
+        collaborator = self._resolve_collaborator(data)
+        collaborator_name = (
+            collaborator["nome"]
+            if collaborator is not None
+            else _validate_choice(
+                data.get("colaborador") or "Outro",
+                COLLABORATORS,
+                "colaborador",
+            )
         )
         status = _validate_choice(
             str(data.get("status_revisao") or "pendente").lower(),
             REVIEW_STATUSES,
             "status de revisao",
+        )
+        flow_status = _validate_choice(
+            str(data.get("status_fluxo") or "completo").lower(),
+            FLOW_STATUSES,
+            "status do fluxo",
+        )
+        input_type = _validate_choice(
+            str(data.get("tipo_entrada") or "texto").lower(),
+            INPUT_TYPES,
+            "tipo de entrada",
         )
         km_inicio = _to_float(data.get("km_inicio"))
         km_fim = _to_float(data.get("km_fim"))
@@ -266,23 +518,30 @@ class RDVService:
             raise ValueError("km_fim nao pode ser menor que km_inicio.")
 
         now = datetime.now().isoformat(timespec="seconds")
+        km_rodado = calculate_distance(km_inicio, km_fim)
         record = {
-            "colaborador": colaborador,
+            "colaborador_id": collaborator["id"] if collaborator else None,
+            "colaborador": collaborator_name,
+            "telefone_origem": normalize_phone(data.get("telefone_origem")),
+            "tipo_entrada": input_type,
             "data_despesa": data_despesa,
             "semana_referencia": calculate_week_reference(data_despesa),
-            "categoria": categoria,
+            "categoria": _normalize_category(data.get("categoria") or "outro"),
             "valor": _to_float(data.get("valor")),
             "fornecedor": _clean(data.get("fornecedor")),
             "cidade_origem": _clean(data.get("cidade_origem")),
             "cidade_destino": _clean(data.get("cidade_destino")),
             "km_inicio": km_inicio,
             "km_fim": km_fim,
-            "km_rodado": calculate_distance(km_inicio, km_fim),
+            "km_rodado": km_rodado,
+            "quilometragem": _to_float(data.get("quilometragem")) or km_rodado,
             "observacao": _clean(data.get("observacao")),
             "origem": _clean(data.get("origem")) or "web",
             "whatsapp_message_id": _clean(data.get("whatsapp_message_id")),
             "caminho_arquivo": _clean(data.get("caminho_arquivo")),
+            "status_fluxo": flow_status,
             "status_revisao": status,
+            "recebido_em": _normalize_datetime(data.get("recebido_em")),
             "created_at": now,
             "updated_at": now,
         }
@@ -299,9 +558,122 @@ class RDVService:
             expense_id = cursor.lastrowid
         return self.get_expense(expense_id) or {}
 
+    def _resolve_collaborator(self, data: dict) -> dict | None:
+        collaborator_id = data.get("colaborador_id")
+        if collaborator_id not in (None, ""):
+            return self.get_collaborator(int(collaborator_id))
+
+        phone = normalize_phone(data.get("telefone_origem"))
+        if phone:
+            collaborator = self.get_collaborator_by_phone(phone)
+            if collaborator is not None:
+                return collaborator
+
+        name = _clean(data.get("colaborador"))
+        if not name or name == "Outro":
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT id, nome, telefone_whatsapp, ativo, criado_em
+                FROM rdv_colaboradores
+                WHERE lower(nome) = lower(?)
+                """,
+                (name,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _select_expenses(self, clauses: list[str], values: list) -> list[dict]:
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {", ".join(RDV_COLUMNS)}
+                FROM rdv_despesas
+                {where_clause}
+                ORDER BY recebido_em DESC, id DESC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _update_launch(
+        self,
+        expense_id: int,
+        updates: dict,
+        expected_status: str = "",
+    ) -> dict:
+        self.init_database()
+        allowed_columns = {
+            "valor",
+            "categoria",
+            "quilometragem",
+            "observacao",
+            "status_fluxo",
+            "status_revisao",
+        }
+        invalid_columns = set(updates) - allowed_columns
+        if invalid_columns:
+            raise ValueError("Campos de atualizacao invalidos.")
+
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        if expected_status and current.get("status_fluxo") != expected_status:
+            raise ValueError("Lancamento RDV fora da etapa esperada.")
+
+        safe_updates = dict(updates)
+        safe_updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        assignments = ", ".join(f"{column} = ?" for column in safe_updates)
+        with closing(self._connect()) as connection:
+            connection.execute(
+                f"UPDATE rdv_despesas SET {assignments} WHERE id = ?",
+                (*safe_updates.values(), int(expense_id)),
+            )
+            connection.commit()
+        return self.get_expense(expense_id) or {}
+
+    def _migrate_expense_columns(self, connection: sqlite3.Connection) -> None:
+        existing = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(rdv_despesas)").fetchall()
+        }
+        migrations = {
+            "colaborador_id": "INTEGER",
+            "telefone_origem": "TEXT",
+            "tipo_entrada": "TEXT NOT NULL DEFAULT 'texto'",
+            "quilometragem": "REAL",
+            "status_fluxo": "TEXT NOT NULL DEFAULT 'completo'",
+            "recebido_em": "TEXT",
+        }
+        for column, definition in migrations.items():
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE rdv_despesas ADD COLUMN {column} {definition}"
+                )
+        connection.execute(
+            """
+            UPDATE rdv_despesas
+            SET recebido_em = COALESCE(NULLIF(recebido_em, ''), created_at)
+            WHERE recebido_em IS NULL OR recebido_em = ''
+            """
+        )
+
+    def _seed_demo_collaborators(self, connection: sqlite3.Connection) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        connection.executemany(
+            """
+            INSERT OR IGNORE INTO rdv_colaboradores (
+                nome, telefone_whatsapp, ativo, criado_em
+            ) VALUES (?, ?, 1, ?)
+            """,
+            [(name, phone, now) for name, phone in DEMO_COLLABORATORS],
+        )
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
 
@@ -317,6 +689,10 @@ def calculate_distance(km_inicio: object, km_fim: object) -> float | None:
     if start is None or end is None:
         return None
     return end - start
+
+
+def normalize_phone(value: object) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
 
 
 def _normalize_date(value: object) -> str:
@@ -340,6 +716,42 @@ def _date_value(value: object) -> date:
     raise ValueError("Data da despesa invalida.")
 
 
+def _date_from_received_at(value: str | datetime | None) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value or "").strip()
+    if text:
+        for date_format in ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text, date_format).date()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    return date.today()
+
+
+def _normalize_datetime(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    text = str(value or "").strip()
+    if text:
+        for date_format in ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text, date_format).isoformat(timespec="seconds")
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat(
+                timespec="seconds"
+            )
+        except ValueError:
+            pass
+    return datetime.now().isoformat(timespec="seconds")
+
+
 def _to_float(value: object) -> float | None:
     if value in (None, ""):
         return None
@@ -352,6 +764,13 @@ def _to_float(value: object) -> float | None:
         raise ValueError(f"Valor numerico invalido: {value}") from exc
 
 
+def _normalize_category(value: object) -> str:
+    normalized = _clean(value).lower()
+    if normalized == "hotel":
+        normalized = "hospedagem"
+    return _validate_choice(normalized, CATEGORIES, "categoria")
+
+
 def _validate_choice(value: object, choices: tuple[str, ...], field: str) -> str:
     normalized = str(value or "").strip()
     matches = {choice.lower(): choice for choice in choices}
@@ -362,6 +781,26 @@ def _validate_choice(value: object, choices: tuple[str, ...], field: str) -> str
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def _summarize_expenses(expenses: list[dict]) -> dict:
+    by_collaborator: dict[str, float] = {}
+    by_week: dict[str, float] = {}
+    by_category: dict[str, float] = {}
+    total = 0.0
+    for expense in expenses:
+        value = float(expense.get("valor") or 0)
+        total += value
+        _add_total(by_collaborator, expense.get("colaborador"), value)
+        _add_total(by_week, expense.get("semana_referencia"), value)
+        _add_total(by_category, expense.get("categoria"), value)
+    return {
+        "total_geral": total,
+        "quantidade": len(expenses),
+        "por_colaborador": by_collaborator,
+        "por_semana": by_week,
+        "por_categoria": by_category,
+    }
 
 
 def _add_total(totals: dict[str, float], key: object, value: float) -> None:
