@@ -40,16 +40,25 @@ def main() -> None:
                 whatsapp_message_id="wamid.excel.complete",
                 received_at="2026-06-09T08:30:00",
                 observation="visita tecnica",
+                analysis={
+                    "valor_detectado": 215.40,
+                    "data_detectada": "2026-06-09",
+                    "fornecedor_detectado": "POSTO FICTICIO LTDA",
+                    "chave_acesso": "1" * 44,
+                    "origem_valor": "ocr",
+                },
             )
-            service.save_launch_value(first["id"], "215,40")
             first = service.complete_launch_category(first["id"], "combustivel")
-            service.update_review_status(first["id"], "aprovado")
+            assert first["status_revisao"] == "aprovado"
+            assert first["falha_leitura"] == 0
 
             manual = service.register_manual_expense(
                 colaborador="Danilo",
                 data_despesa="2026-06-11",
                 categoria="manutencao",
                 valor="50,00",
+                cidade_origem="Ribeirao Preto",
+                cidade_destino="Sertaozinho",
                 km_inicio="1000",
                 km_fim="1120",
                 observacao="deslocamento de teste",
@@ -106,7 +115,15 @@ def main() -> None:
                 "Telefone",
                 "Categoria",
                 "Valor",
-                "Quilometragem",
+                "Fornecedor detectado",
+                "Data detectada",
+                "Origem do valor",
+                "Chave de acesso / QR Code / URL",
+                "Cidade origem",
+                "Cidade destino",
+                "KM inicial",
+                "KM final",
+                "KM rodado",
                 "Status",
                 "Observacao",
                 "Tipo de entrada",
@@ -118,12 +135,30 @@ def main() -> None:
             assert launches.auto_filter.ref == launches.dimensions
             assert launches["E2"].number_format == 'R$ #,##0.00'
             assert launches["A2"].number_format == "dd/mm/yyyy"
-            assert launches["K2"].number_format == "dd/mm/yyyy hh:mm"
-            assert {launches["J2"].value, launches["J3"].value, launches["J4"].value} == {
+            assert launches["S2"].number_format == "dd/mm/yyyy hh:mm"
+            assert {launches["R2"].value, launches["R3"].value, launches["R4"].value} == {
                 "demo_combustivel.jpg",
                 "demo_hotel.pdf",
                 None,
             }
+            detected_row = next(
+                row
+                for row in range(2, launches.max_row + 1)
+                if launches.cell(row, 18).value == "demo_combustivel.jpg"
+            )
+            assert launches.cell(detected_row, 6).value == "POSTO FICTICIO LTDA"
+            assert launches.cell(detected_row, 7).number_format == "dd/mm/yyyy"
+            assert launches.cell(detected_row, 8).value == "Ocr"
+            assert launches.cell(detected_row, 9).value == "1" * 44
+            km_row = next(
+                row
+                for row in range(2, launches.max_row + 1)
+                if launches.cell(row, 10).value == "Ribeirao Preto"
+            )
+            assert launches.cell(km_row, 11).value == "Sertaozinho"
+            assert launches.cell(km_row, 12).value == 1000
+            assert launches.cell(km_row, 13).value == 1120
+            assert launches.cell(km_row, 14).value == 120
 
             collaborators = workbook["Resumo por Colaborador"]
             assert _headers(collaborators) == (
@@ -152,6 +187,11 @@ def main() -> None:
             pending = workbook["Pendencias"]
             assert pending.max_row == 2
             assert pending["B2"].value == "Marcelo"
+            assert pending["R2"].value == "demo_hotel.pdf"
+            assert all(
+                cell.value != "demo_combustivel.jpg"
+                for cell in pending["R"][1:]
+            )
             assert pending.freeze_panes == "A2"
             assert pending.auto_filter.ref == pending.dimensions
 

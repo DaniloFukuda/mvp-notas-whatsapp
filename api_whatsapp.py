@@ -20,6 +20,8 @@ from services.rdv_service import (
     RDVService,
     calculate_week_reference,
 )
+from services.rdv_excel_service import build_weekly_rdv_workbook
+from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 
 
 try:
@@ -36,17 +38,32 @@ logger.setLevel(logging.INFO)
 router = APIRouter()
 WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
+RDV_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
+RDV_EXCEL_MIME_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+RDV_EXCEL_COMMANDS = {
+    "planilha",
+    "excel",
+    "relatorio",
+    "relatorio semanal",
+    "rdv",
+}
+RDV_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 RDV_MENU = "\n".join(
     [
         "Ciclus Agro - RDV por WhatsApp",
         "",
         "Envie uma foto ou documento do comprovante para iniciar.",
-        "Depois vou pedir o valor e a categoria da despesa.",
+        "Depois vou pedir apenas os dados que nao forem detectados.",
         "",
         "Digite resumo para consultar a semana atual.",
+        "Digite planilha para receber o relatorio semanal em Excel.",
+        "Digite km para registrar inicio/fim de viagem.",
     ]
 )
 rdv_service = RDVService()
+rdv_receipt_analysis_service = RDVReceiptAnalysisService()
 
 
 @router.get("/webhook/whatsapp")
@@ -196,6 +213,92 @@ def send_whatsapp_text(to: str, message: str) -> None:
     )
 
 
+def upload_whatsapp_document(
+    content: bytes,
+    filename: str = RDV_EXCEL_FILENAME,
+    mime_type: str = RDV_EXCEL_MIME_TYPE,
+) -> str:
+    if not content:
+        raise RuntimeError("Conteudo do documento WhatsApp nao informado.")
+
+    requests = _requests_module()
+    token = _whatsapp_access_token()
+    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
+    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/media",
+        headers={"Authorization": f"Bearer {token}"},
+        data={
+            "messaging_product": "whatsapp",
+            "type": mime_type,
+        },
+        files={"file": (filename, content, mime_type)},
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        logger.error(
+            "Erro da Meta no upload do Excel RDV: status_code=%s body=%s",
+            response.status_code,
+            _safe_response_body(response),
+        )
+        response.raise_for_status()
+
+    media_id = str(response.json().get("id") or "").strip()
+    if not media_id:
+        raise RuntimeError("ID da midia nao retornado no upload do Excel RDV.")
+    return media_id
+
+
+def send_whatsapp_document(
+    to: str,
+    content: bytes,
+    filename: str = RDV_EXCEL_FILENAME,
+    caption: str = RDV_EXCEL_CAPTION,
+    mime_type: str = RDV_EXCEL_MIME_TYPE,
+) -> None:
+    recipient = str(to or "").strip()
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
+
+    media_id = upload_whatsapp_document(content, filename, mime_type)
+    requests = _requests_module()
+    token = _whatsapp_access_token()
+    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
+    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "messaging_product": "whatsapp",
+            "to": recipient,
+            "type": "document",
+            "document": {
+                "id": media_id,
+                "caption": caption,
+                "filename": filename,
+            },
+        },
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        logger.error(
+            "Erro da Meta ao enviar Excel RDV: status_code=%s to=%s body=%s",
+            response.status_code,
+            _mask_phone(recipient),
+            _safe_response_body(response),
+        )
+        response.raise_for_status()
+
+    logger.info(
+        "Excel RDV enviado pelo WhatsApp: status_code=%s to=%s",
+        response.status_code,
+        _mask_phone(recipient),
+    )
+
+
 def _handle_whatsapp_message(message: dict) -> None:
     # A Meta envia o wa_id normalizado no campo "from"; no sandbox, o numero permitido
     # pode ser diferente e deve ser definido em WHATSAPP_TEST_RECIPIENT_PHONE.
@@ -240,6 +343,20 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     if message_type == "text":
+        if (
+            _is_rdv_excel_command(text)
+            and rdv_service.get_open_launch_by_phone(sender_phone) is None
+        ):
+            try:
+                _send_weekly_rdv_excel(sender_phone)
+            except Exception as exc:
+                logger.exception(
+                    "Falha ao enviar Excel RDV pelo WhatsApp: to=%s erro=%s",
+                    _mask_phone(sender_phone),
+                    _safe_exception_summary(exc),
+                )
+                _safe_send_text(sender_phone, _rdv_excel_fallback_message())
+            return
         reply = handle_rdv_text_message(sender_phone, text)
         _safe_send_text(sender_phone, reply or _text_message_reply())
         return
@@ -348,7 +465,15 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     normalized = _normalize_caption(text)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
     if pending is None:
+        if normalized in {"km", "quilometragem"}:
+            rdv_service.create_whatsapp_km_launch(
+                collaborator_id=collaborator["id"],
+                phone=sender_phone,
+            )
+            return "Saindo de onde?"
         if normalized in {"resumo", "3"}:
+            return _weekly_summary_message()
+        if normalized in {"meu resumo", "meuresumo", "individual"}:
             return _weekly_summary_message(collaborator["id"])
         if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
             return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
@@ -359,8 +484,10 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         value = _parse_rdv_value(text)
         if value is None:
             return "Valor invalido. Informe somente o valor, por exemplo: 125,50"
-        rdv_service.save_launch_value(pending["id"], value)
-        return _category_prompt()
+        saved = rdv_service.save_launch_value(pending["id"], value)
+        return _category_prompt(
+            f"Valor registrado manualmente: {_format_brl_text(saved['valor'])}."
+        )
 
     if state == "aguardando_categoria":
         category = _match_numbered_choice(text, RDV_CATEGORIES)
@@ -370,14 +497,64 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             pending["id"],
             category,
         )
+        lines = [
+            "RDV registrado com sucesso.",
+            f"Lancamento #{completed['id']}.",
+            f"Valor: {_format_brl_text(completed['valor'])}.",
+            f"Categoria: {_category_label(completed['categoria'])}.",
+            "Status: completo.",
+        ]
+        if completed.get("origem_valor") == "manual":
+            lines.append("Valor informado manualmente.")
+        lines.append("Para receber a planilha semanal, envie: planilha.")
+        return " ".join(lines)
+
+    if state == "aguardando_km_origem":
+        if not str(text or "").strip():
+            return "Informe a origem da viagem. Saindo de onde?"
+        rdv_service.save_km_origin(pending["id"], text)
+        return "Indo para onde?"
+
+    if state == "aguardando_km_destino":
+        if not str(text or "").strip():
+            return "Informe o destino da viagem. Indo para onde?"
+        rdv_service.save_km_destination(pending["id"], text)
+        return "Qual a quilometragem inicial do carro?"
+
+    if state == "aguardando_km_inicio":
+        km_start = _parse_km_value(text)
+        if km_start is None:
+            return (
+                "Quilometragem inicial invalida. "
+                "Informe um numero, por exemplo: 120350."
+            )
+        rdv_service.save_km_start(pending["id"], km_start)
+        return "Qual a quilometragem final do carro?"
+
+    if state == "aguardando_km_fim":
+        km_end = _parse_km_value(text)
+        if km_end is None:
+            return (
+                "Quilometragem final invalida. "
+                "Informe um numero, por exemplo: 120500."
+            )
+        km_start = float(pending.get("km_inicio") or 0)
+        if km_end < km_start:
+            return (
+                "A quilometragem final nao pode ser menor que a inicial. "
+                "Informe novamente a quilometragem final do carro."
+            )
+        completed = rdv_service.complete_km_end(pending["id"], km_end)
         return "\n".join(
             [
-                "RDV registrado com sucesso.",
-                f"Lancamento: #{completed['id']}",
-                f"Colaborador: {completed['colaborador']}",
-                f"Valor: {_format_brl_text(completed['valor'])}",
-                f"Categoria: {_category_label(completed['categoria'])}",
-                "Status: completo e pendente de revisao.",
+                "Quilometragem registrada com sucesso.",
+                (
+                    f"Trajeto: {completed['cidade_origem']} "
+                    f"\u2192 {completed['cidade_destino']}"
+                ),
+                f"KM inicial: {_format_km_text(completed['km_inicio'])}",
+                f"KM final: {_format_km_text(completed['km_fim'])}",
+                f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
             ]
         )
 
@@ -386,6 +563,38 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
 
 def clear_rdv_sessions() -> None:
     """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
+
+
+def _is_rdv_excel_command(text: str) -> bool:
+    return _normalize_caption(text) in RDV_EXCEL_COMMANDS
+
+
+def _send_weekly_rdv_excel(sender_phone: str) -> None:
+    report_data = rdv_service.weekly_report_data(
+        week=calculate_week_reference(date.today()),
+    )
+    content = build_weekly_rdv_workbook(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_EXCEL_FILENAME,
+        caption=RDV_EXCEL_CAPTION,
+        mime_type=RDV_EXCEL_MIME_TYPE,
+    )
+
+
+def _rdv_excel_fallback_message() -> str:
+    public_url = _base_public_url()
+    if public_url:
+        download_url = f"{public_url}/ciclus/rdv/relatorio-semanal.xlsx"
+        return (
+            "Nao consegui enviar o arquivo agora. "
+            f"Voce pode baixar pelo painel: {download_url}"
+        )
+    return (
+        "Nao consegui enviar o arquivo agora. "
+        "Tente novamente mais tarde ou baixe pelo painel."
+    )
 
 
 def _register_received_media_as_rdv(
@@ -406,6 +615,25 @@ def _register_received_media_as_rdv(
     input_type = message_type if message_type in {"image", "document"} else "document"
     input_type = {"image": "imagem", "document": "documento"}[input_type]
     try:
+        analysis = rdv_receipt_analysis_service.analyze_file(caminho_arquivo).to_dict()
+    except Exception:
+        logger.exception(
+            "Falha controlada ao analisar comprovante RDV: message_id=%s",
+            _mask_message_id(whatsapp_message_id),
+        )
+        analysis = {}
+    pending = rdv_service.get_open_launch_by_phone(sender_phone)
+    if pending is not None and pending.get("status_fluxo") == "aguardando_valor":
+        retried = rdv_service.retry_whatsapp_receipt(
+            expense_id=pending["id"],
+            input_type=input_type,
+            file_path=caminho_arquivo,
+            whatsapp_message_id=whatsapp_message_id,
+            analysis=analysis,
+        )
+        retried["_retry_attempt"] = True
+        return retried
+    try:
         return rdv_service.create_whatsapp_receipt(
             collaborator_id=collaborator["id"],
             phone=sender_phone,
@@ -413,6 +641,7 @@ def _register_received_media_as_rdv(
             file_path=caminho_arquivo,
             whatsapp_message_id=whatsapp_message_id,
             received_at=received_at,
+            analysis=analysis,
         )
     except Exception:
         existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
@@ -422,13 +651,24 @@ def _register_received_media_as_rdv(
 
 
 def _rdv_received_message(expense: dict) -> str:
-    return "\n".join(
-        [
-            "Comprovante recebido.",
-            f"RDV: #{expense.get('id', '-')}",
-            f"Colaborador: {expense.get('colaborador') or '-'}",
-            "Agora informe o valor da despesa. Exemplo: 125,50",
-        ]
+    if expense.get("status_fluxo") == "aguardando_categoria":
+        return "\n".join(
+            [
+                "Comprovante recebido. "
+                f"Detectei o valor {_format_brl_text(expense.get('valor'))}.",
+                _category_prompt(),
+            ]
+        )
+    if expense.get("_retry_attempt"):
+        return (
+            "Ainda não consegui detectar o valor. "
+            "Envie outra foto mais nítida, com o comprovante inteiro e o QR Code "
+            "visível, ou informe o valor manualmente. Exemplo: 64,00"
+        )
+    return (
+        "Comprovante recebido, mas não consegui detectar o valor automaticamente. "
+        "Você pode enviar uma nova foto mais nítida, com o comprovante inteiro e "
+        "o QR Code visível, ou informar o valor manualmente. Exemplo: 64,00"
     )
 
 
@@ -438,18 +678,43 @@ def _weekly_summary_message(collaborator_id: int | str = "") -> str:
         week=week,
         collaborator_id=collaborator_id,
     )
-    return "\n".join(
-        [
-            f"Resumo da semana {week}",
-            f"Lancamentos: {summary['quantidade_lancamentos']}",
-            f"Comprovantes: {summary['quantidade_comprovantes']}",
-            f"Total: {_format_brl_text(summary['total_geral'])}",
-        ]
+
+    title = (
+        f"Meu resumo da semana {week}"
+        if collaborator_id
+        else f"Resumo geral da semana {week}"
     )
+
+    lines = [
+        title,
+        f"Lancamentos: {summary['quantidade_lancamentos']}",
+        f"Comprovantes: {summary['quantidade_comprovantes']}",
+        f"Total: {_format_brl_text(summary['total_geral'])}",
+        f"KM rodado: {_format_km_text(summary.get('quilometragem_total'))} km",
+        f"Pendentes: {summary.get('pendentes_revisao', 0)}",
+    ]
+
+    by_collaborator = summary.get("por_colaborador") or {}
+    if by_collaborator:
+        lines.append("")
+        lines.append("Por colaborador:")
+        for name, total in sorted(by_collaborator.items()):
+            lines.append(f"- {name}: {_format_brl_text(total)}")
+
+    by_category = summary.get("por_categoria") or {}
+    if by_category:
+        lines.append("")
+        lines.append("Por categoria:")
+        for category, total in sorted(by_category.items()):
+            lines.append(f"- {_category_label(category)}: {_format_brl_text(total)}")
+
+    return "\n".join(lines)
 
 
 def _category_prompt(prefix: str = "") -> str:
-    lines = [line for line in (prefix, "Qual e a categoria?") if line]
+    lines = [
+        f"{prefix} Qual a categoria?" if prefix else "Qual a categoria?"
+    ]
     lines.extend(
         f"{index}. {_category_label(category)}"
         for index, category in enumerate(RDV_CATEGORIES, start=1)
@@ -486,6 +751,38 @@ def _parse_rdv_value(value: str) -> float | None:
     normalized = str(value or "").strip().lower().replace("r$", "").replace(" ", "")
     if "," in normalized:
         normalized = normalized.replace(".", "").replace(",", ".")
+    try:
+        parsed = float(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _parse_km_value(value: str) -> float | None:
+    match = re.search(r"[-+]?\d[\d.,]*", str(value or "").strip())
+    if match is None:
+        return None
+
+    normalized = match.group(0)
+    if normalized.startswith("-"):
+        return None
+    normalized = normalized.lstrip("+")
+    if not normalized:
+        return None
+
+    if "." in normalized and "," in normalized:
+        decimal_separator = "." if normalized.rfind(".") > normalized.rfind(",") else ","
+        thousands_separator = "," if decimal_separator == "." else "."
+        normalized = normalized.replace(thousands_separator, "")
+        normalized = normalized.replace(decimal_separator, ".")
+    elif "." in normalized or "," in normalized:
+        separator = "." if "." in normalized else ","
+        parts = normalized.split(separator)
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
+            normalized = "".join(parts)
+        else:
+            normalized = ".".join(parts)
+
     try:
         parsed = float(normalized)
     except ValueError:
@@ -799,6 +1096,16 @@ def _format_brl_text(value: object) -> str:
 
     formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {formatted}"
+
+
+def _format_km_text(value: object) -> str:
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError):
+        return str(value or 0)
+    if parsed.is_integer():
+        return str(int(parsed))
+    return f"{parsed:.2f}".rstrip("0").rstrip(".").replace(".", ",")
 
 
 def _register_processing_error(

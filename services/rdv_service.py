@@ -22,8 +22,20 @@ FLOW_STATUSES = (
     "pendente",
     "aguardando_valor",
     "aguardando_categoria",
+    "aguardando_km_origem",
+    "aguardando_km_destino",
+    "aguardando_km_inicio",
+    "aguardando_km_fim",
     "completo",
     "revisao",
+)
+OPEN_FLOW_STATUSES = (
+    "aguardando_valor",
+    "aguardando_categoria",
+    "aguardando_km_origem",
+    "aguardando_km_destino",
+    "aguardando_km_inicio",
+    "aguardando_km_fim",
 )
 INPUT_TYPES = ("texto", "imagem", "documento")
 DEMO_COLLABORATORS = (
@@ -43,6 +55,15 @@ RDV_COLUMNS = (
     "categoria",
     "valor",
     "fornecedor",
+    "qr_code_text",
+    "qr_code_url",
+    "chave_acesso",
+    "valor_detectado",
+    "data_detectada",
+    "fornecedor_detectado",
+    "origem_valor",
+    "falha_leitura",
+    "motivo_revisao",
     "cidade_origem",
     "cidade_destino",
     "km_inicio",
@@ -92,6 +113,15 @@ class RDVService:
                     categoria TEXT NOT NULL,
                     valor REAL,
                     fornecedor TEXT,
+                    qr_code_text TEXT,
+                    qr_code_url TEXT,
+                    chave_acesso TEXT,
+                    valor_detectado REAL,
+                    data_detectada TEXT,
+                    fornecedor_detectado TEXT,
+                    origem_valor TEXT,
+                    falha_leitura INTEGER NOT NULL DEFAULT 0,
+                    motivo_revisao TEXT,
                     cidade_origem TEXT,
                     cidade_destino TEXT,
                     km_inicio REAL,
@@ -112,6 +142,21 @@ class RDVService:
                 """
             )
             self._migrate_expense_columns(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rdv_tentativas_comprovante (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rdv_despesa_id INTEGER NOT NULL,
+                    whatsapp_message_id TEXT NOT NULL UNIQUE,
+                    caminho_arquivo TEXT,
+                    valor_detectado REAL,
+                    origem_valor TEXT,
+                    sucesso_leitura INTEGER NOT NULL DEFAULT 0,
+                    criado_em TEXT NOT NULL,
+                    FOREIGN KEY (rdv_despesa_id) REFERENCES rdv_despesas (id)
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_rdv_whatsapp_message_id
@@ -241,12 +286,19 @@ class RDVService:
         whatsapp_message_id: str,
         received_at: str | datetime | None = None,
         observation: str = "",
+        analysis: dict | None = None,
     ) -> dict:
         collaborator = self.get_collaborator(collaborator_id)
         if collaborator is None or not collaborator["ativo"]:
             raise ValueError("Colaborador inativo ou nao encontrado.")
 
         safe_input_type = _validate_choice(input_type, INPUT_TYPES, "tipo de entrada")
+        analysis = analysis or {}
+        detected_value = _to_float(analysis.get("valor_detectado"))
+        automatic_read_ok = (
+            detected_value is not None
+            and _clean(analysis.get("origem_valor")) in {"qr_code", "ocr"}
+        )
         return self.register_whatsapp_expense(
             colaborador_id=collaborator["id"],
             colaborador=collaborator["nome"],
@@ -254,10 +306,28 @@ class RDVService:
             tipo_entrada=safe_input_type,
             data_despesa=_date_from_received_at(received_at).isoformat(),
             categoria="outro",
-            valor=None,
+            valor=detected_value,
+            fornecedor=_clean(analysis.get("fornecedor_detectado")),
+            qr_code_text=_clean(analysis.get("qr_code_text")),
+            qr_code_url=_clean(analysis.get("qr_code_url")),
+            chave_acesso=_clean(analysis.get("chave_acesso")),
+            valor_detectado=detected_value,
+            data_detectada=_clean(analysis.get("data_detectada")),
+            fornecedor_detectado=_clean(analysis.get("fornecedor_detectado")),
+            origem_valor=_clean(analysis.get("origem_valor")),
+            falha_leitura=0 if automatic_read_ok else 1,
+            motivo_revisao=(
+                ""
+                if automatic_read_ok
+                else _analysis_failure_reason(analysis.get("reasons"))
+            ),
             caminho_arquivo=file_path,
             whatsapp_message_id=whatsapp_message_id,
-            status_fluxo="aguardando_valor",
+            status_fluxo=(
+                "aguardando_categoria"
+                if detected_value is not None
+                else "aguardando_valor"
+            ),
             recebido_em=_normalize_datetime(received_at),
             observacao=observation or "comprovante recebido pelo WhatsApp",
         )
@@ -267,7 +337,7 @@ class RDVService:
         normalized_phone = normalize_phone(phone)
         if not normalized_phone:
             return None
-        placeholders = ", ".join("?" for _ in ("aguardando_valor", "aguardando_categoria"))
+        placeholders = ", ".join("?" for _ in OPEN_FLOW_STATUSES)
         with closing(self._connect()) as connection:
             row = connection.execute(
                 f"""
@@ -278,9 +348,104 @@ class RDVService:
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (normalized_phone, "aguardando_valor", "aguardando_categoria"),
+                (normalized_phone, *OPEN_FLOW_STATUSES),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def create_whatsapp_km_launch(
+        self,
+        collaborator_id: int,
+        phone: str,
+        received_at: str | datetime | None = None,
+    ) -> dict:
+        collaborator = self.get_collaborator(collaborator_id)
+        if collaborator is None or not collaborator["ativo"]:
+            raise ValueError("Colaborador inativo ou nao encontrado.")
+        if self.get_open_launch_by_phone(phone) is not None:
+            raise ValueError("Ja existe um lancamento RDV em andamento.")
+
+        return self.register_whatsapp_expense(
+            colaborador_id=collaborator["id"],
+            colaborador=collaborator["nome"],
+            telefone_origem=normalize_phone(phone),
+            tipo_entrada="texto",
+            data_despesa=_date_from_received_at(received_at).isoformat(),
+            categoria="outro",
+            valor=None,
+            observacao="quilometragem registrada pelo WhatsApp",
+            status_fluxo="aguardando_km_origem",
+            status_revisao="pendente",
+            recebido_em=_normalize_datetime(received_at),
+        )
+
+    def save_km_origin(self, expense_id: int, origin: str) -> dict:
+        safe_origin = _clean(origin)
+        if not safe_origin:
+            raise ValueError("Cidade de origem e obrigatoria.")
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_km_origem",
+            updates={
+                "cidade_origem": safe_origin,
+                "status_fluxo": "aguardando_km_destino",
+            },
+        )
+
+    def save_km_destination(self, expense_id: int, destination: str) -> dict:
+        safe_destination = _clean(destination)
+        if not safe_destination:
+            raise ValueError("Cidade de destino e obrigatoria.")
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_km_destino",
+            updates={
+                "cidade_destino": safe_destination,
+                "status_fluxo": "aguardando_km_inicio",
+            },
+        )
+
+    def save_km_start(self, expense_id: int, km_start: object) -> dict:
+        parsed_start = _to_float(km_start)
+        if parsed_start is None or parsed_start < 0:
+            raise ValueError("Quilometragem inicial invalida.")
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_km_inicio",
+            updates={
+                "km_inicio": parsed_start,
+                "status_fluxo": "aguardando_km_fim",
+            },
+        )
+
+    def complete_km_end(self, expense_id: int, km_end: object) -> dict:
+        parsed_end = _to_float(km_end)
+        if parsed_end is None or parsed_end < 0:
+            raise ValueError("Quilometragem final invalida.")
+
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        if current.get("status_fluxo") != "aguardando_km_fim":
+            raise ValueError("Lancamento RDV fora da etapa esperada.")
+
+        parsed_start = _to_float(current.get("km_inicio"))
+        if parsed_start is None:
+            raise ValueError("Quilometragem inicial nao informada.")
+        if parsed_end < parsed_start:
+            raise ValueError("km_fim nao pode ser menor que km_inicio.")
+
+        distance = parsed_end - parsed_start
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_km_fim",
+            updates={
+                "km_fim": parsed_end,
+                "km_rodado": distance,
+                "quilometragem": distance,
+                "status_fluxo": "completo",
+                "status_revisao": "pendente",
+            },
+        )
 
     def save_launch_value(self, expense_id: int, value: object) -> dict:
         parsed_value = _to_float(value)
@@ -291,19 +456,128 @@ class RDVService:
             expected_status="aguardando_valor",
             updates={
                 "valor": parsed_value,
+                "origem_valor": "manual",
+                "falha_leitura": 1,
+                "motivo_revisao": (
+                    "valor informado manualmente após falha de leitura"
+                ),
                 "status_fluxo": "aguardando_categoria",
             },
         )
 
+    def retry_whatsapp_receipt(
+        self,
+        expense_id: int,
+        input_type: str,
+        file_path: str,
+        whatsapp_message_id: str,
+        analysis: dict | None = None,
+    ) -> dict:
+        self.init_database()
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        if current.get("status_fluxo") != "aguardando_valor":
+            raise ValueError("Lancamento RDV fora da etapa esperada.")
+
+        safe_message_id = _clean(whatsapp_message_id)
+        if not safe_message_id:
+            raise ValueError("ID da mensagem WhatsApp e obrigatorio.")
+        safe_input_type = _validate_choice(input_type, INPUT_TYPES, "tipo de entrada")
+        analysis = analysis or {}
+        detected_value = _to_float(analysis.get("valor_detectado"))
+        automatic_read_ok = (
+            detected_value is not None
+            and _clean(analysis.get("origem_valor")) in {"qr_code", "ocr"}
+        )
+        updates = {
+            "tipo_entrada": safe_input_type,
+            "caminho_arquivo": _clean(file_path),
+            "qr_code_text": _clean(analysis.get("qr_code_text")),
+            "qr_code_url": _clean(analysis.get("qr_code_url")),
+            "chave_acesso": _clean(analysis.get("chave_acesso")),
+            "data_detectada": _clean(analysis.get("data_detectada")),
+            "fornecedor_detectado": _clean(analysis.get("fornecedor_detectado")),
+            "fornecedor": _clean(analysis.get("fornecedor_detectado")),
+            "falha_leitura": 0 if automatic_read_ok else 1,
+            "motivo_revisao": (
+                ""
+                if automatic_read_ok
+                else _analysis_failure_reason(analysis.get("reasons"))
+            ),
+        }
+        if automatic_read_ok:
+            updates.update(
+                {
+                    "valor": detected_value,
+                    "valor_detectado": detected_value,
+                    "origem_valor": _clean(analysis.get("origem_valor")),
+                    "status_fluxo": "aguardando_categoria",
+                }
+            )
+
+        now = datetime.now().isoformat(timespec="seconds")
+        safe_updates = dict(updates)
+        safe_updates["updated_at"] = now
+        assignments = ", ".join(f"{column} = ?" for column in safe_updates)
+        with closing(self._connect()) as connection:
+            existing = connection.execute(
+                """
+                SELECT rdv_despesa_id
+                FROM rdv_tentativas_comprovante
+                WHERE whatsapp_message_id = ?
+                """,
+                (safe_message_id,),
+            ).fetchone()
+            if existing is not None:
+                return self.get_expense(existing["rdv_despesa_id"]) or {}
+
+            connection.execute(
+                f"UPDATE rdv_despesas SET {assignments} WHERE id = ?",
+                (*safe_updates.values(), int(expense_id)),
+            )
+            connection.execute(
+                """
+                INSERT INTO rdv_tentativas_comprovante (
+                    rdv_despesa_id,
+                    whatsapp_message_id,
+                    caminho_arquivo,
+                    valor_detectado,
+                    origem_valor,
+                    sucesso_leitura,
+                    criado_em
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(expense_id),
+                    safe_message_id,
+                    _clean(file_path),
+                    detected_value,
+                    _clean(analysis.get("origem_valor")),
+                    int(automatic_read_ok),
+                    now,
+                ),
+            )
+            connection.commit()
+        return self.get_expense(expense_id) or {}
+
     def complete_launch_category(self, expense_id: int, category: str) -> dict:
         normalized_category = _normalize_category(category)
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        automatic_read_ok = (
+            current.get("origem_valor") in {"qr_code", "ocr"}
+            and current.get("valor_detectado") is not None
+            and not bool(current.get("falha_leitura"))
+        )
         return self._update_launch(
             expense_id,
             expected_status="aguardando_categoria",
             updates={
                 "categoria": normalized_category,
                 "status_fluxo": "completo",
-                "status_revisao": "pendente",
+                "status_revisao": "aprovado" if automatic_read_ok else "pendente",
             },
         )
 
@@ -392,6 +666,16 @@ class RDVService:
                 """,
                 (safe_message_id,),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    f"""
+                    SELECT {", ".join(f"d.{column}" for column in RDV_COLUMNS)}
+                    FROM rdv_tentativas_comprovante AS t
+                    JOIN rdv_despesas AS d ON d.id = t.rdv_despesa_id
+                    WHERE t.whatsapp_message_id = ?
+                    """,
+                    (safe_message_id,),
+                ).fetchone()
         return dict(row) if row is not None else None
 
     def update_review_status(self, expense_id: int, status: str) -> bool:
@@ -590,6 +874,15 @@ class RDVService:
             "categoria": _normalize_category(data.get("categoria") or "outro"),
             "valor": _to_float(data.get("valor")),
             "fornecedor": _clean(data.get("fornecedor")),
+            "qr_code_text": _clean(data.get("qr_code_text")),
+            "qr_code_url": _clean(data.get("qr_code_url")),
+            "chave_acesso": _clean(data.get("chave_acesso")),
+            "valor_detectado": _to_float(data.get("valor_detectado")),
+            "data_detectada": _clean(data.get("data_detectada")),
+            "fornecedor_detectado": _clean(data.get("fornecedor_detectado")),
+            "origem_valor": _clean(data.get("origem_valor")),
+            "falha_leitura": int(bool(data.get("falha_leitura"))),
+            "motivo_revisao": _clean(data.get("motivo_revisao")),
             "cidade_origem": _clean(data.get("cidade_origem")),
             "cidade_destino": _clean(data.get("cidade_destino")),
             "km_inicio": km_inicio,
@@ -667,11 +960,28 @@ class RDVService:
         self.init_database()
         allowed_columns = {
             "valor",
+            "origem_valor",
+            "falha_leitura",
+            "motivo_revisao",
             "categoria",
+            "cidade_origem",
+            "cidade_destino",
+            "km_inicio",
+            "km_fim",
+            "km_rodado",
             "quilometragem",
             "observacao",
             "status_fluxo",
             "status_revisao",
+            "tipo_entrada",
+            "caminho_arquivo",
+            "qr_code_text",
+            "qr_code_url",
+            "chave_acesso",
+            "valor_detectado",
+            "data_detectada",
+            "fornecedor_detectado",
+            "fornecedor",
         }
         invalid_columns = set(updates) - allowed_columns
         if invalid_columns:
@@ -706,6 +1016,15 @@ class RDVService:
             "quilometragem": "REAL",
             "status_fluxo": "TEXT NOT NULL DEFAULT 'completo'",
             "recebido_em": "TEXT",
+            "qr_code_text": "TEXT",
+            "qr_code_url": "TEXT",
+            "chave_acesso": "TEXT",
+            "valor_detectado": "REAL",
+            "data_detectada": "TEXT",
+            "fornecedor_detectado": "TEXT",
+            "origem_valor": "TEXT",
+            "falha_leitura": "INTEGER NOT NULL DEFAULT 0",
+            "motivo_revisao": "TEXT",
         }
         for column, definition in migrations.items():
             if column not in existing:
@@ -867,9 +1186,21 @@ def _summarize_expenses(expenses: list[dict]) -> dict:
 def _is_pending_launch(expense: dict) -> bool:
     return (
         expense.get("status_fluxo")
-        in {"pendente", "aguardando_valor", "aguardando_categoria", "revisao"}
-        or expense.get("status_revisao") == "pendente"
+        in {"pendente", *OPEN_FLOW_STATUSES, "revisao"}
+        or bool(expense.get("falha_leitura"))
+        or expense.get("status_revisao") == "rejeitado"
     )
+
+
+def _analysis_failure_reason(reasons: object) -> str:
+    if not isinstance(reasons, (list, tuple)):
+        return "valor_nao_detectado_automaticamente"
+    safe_reasons = [
+        str(reason).strip()
+        for reason in reasons
+        if str(reason).strip()
+    ]
+    return ",".join(safe_reasons)[:500] or "valor_nao_detectado_automaticamente"
 
 
 def _add_total(totals: dict[str, float], key: object, value: float) -> None:

@@ -104,6 +104,15 @@ def main() -> None:
             "quilometragem",
             "status_fluxo",
             "recebido_em",
+            "qr_code_text",
+            "qr_code_url",
+            "chave_acesso",
+            "valor_detectado",
+            "data_detectada",
+            "fornecedor_detectado",
+            "origem_valor",
+            "falha_leitura",
+            "motivo_revisao",
         }.issubset(migrated_columns)
         assert len(legacy_service.list_collaborators()) == 4
 

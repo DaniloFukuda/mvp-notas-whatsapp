@@ -42,7 +42,15 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
         "Telefone",
         "Categoria",
         "Valor",
-        "Quilometragem",
+        "Fornecedor detectado",
+        "Data detectada",
+        "Origem do valor",
+        "Chave de acesso / QR Code / URL",
+        "Cidade origem",
+        "Cidade destino",
+        "KM inicial",
+        "KM final",
+        "KM rodado",
         "Status",
         "Observacao",
         "Tipo de entrada",
@@ -58,6 +66,14 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
                 row.get("telefone_origem") or "",
                 _humanize(row.get("categoria")),
                 float(row.get("valor") or 0),
+                row.get("fornecedor_detectado") or row.get("fornecedor") or "",
+                _parse_date(row.get("data_detectada")),
+                _humanize(row.get("origem_valor")),
+                _fiscal_reference(row),
+                row.get("cidade_origem") or "",
+                row.get("cidade_destino") or "",
+                _optional_float(row.get("km_inicio")),
+                _optional_float(row.get("km_fim")),
                 float(row.get("quilometragem") or row.get("km_rodado") or 0),
                 _launch_status(row),
                 row.get("observacao") or "",
@@ -71,8 +87,11 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
     for row_index in range(2, sheet.max_row + 1):
         sheet.cell(row_index, 1).number_format = DATE_FORMAT
         sheet.cell(row_index, 5).number_format = CURRENCY_FORMAT
-        sheet.cell(row_index, 6).number_format = DISTANCE_FORMAT
-        sheet.cell(row_index, 11).number_format = DATETIME_FORMAT
+        sheet.cell(row_index, 7).number_format = DATE_FORMAT
+        sheet.cell(row_index, 12).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 13).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 14).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 19).number_format = DATETIME_FORMAT
 
 
 def _build_collaborators_sheet(workbook: Workbook, rows: list[dict]) -> None:
@@ -181,6 +200,20 @@ def _launch_status(row: dict) -> str:
 def _safe_file_reference(value: object) -> str:
     text = str(value or "").strip()
     return Path(text).name if text else ""
+
+
+def _fiscal_reference(row: dict) -> str:
+    return (
+        str(row.get("chave_acesso") or "").strip()
+        or str(row.get("qr_code_url") or "").strip()
+        or str(row.get("qr_code_text") or "").strip()
+    )
+
+
+def _optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
 
 
 def _humanize(value: object) -> str:
