@@ -47,6 +47,10 @@ OPEN_KM_FLOW_STATUSES = (
     "aguardando_km_fim",
     "viagem_em_andamento",
 )
+KM_FLOW_OBSERVATIONS = (
+    "quilometragem registrada pelo WhatsApp",
+    "viagem cancelada pelo WhatsApp",
+)
 INPUT_TYPES = ("texto", "imagem", "documento")
 DEMO_COLLABORATORS = (
     ("Danilo", "5500000000001"),
@@ -499,6 +503,40 @@ class RDVService:
                 "observacao": "viagem cancelada pelo WhatsApp",
             },
         )
+
+    def clear_km_trips(self) -> int:
+        self.init_database()
+        km_status_placeholders = ", ".join("?" for _ in OPEN_KM_FLOW_STATUSES)
+        observation_placeholders = ", ".join("?" for _ in KM_FLOW_OBSERVATIONS)
+        km_filter = f"""
+            status_fluxo IN ({km_status_placeholders})
+            OR observacao IN ({observation_placeholders})
+            OR km_inicio IS NOT NULL
+            OR km_fim IS NOT NULL
+            OR km_rodado IS NOT NULL
+            OR quilometragem IS NOT NULL
+        """
+        parameters = (*OPEN_KM_FLOW_STATUSES, *KM_FLOW_OBSERVATIONS)
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                DELETE FROM rdv_tentativas_comprovante
+                WHERE rdv_despesa_id IN (
+                    SELECT id
+                    FROM rdv_despesas
+                    WHERE {km_filter}
+                )
+                """,
+                parameters,
+            )
+            cursor = connection.execute(
+                f"DELETE FROM rdv_despesas WHERE {km_filter}",
+                parameters,
+            )
+            connection.commit()
+        return max(int(cursor.rowcount or 0), 0)
 
     def save_launch_value(self, expense_id: int, value: object) -> dict:
         parsed_value = _to_float(value)

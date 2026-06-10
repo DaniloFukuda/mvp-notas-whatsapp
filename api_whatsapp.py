@@ -66,6 +66,20 @@ KM_END_COMMANDS = {
 }
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km"}
+KM_CLEAR_REQUEST_COMMANDS = {
+    "limpar km",
+    "limpar quilometragem",
+    "limpar quilometragens",
+}
+KM_CLEAR_CONFIRM_COMMANDS = {"confirmar limpar km"}
+KM_CLEAR_WARNING = (
+    "Atenção: isso vai apagar as viagens de KM registradas neste ambiente e "
+    "deixar o resumo de KM zerado.\n"
+    "Para confirmar, envie: confirmar limpar km"
+)
+KM_CLEAR_SUCCESS = (
+    "Quilometragens limpas com sucesso. Nenhuma viagem está em aberto."
+)
 RDV_MENU = "\n".join(
     [
         "Ciclus Agro - RDV por WhatsApp",
@@ -487,6 +501,13 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     normalized = _normalize_caption(text)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+
+    if normalized in KM_CLEAR_REQUEST_COMMANDS:
+        return KM_CLEAR_WARNING
+
+    if normalized in KM_CLEAR_CONFIRM_COMMANDS:
+        rdv_service.clear_km_trips()
+        return KM_CLEAR_SUCCESS
 
     if normalized in KM_STATUS_COMMANDS:
         if open_km is None:
