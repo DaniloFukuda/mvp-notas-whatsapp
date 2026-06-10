@@ -29,8 +29,10 @@ def main() -> None:
             web_upload.rdv_service = service
             danilo = service.get_collaborator_by_phone("5500000000001")
             marcelo = service.get_collaborator_by_phone("5500000000002")
+            henrique = service.get_collaborator_by_phone("5500000000003")
             assert danilo is not None
             assert marcelo is not None
+            assert henrique is not None
 
             first = service.create_whatsapp_receipt(
                 collaborator_id=danilo["id"],
@@ -77,6 +79,16 @@ def main() -> None:
             service.save_launch_value(second["id"], "380,00")
             service.complete_launch_category(second["id"], "hospedagem")
             service.mark_launch_for_review(second["id"])
+
+            open_trip = service.create_whatsapp_km_launch(
+                collaborator_id=henrique["id"],
+                phone=henrique["telefone_whatsapp"],
+                received_at="2026-06-10T19:00:00",
+            )
+            service.save_km_origin(open_trip["id"], "Campinas")
+            service.save_km_destination(open_trip["id"], "Jundiai")
+            open_trip = service.save_km_start(open_trip["id"], "50000")
+            assert open_trip["status_fluxo"] == "viagem_em_andamento"
 
             response = web_upload.exportar_relatorio_semanal_rdv_excel(
                 semana="2026-W24",
@@ -130,13 +142,18 @@ def main() -> None:
                 "Comprovante/arquivo",
                 "Recebido em",
             )
-            assert launches.max_row == 4
+            assert launches.max_row == 5
             assert launches.freeze_panes == "A2"
             assert launches.auto_filter.ref == launches.dimensions
             assert launches["E2"].number_format == 'R$ #,##0.00'
             assert launches["A2"].number_format == "dd/mm/yyyy"
             assert launches["S2"].number_format == "dd/mm/yyyy hh:mm"
-            assert {launches["R2"].value, launches["R3"].value, launches["R4"].value} == {
+            assert {
+                launches["R2"].value,
+                launches["R3"].value,
+                launches["R4"].value,
+                launches["R5"].value,
+            } == {
                 "demo_combustivel.jpg",
                 "demo_hotel.pdf",
                 None,
@@ -159,6 +176,16 @@ def main() -> None:
             assert launches.cell(km_row, 12).value == 1000
             assert launches.cell(km_row, 13).value == 1120
             assert launches.cell(km_row, 14).value == 120
+            open_trip_row = next(
+                row
+                for row in range(2, launches.max_row + 1)
+                if launches.cell(row, 10).value == "Campinas"
+            )
+            assert launches.cell(open_trip_row, 11).value == "Jundiai"
+            assert launches.cell(open_trip_row, 12).value == 50000
+            assert launches.cell(open_trip_row, 13).value is None
+            assert launches.cell(open_trip_row, 14).value is None
+            assert "Viagem Em Andamento" in launches.cell(open_trip_row, 15).value
 
             collaborators = workbook["Resumo por Colaborador"]
             assert _headers(collaborators) == (
@@ -175,6 +202,7 @@ def main() -> None:
             }
             assert collaborator_rows["Danilo"] == (265.4, 2, 120, 0)
             assert collaborator_rows["Marcelo"] == (380, 1, 0, 1)
+            assert collaborator_rows["Henrique"] == (0, 1, 0, 1)
 
             categories = workbook["Resumo por Categoria"]
             assert _headers(categories) == (
@@ -182,12 +210,15 @@ def main() -> None:
                 "Total em R$",
                 "Quantidade",
             )
-            assert categories.max_row == 4
+            assert categories.max_row == 5
 
             pending = workbook["Pendencias"]
-            assert pending.max_row == 2
-            assert pending["B2"].value == "Marcelo"
-            assert pending["R2"].value == "demo_hotel.pdf"
+            assert pending.max_row == 3
+            assert {pending["B2"].value, pending["B3"].value} == {
+                "Marcelo",
+                "Henrique",
+            }
+            assert "demo_hotel.pdf" in {pending["R2"].value, pending["R3"].value}
             assert all(
                 cell.value != "demo_combustivel.jpg"
                 for cell in pending["R"][1:]

@@ -74,7 +74,11 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
                 row.get("cidade_destino") or "",
                 _optional_float(row.get("km_inicio")),
                 _optional_float(row.get("km_fim")),
-                float(row.get("quilometragem") or row.get("km_rodado") or 0),
+                _optional_float(
+                    row.get("quilometragem")
+                    if row.get("quilometragem") is not None
+                    else row.get("km_rodado")
+                ),
                 _launch_status(row),
                 row.get("observacao") or "",
                 _humanize(row.get("tipo_entrada")),

@@ -26,6 +26,8 @@ FLOW_STATUSES = (
     "aguardando_km_destino",
     "aguardando_km_inicio",
     "aguardando_km_fim",
+    "viagem_em_andamento",
+    "cancelado",
     "completo",
     "revisao",
 )
@@ -36,6 +38,14 @@ OPEN_FLOW_STATUSES = (
     "aguardando_km_destino",
     "aguardando_km_inicio",
     "aguardando_km_fim",
+    "viagem_em_andamento",
+)
+OPEN_KM_FLOW_STATUSES = (
+    "aguardando_km_origem",
+    "aguardando_km_destino",
+    "aguardando_km_inicio",
+    "aguardando_km_fim",
+    "viagem_em_andamento",
 )
 INPUT_TYPES = ("texto", "imagem", "documento")
 DEMO_COLLABORATORS = (
@@ -352,6 +362,26 @@ class RDVService:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_open_km_launch_by_phone(self, phone: str) -> dict | None:
+        self.init_database()
+        normalized_phone = normalize_phone(phone)
+        if not normalized_phone:
+            return None
+        placeholders = ", ".join("?" for _ in OPEN_KM_FLOW_STATUSES)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"""
+                SELECT {", ".join(RDV_COLUMNS)}
+                FROM rdv_despesas
+                WHERE telefone_origem = ?
+                  AND status_fluxo IN ({placeholders})
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_phone, *OPEN_KM_FLOW_STATUSES),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def create_whatsapp_km_launch(
         self,
         collaborator_id: int,
@@ -361,8 +391,8 @@ class RDVService:
         collaborator = self.get_collaborator(collaborator_id)
         if collaborator is None or not collaborator["ativo"]:
             raise ValueError("Colaborador inativo ou nao encontrado.")
-        if self.get_open_launch_by_phone(phone) is not None:
-            raise ValueError("Ja existe um lancamento RDV em andamento.")
+        if self.get_open_km_launch_by_phone(phone) is not None:
+            raise ValueError("Ja existe uma viagem em andamento.")
 
         return self.register_whatsapp_expense(
             colaborador_id=collaborator["id"],
@@ -413,8 +443,15 @@ class RDVService:
             expected_status="aguardando_km_inicio",
             updates={
                 "km_inicio": parsed_start,
-                "status_fluxo": "aguardando_km_fim",
+                "status_fluxo": "viagem_em_andamento",
             },
+        )
+
+    def request_km_end(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="viagem_em_andamento",
+            updates={"status_fluxo": "aguardando_km_fim"},
         )
 
     def complete_km_end(self, expense_id: int, km_end: object) -> dict:
@@ -444,6 +481,22 @@ class RDVService:
                 "quilometragem": distance,
                 "status_fluxo": "completo",
                 "status_revisao": "pendente",
+            },
+        )
+
+    def cancel_km_launch(self, expense_id: int) -> dict:
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        if current.get("status_fluxo") not in OPEN_KM_FLOW_STATUSES:
+            raise ValueError("Nao existe viagem em andamento para cancelar.")
+        return self._update_launch(
+            expense_id,
+            expected_status=str(current["status_fluxo"]),
+            updates={
+                "status_fluxo": "cancelado",
+                "status_revisao": "pendente",
+                "observacao": "viagem cancelada pelo WhatsApp",
             },
         )
 
@@ -738,6 +791,12 @@ class RDVService:
             "quilometragem_total": sum(
                 float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
                 for expense in completed
+            ),
+            "viagens_em_aberto": sum(
+                1
+                for expense in expenses
+                if expense.get("status_fluxo")
+                in {"viagem_em_andamento", "aguardando_km_fim"}
             ),
             "quantidade_lancamentos": len(expenses),
             "pendentes_revisao": len(dataset["pendencias"]),
