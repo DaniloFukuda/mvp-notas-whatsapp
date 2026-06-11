@@ -19,6 +19,10 @@ data/documentos/uploads/
 uploads/
 backups/
 
+# Scripts destrutivos mantidos apenas para operacao local
+scripts/limpar_banco_rdv_ciclus.py
+scripts/test_limpar_banco_rdv_ciclus.py
+
 # Arquivos de teste/imagens/documentos locais
 *.jpg
 *.jpeg
