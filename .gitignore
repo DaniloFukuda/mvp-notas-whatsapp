@@ -17,6 +17,7 @@ data/app.db
 output/
 data/documentos/uploads/
 uploads/
+backups/
 
 # Arquivos de teste/imagens/documentos locais
 *.jpg

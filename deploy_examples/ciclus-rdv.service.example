@@ -1,0 +1,17 @@
+[Unit]
+Description=Ciclus RDV FastAPI
+After=network.target
+
+[Service]
+Type=simple
+User=USUARIO
+Group=USUARIO
+WorkingDirectory=/home/USUARIO/apps/ciclus
+EnvironmentFile=/home/USUARIO/apps/ciclus/.env
+ExecStart=/home/USUARIO/apps/ciclus/.venv/bin/python -m uvicorn web_upload:app --host 127.0.0.1 --port 8001 --workers 1
+Restart=always
+RestartSec=5
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

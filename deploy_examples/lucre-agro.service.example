@@ -1,0 +1,17 @@
+[Unit]
+Description=Lucre Agro FastAPI
+After=network.target
+
+[Service]
+Type=simple
+User=USUARIO
+Group=USUARIO
+WorkingDirectory=/home/USUARIO/apps/lucre
+EnvironmentFile=/home/USUARIO/apps/lucre/.env
+ExecStart=/home/USUARIO/apps/lucre/.venv/bin/python -m uvicorn web_app:app --host 127.0.0.1 --port 8002 --workers 1
+Restart=always
+RestartSec=5
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

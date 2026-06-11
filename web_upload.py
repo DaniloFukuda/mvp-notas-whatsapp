@@ -56,6 +56,11 @@ ERROR_TABLE_COLUMNS = [
 ]
 
 
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok", "app": "ciclus-rdv"}
+
+
 def html_page(content: str, title: str = "Envio de Documentos") -> str:
     return f"""
 <!doctype html>
