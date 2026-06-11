@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/home/deploy/apps/ciclus-rdv"
+DB_PATH="${APP_DIR}/data/app.db"
+UPLOADS_DIR="${APP_DIR}/data/documentos/uploads"
+BACKUP_DIR="/home/deploy/backups/automaticos"
+LOCK_FILE="/run/lock/backup-ciclus-rdv.lock"
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+DB_NAME="ciclus_app_auto_${TIMESTAMP}.db"
+UPLOADS_NAME="ciclus_uploads_auto_${TIMESTAMP}.tar.gz"
+CHECKSUM_NAME="ciclus_backup_auto_${TIMESTAMP}.sha256"
+TMP_DIR=""
+
+log() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
+}
+
+cleanup() {
+    if [[ -n "${TMP_DIR}" && -d "${TMP_DIR}" ]]; then
+        rm -rf -- "${TMP_DIR}"
+    fi
+}
+
+trap cleanup EXIT
+
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+    log "Backup ignorado: outra execucao esta em andamento."
+    exit 0
+fi
+
+[[ -f "${DB_PATH}" ]] || { log "ERRO: banco SQLite nao encontrado."; exit 1; }
+[[ -d "${UPLOADS_DIR}" ]] || { log "ERRO: diretorio de uploads nao encontrado."; exit 1; }
+
+install -d -o deploy -g deploy -m 0750 "${BACKUP_DIR}"
+TMP_DIR="$(mktemp -d "${BACKUP_DIR}/.ciclus-rdv-backup.XXXXXX")"
+
+log "Iniciando backup automatico do Ciclus/RDV."
+
+sqlite3 "${DB_PATH}" \
+    ".timeout 30000" \
+    ".backup '${TMP_DIR}/${DB_NAME}'"
+
+tar -C "${UPLOADS_DIR}" -czf "${TMP_DIR}/${UPLOADS_NAME}" .
+
+(
+    cd "${TMP_DIR}"
+    sha256sum "${DB_NAME}" "${UPLOADS_NAME}" > "${CHECKSUM_NAME}"
+)
+
+chown deploy:deploy \
+    "${TMP_DIR}/${DB_NAME}" \
+    "${TMP_DIR}/${UPLOADS_NAME}" \
+    "${TMP_DIR}/${CHECKSUM_NAME}"
+chmod 0640 \
+    "${TMP_DIR}/${DB_NAME}" \
+    "${TMP_DIR}/${UPLOADS_NAME}" \
+    "${TMP_DIR}/${CHECKSUM_NAME}"
+
+mv \
+    "${TMP_DIR}/${DB_NAME}" \
+    "${TMP_DIR}/${UPLOADS_NAME}" \
+    "${TMP_DIR}/${CHECKSUM_NAME}" \
+    "${BACKUP_DIR}/"
+
+find "${BACKUP_DIR}" -maxdepth 1 -type f \
+    \( -name 'ciclus_app_auto_*.db' \
+       -o -name 'ciclus_uploads_auto_*.tar.gz' \
+       -o -name 'ciclus_backup_auto_*.sha256' \) \
+    -mtime +13 -delete
+
+log "Backup concluido: ${DB_NAME}, ${UPLOADS_NAME}, ${CHECKSUM_NAME}."
+
+# Este script usa somente banco e uploads. Ele nao le, copia ou imprime .env,
+# tokens ou outras credenciais.

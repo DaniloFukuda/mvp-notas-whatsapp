@@ -241,3 +241,13 @@ Este projeto serviu como base pratica para aprendizados reutilizados no projeto 
 ## Aviso
 
 O `mvp-notas-whatsapp` e um projeto de MVP e estudo aplicado. Para uso em producao, ainda seria necessario reforcar autenticacao, autorizacao, auditoria, backups, tratamento de dados pessoais, armazenamento seguro de arquivos e politicas formais de retencao.
+
+## Producao Ciclus/RDV
+
+A instalacao atual do Ciclus/RDV em VPS possui documentacao separada:
+
+- [Deploy na VPS](docs/deploy-ciclus-vps.md)
+- [Operacao e recuperacao](docs/operacao-ciclus-rdv.md)
+
+Os exemplos de `systemd`, Nginx e backup ficam em `deploy/examples/` e nao
+contem credenciais, dados reais ou certificados.
