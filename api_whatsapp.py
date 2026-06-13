@@ -44,10 +44,15 @@ RDV_EXCEL_MIME_TYPE = (
 )
 RDV_EXCEL_COMMANDS = {
     "planilha",
+    "planilha semanal",
     "excel",
     "relatorio",
     "relatorio semanal",
     "rdv",
+}
+RDV_SUMMARY_COMMANDS = {
+    "resumo",
+    "resumo semanal",
 }
 RDV_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 KM_START_COMMANDS = {
@@ -373,28 +378,9 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     if message_type == "text":
-        if (
-            _is_rdv_excel_command(text)
-            and (
-                rdv_service.get_open_launch_by_phone(sender_phone) is None
-                or rdv_service.get_open_launch_by_phone(sender_phone).get(
-                    "status_fluxo"
-                )
-                == "viagem_em_andamento"
-            )
-        ):
-            try:
-                _send_weekly_rdv_excel(sender_phone)
-            except Exception as exc:
-                logger.exception(
-                    "Falha ao enviar Excel RDV pelo WhatsApp: to=%s erro=%s",
-                    _mask_phone(sender_phone),
-                    _safe_exception_summary(exc),
-                )
-                _safe_send_text(sender_phone, _rdv_excel_fallback_message())
-            return
         reply = handle_rdv_text_message(sender_phone, text)
-        _safe_send_text(sender_phone, reply or _text_message_reply())
+        if reply:
+            _safe_send_text(sender_phone, reply)
         return
 
     if message_type not in ("image", "document") or not media_id:
@@ -499,6 +485,14 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         )
 
     normalized = _normalize_caption(text)
+    global_command_handled, global_reply = _handle_global_rdv_command(
+        sender_phone,
+        collaborator,
+        normalized,
+    )
+    if global_command_handled:
+        return global_reply
+
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
 
@@ -539,26 +533,17 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             return "Qual a quilometragem final do carro?"
         return _open_trip_message(open_km)
 
-    if normalized in KM_START_COMMANDS and open_km is not None:
-        return _open_trip_message(open_km)
-
     if (
         pending is not None
         and pending.get("status_fluxo") == "viagem_em_andamento"
     ):
-        if normalized in {"resumo", "3"}:
+        if normalized == "3":
             return _weekly_summary_message()
         if normalized in {"meu resumo", "meuresumo", "individual"}:
             return _weekly_summary_message(collaborator["id"])
 
     if pending is None:
-        if normalized in KM_START_COMMANDS:
-            rdv_service.create_whatsapp_km_launch(
-                collaborator_id=collaborator["id"],
-                phone=sender_phone,
-            )
-            return "Saindo de onde?"
-        if normalized in {"resumo", "3"}:
+        if normalized == "3":
             return _weekly_summary_message()
         if normalized in {"meu resumo", "meuresumo", "individual"}:
             return _weekly_summary_message(collaborator["id"])
@@ -710,6 +695,39 @@ def _open_trip_message(expense: dict) -> str:
 
 def _is_rdv_excel_command(text: str) -> bool:
     return _normalize_caption(text) in RDV_EXCEL_COMMANDS
+
+
+def _handle_global_rdv_command(
+    sender_phone: str,
+    collaborator: dict,
+    normalized_text: str,
+) -> tuple[bool, str | None]:
+    if normalized_text in RDV_SUMMARY_COMMANDS:
+        return True, _weekly_summary_message()
+
+    if normalized_text in RDV_EXCEL_COMMANDS:
+        try:
+            _send_weekly_rdv_excel(sender_phone)
+        except Exception as exc:
+            logger.exception(
+                "Falha ao enviar Excel RDV pelo WhatsApp: to=%s erro=%s",
+                _mask_phone(sender_phone),
+                _safe_exception_summary(exc),
+            )
+            return True, _rdv_excel_fallback_message()
+        return True, None
+
+    if normalized_text in KM_START_COMMANDS:
+        open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+        if open_km is not None:
+            return True, _open_trip_message(open_km)
+        rdv_service.create_whatsapp_km_launch(
+            collaborator_id=collaborator["id"],
+            phone=sender_phone,
+        )
+        return True, "Saindo de onde?"
+
+    return False, None
 
 
 def _send_weekly_rdv_excel(sender_phone: str) -> None:

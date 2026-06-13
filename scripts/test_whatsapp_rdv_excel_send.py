@@ -37,6 +37,9 @@ def main() -> None:
             sender = collaborator["telefone_whatsapp"]
             for command in (
                 "planilha",
+                "Planilha",
+                "PLANILHA",
+                "planilha semanal",
                 "excel",
                 "relatorio",
                 "relatório",
@@ -63,7 +66,7 @@ def main() -> None:
                 lambda to, message: sent_texts.append((to, message))
             )
 
-            for index, command in enumerate(("planilha", "excel"), start=1):
+            for index, command in enumerate(("planilha", "Planilha"), start=1):
                 api_whatsapp._handle_whatsapp_message(
                     {
                         "from": sender,
@@ -84,6 +87,47 @@ def main() -> None:
                 )
                 assert "planilha semanal" in document["caption"].lower()
             assert sent_texts == []
+
+            pending = service.create_whatsapp_receipt(
+                collaborator_id=collaborator["id"],
+                phone=sender,
+                input_type="imagem",
+                file_path=str(Path(temp_dir) / "comprovante_sem_valor.jpg"),
+                whatsapp_message_id="wamid.excel.pending.receipt",
+                analysis={},
+            )
+            assert pending["status_fluxo"] == "aguardando_valor"
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.excel.pending.command",
+                    "type": "text",
+                    "text": {"body": "planilha"},
+                }
+            )
+            assert len(sent_documents) == 3
+            assert sent_texts == []
+            pending_after_excel = service.get_expense(pending["id"])
+            assert pending_after_excel is not None
+            assert pending_after_excel["status_fluxo"] == "aguardando_valor"
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.excel.pending.invalid-value",
+                    "type": "text",
+                    "text": {"body": "abc"},
+                }
+            )
+            assert len(sent_documents) == 3
+            assert (
+                "valor invalido. informe somente o valor"
+                in api_whatsapp._normalize_caption(sent_texts[-1][1])
+            )
+            pending_after_invalid_value = service.get_expense(pending["id"])
+            assert pending_after_invalid_value is not None
+            assert pending_after_invalid_value["status_fluxo"] == "aguardando_valor"
 
             attempts_before = len(sent_documents)
             api_whatsapp._handle_whatsapp_message(

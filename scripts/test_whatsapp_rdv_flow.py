@@ -23,6 +23,21 @@ def main() -> None:
             assert collaborator is not None
             sender = collaborator["telefone_whatsapp"]
 
+            weekly_summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
+            assert weekly_summary is not None
+            assert "Resumo geral da semana" in weekly_summary
+            assert "Lancamentos:" in weekly_summary
+
+            capitalized_weekly_summary = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Resumo",
+            )
+            assert capitalized_weekly_summary == weekly_summary
+            assert (
+                api_whatsapp.handle_rdv_text_message(sender, "  RESUMO   SEMANAL  ")
+                == weekly_summary
+            )
+
             greeting = api_whatsapp.handle_rdv_text_message(sender, "oi")
             assert greeting is not None
             assert "Ciclus Agro - RDV por WhatsApp" in greeting
@@ -82,6 +97,42 @@ def main() -> None:
             assert expense["falha_leitura"] == 1
             assert expense["motivo_revisao"]
             assert expense["caminho_arquivo"].endswith("comprovante_teste.jpg")
+
+            pending_summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
+            assert pending_summary is not None
+            assert "Resumo geral da semana" in pending_summary
+            assert "valor invalido" not in pending_summary.lower()
+            pending_after_summary = service.get_expense(expense["id"])
+            assert pending_after_summary is not None
+            assert pending_after_summary["status_fluxo"] == "aguardando_valor"
+
+            pending_km_reply = api_whatsapp.handle_rdv_text_message(sender, "km")
+            assert pending_km_reply == "Saindo de onde?"
+            pending_after_km = service.get_expense(expense["id"])
+            assert pending_after_km is not None
+            assert pending_after_km["status_fluxo"] == "aguardando_valor"
+            open_km_during_pending_value = service.get_open_km_launch_by_phone(sender)
+            assert open_km_during_pending_value is not None
+            assert (
+                open_km_during_pending_value["status_fluxo"]
+                == "aguardando_km_origem"
+            )
+            cancelled_pending_km = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "cancelar km",
+            )
+            assert "Viagem cancelada com sucesso." in cancelled_pending_km
+            assert service.get_open_km_launch_by_phone(sender) is None
+            assert service.get_open_launch_by_phone(sender)["id"] == expense["id"]
+
+            invalid_value_reply = api_whatsapp.handle_rdv_text_message(sender, "abc")
+            assert (
+                "valor invalido. informe somente o valor"
+                in api_whatsapp._normalize_caption(invalid_value_reply)
+            )
+            assert service.get_expense(expense["id"])["status_fluxo"] == (
+                "aguardando_valor"
+            )
 
             value_reply = api_whatsapp.handle_rdv_text_message(sender, "89,90")
             assert value_reply is not None
