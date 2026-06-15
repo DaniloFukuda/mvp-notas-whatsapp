@@ -40,11 +40,21 @@ OPEN_FLOW_STATUSES = (
     "aguardando_km_fim",
     "viagem_em_andamento",
 )
-OPEN_KM_FLOW_STATUSES = (
+INTERACTIVE_EXPENSE_FLOW_STATUSES = (
+    "aguardando_valor",
+    "aguardando_categoria",
+)
+LEGACY_KM_FLOW_STATUSES = (
     "aguardando_km_origem",
     "aguardando_km_destino",
     "aguardando_km_inicio",
     "aguardando_km_fim",
+)
+ALL_OPEN_KM_FLOW_STATUSES = (
+    *LEGACY_KM_FLOW_STATUSES,
+    "viagem_em_andamento",
+)
+OPEN_KM_FLOW_STATUSES = (
     "viagem_em_andamento",
 )
 KM_FLOW_OBSERVATIONS = (
@@ -351,7 +361,9 @@ class RDVService:
         normalized_phone = normalize_phone(phone)
         if not normalized_phone:
             return None
-        placeholders = ", ".join("?" for _ in OPEN_FLOW_STATUSES)
+        placeholders = ", ".join(
+            "?" for _ in INTERACTIVE_EXPENSE_FLOW_STATUSES
+        )
         with closing(self._connect()) as connection:
             row = connection.execute(
                 f"""
@@ -362,7 +374,7 @@ class RDVService:
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (normalized_phone, *OPEN_FLOW_STATUSES),
+                (normalized_phone, *INTERACTIVE_EXPENSE_FLOW_STATUSES),
             ).fetchone()
         return dict(row) if row is not None else None
 
@@ -390,6 +402,7 @@ class RDVService:
         self,
         collaborator_id: int,
         phone: str,
+        km_start: object,
         received_at: str | datetime | None = None,
     ) -> dict:
         collaborator = self.get_collaborator(collaborator_id)
@@ -397,6 +410,9 @@ class RDVService:
             raise ValueError("Colaborador inativo ou nao encontrado.")
         if self.get_open_km_launch_by_phone(phone) is not None:
             raise ValueError("Ja existe uma viagem em andamento.")
+        parsed_start = _to_float(km_start)
+        if parsed_start is None or parsed_start < 0:
+            raise ValueError("Quilometragem inicial invalida.")
 
         return self.register_whatsapp_expense(
             colaborador_id=collaborator["id"],
@@ -406,8 +422,9 @@ class RDVService:
             data_despesa=_date_from_received_at(received_at).isoformat(),
             categoria="outro",
             valor=None,
+            km_inicio=parsed_start,
             observacao="quilometragem registrada pelo WhatsApp",
-            status_fluxo="aguardando_km_origem",
+            status_fluxo="viagem_em_andamento",
             status_revisao="pendente",
             recebido_em=_normalize_datetime(received_at),
         )
@@ -466,19 +483,19 @@ class RDVService:
         current = self.get_expense(expense_id)
         if current is None:
             raise ValueError("Lancamento RDV nao encontrado.")
-        if current.get("status_fluxo") != "aguardando_km_fim":
+        if current.get("status_fluxo") != "viagem_em_andamento":
             raise ValueError("Lancamento RDV fora da etapa esperada.")
 
         parsed_start = _to_float(current.get("km_inicio"))
         if parsed_start is None:
             raise ValueError("Quilometragem inicial nao informada.")
-        if parsed_end < parsed_start:
-            raise ValueError("km_fim nao pode ser menor que km_inicio.")
+        if parsed_end <= parsed_start:
+            raise ValueError("km_fim deve ser maior que km_inicio.")
 
         distance = parsed_end - parsed_start
         return self._update_launch(
             expense_id,
-            expected_status="aguardando_km_fim",
+            expected_status="viagem_em_andamento",
             updates={
                 "km_fim": parsed_end,
                 "km_rodado": distance,
@@ -492,7 +509,7 @@ class RDVService:
         current = self.get_expense(expense_id)
         if current is None:
             raise ValueError("Lancamento RDV nao encontrado.")
-        if current.get("status_fluxo") not in OPEN_KM_FLOW_STATUSES:
+        if current.get("status_fluxo") not in ALL_OPEN_KM_FLOW_STATUSES:
             raise ValueError("Nao existe viagem em andamento para cancelar.")
         return self._update_launch(
             expense_id,
@@ -504,9 +521,34 @@ class RDVService:
             },
         )
 
+    def cancel_legacy_km_launches_by_phone(self, phone: str) -> int:
+        self.init_database()
+        normalized_phone = normalize_phone(phone)
+        if not normalized_phone:
+            return 0
+        placeholders = ", ".join("?" for _ in LEGACY_KM_FLOW_STATUSES)
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE rdv_despesas
+                SET status_fluxo = 'cancelado',
+                    status_revisao = 'pendente',
+                    observacao = 'viagem cancelada pelo WhatsApp',
+                    updated_at = ?
+                WHERE telefone_origem = ?
+                  AND status_fluxo IN ({placeholders})
+                """,
+                (now, normalized_phone, *LEGACY_KM_FLOW_STATUSES),
+            )
+            connection.commit()
+        return max(int(cursor.rowcount or 0), 0)
+
     def clear_km_trips(self) -> int:
         self.init_database()
-        km_status_placeholders = ", ".join("?" for _ in OPEN_KM_FLOW_STATUSES)
+        km_status_placeholders = ", ".join(
+            "?" for _ in ALL_OPEN_KM_FLOW_STATUSES
+        )
         observation_placeholders = ", ".join("?" for _ in KM_FLOW_OBSERVATIONS)
         km_filter = f"""
             status_fluxo IN ({km_status_placeholders})
@@ -516,7 +558,7 @@ class RDVService:
             OR km_rodado IS NOT NULL
             OR quilometragem IS NOT NULL
         """
-        parameters = (*OPEN_KM_FLOW_STATUSES, *KM_FLOW_OBSERVATIONS)
+        parameters = (*ALL_OPEN_KM_FLOW_STATUSES, *KM_FLOW_OBSERVATIONS)
 
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")

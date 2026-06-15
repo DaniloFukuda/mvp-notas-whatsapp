@@ -83,11 +83,9 @@ def main() -> None:
             open_trip = service.create_whatsapp_km_launch(
                 collaborator_id=henrique["id"],
                 phone=henrique["telefone_whatsapp"],
+                km_start="50000",
                 received_at="2026-06-10T19:00:00",
             )
-            service.save_km_origin(open_trip["id"], "Campinas")
-            service.save_km_destination(open_trip["id"], "Jundiai")
-            open_trip = service.save_km_start(open_trip["id"], "50000")
             assert open_trip["status_fluxo"] == "viagem_em_andamento"
 
             response = web_upload.exportar_relatorio_semanal_rdv_excel(
@@ -179,9 +177,10 @@ def main() -> None:
             open_trip_row = next(
                 row
                 for row in range(2, launches.max_row + 1)
-                if launches.cell(row, 10).value == "Campinas"
+                if launches.cell(row, 12).value == 50000
             )
-            assert launches.cell(open_trip_row, 11).value == "Jundiai"
+            assert launches.cell(open_trip_row, 10).value is None
+            assert launches.cell(open_trip_row, 11).value is None
             assert launches.cell(open_trip_row, 12).value == 50000
             assert launches.cell(open_trip_row, 13).value is None
             assert launches.cell(open_trip_row, 14).value is None

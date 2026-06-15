@@ -55,22 +55,19 @@ RDV_SUMMARY_COMMANDS = {
     "resumo semanal",
 }
 RDV_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
-KM_START_COMMANDS = {
-    "km",
-    "quilometragem",
-    "iniciar km",
-    "iniciar viagem",
-    "nova viagem",
-}
-KM_END_COMMANDS = {
-    "fim km",
-    "finalizar km",
-    "cheguei",
-    "encerrar viagem",
-    "terminar viagem",
-}
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km"}
+KM_HELP_MESSAGE = "\n".join(
+    [
+        "Para registrar uma viagem, envie:",
+        "",
+        "km inicio 120350",
+        "",
+        "Quando terminar, envie:",
+        "",
+        "km termino 120500",
+    ]
+)
 KM_CLEAR_REQUEST_COMMANDS = {
     "limpar km",
     "limpar quilometragem",
@@ -94,7 +91,7 @@ RDV_MENU = "\n".join(
         "",
         "Digite resumo para consultar a semana atual.",
         "Digite planilha para receber o relatorio semanal em Excel.",
-        "Digite km para registrar inicio/fim de viagem.",
+        "Digite km para ver como registrar uma viagem.",
     ]
 )
 rdv_service = RDVService()
@@ -485,6 +482,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         )
 
     normalized = _normalize_caption(text)
+    rdv_service.cancel_legacy_km_launches_by_phone(sender_phone)
     global_command_handled, global_reply = _handle_global_rdv_command(
         sender_phone,
         collaborator,
@@ -493,8 +491,8 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     if global_command_handled:
         return global_reply
 
-    pending = rdv_service.get_open_launch_by_phone(sender_phone)
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+    pending = rdv_service.get_open_launch_by_phone(sender_phone)
 
     if normalized in KM_CLEAR_REQUEST_COMMANDS:
         return KM_CLEAR_WARNING
@@ -511,36 +509,8 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     if normalized in KM_CANCEL_COMMANDS:
         if open_km is None:
             return _no_open_trip_message()
-        cancelled = rdv_service.cancel_km_launch(open_km["id"])
-        return "\n".join(
-            [
-                "Viagem cancelada com sucesso.",
-                (
-                    f"Trajeto: {cancelled.get('cidade_origem') or '-'} "
-                    f"\u2192 {cancelled.get('cidade_destino') or '-'}"
-                ),
-                "O lancamento foi mantido no historico como cancelado.",
-            ]
-        )
-
-    if normalized in KM_END_COMMANDS:
-        if open_km is None:
-            return _no_open_trip_message()
-        if open_km.get("status_fluxo") == "viagem_em_andamento":
-            rdv_service.request_km_end(open_km["id"])
-            return "Qual a quilometragem final do carro?"
-        if open_km.get("status_fluxo") == "aguardando_km_fim":
-            return "Qual a quilometragem final do carro?"
-        return _open_trip_message(open_km)
-
-    if (
-        pending is not None
-        and pending.get("status_fluxo") == "viagem_em_andamento"
-    ):
-        if normalized == "3":
-            return _weekly_summary_message()
-        if normalized in {"meu resumo", "meuresumo", "individual"}:
-            return _weekly_summary_message(collaborator["id"])
+        rdv_service.cancel_km_launch(open_km["id"])
+        return "Viagem cancelada com sucesso."
 
     if pending is None:
         if normalized == "3":
@@ -581,68 +551,6 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         lines.append("Para receber a planilha semanal, envie: planilha.")
         return " ".join(lines)
 
-    if state == "aguardando_km_origem":
-        if not str(text or "").strip():
-            return "Informe a origem da viagem. Saindo de onde?"
-        rdv_service.save_km_origin(pending["id"], text)
-        return "Indo para onde?"
-
-    if state == "aguardando_km_destino":
-        if not str(text or "").strip():
-            return "Informe o destino da viagem. Indo para onde?"
-        rdv_service.save_km_destination(pending["id"], text)
-        return "Qual a quilometragem inicial do carro?"
-
-    if state == "aguardando_km_inicio":
-        km_start = _parse_km_value(text)
-        if km_start is None:
-            return (
-                "Quilometragem inicial invalida. "
-                "Informe um numero, por exemplo: 120350."
-            )
-        started = rdv_service.save_km_start(pending["id"], km_start)
-        return "\n".join(
-            [
-                "Viagem iniciada com sucesso.",
-                (
-                    f"Trajeto previsto: {started['cidade_origem']} "
-                    f"\u2192 {started['cidade_destino']}"
-                ),
-                f"KM inicial: {_format_km_text(started['km_inicio'])}",
-                "Quando chegar, envie: fim km",
-            ]
-        )
-
-    if state == "viagem_em_andamento":
-        return _open_trip_message(pending)
-
-    if state == "aguardando_km_fim":
-        km_end = _parse_km_value(text)
-        if km_end is None:
-            return (
-                "Quilometragem final invalida. "
-                "Informe um numero, por exemplo: 120500."
-            )
-        km_start = float(pending.get("km_inicio") or 0)
-        if km_end < km_start:
-            return (
-                "A quilometragem final nao pode ser menor que a inicial. "
-                "Informe novamente a quilometragem final do carro."
-            )
-        completed = rdv_service.complete_km_end(pending["id"], km_end)
-        return "\n".join(
-            [
-                "Viagem finalizada com sucesso.",
-                (
-                    f"Trajeto: {completed['cidade_origem']} "
-                    f"\u2192 {completed['cidade_destino']}"
-                ),
-                f"KM inicial: {_format_km_text(completed['km_inicio'])}",
-                f"KM final: {_format_km_text(completed['km_fim'])}",
-                f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
-            ]
-        )
-
     return RDV_MENU
 
 
@@ -651,46 +559,24 @@ def clear_rdv_sessions() -> None:
 
 
 def _no_open_trip_message() -> str:
-    return (
-        "Não encontrei viagem em andamento. "
-        "Para iniciar uma nova viagem, envie: km"
+    return "\n".join(
+        [
+            "Nenhuma viagem em andamento encontrada.",
+            "Para iniciar uma nova viagem, envie:",
+            "km inicio 120350",
+        ]
     )
 
 
 def _open_trip_message(expense: dict) -> str:
-    state = expense.get("status_fluxo")
-    origin = expense.get("cidade_origem") or "-"
-    destination = expense.get("cidade_destino") or "-"
-    if state == "aguardando_km_origem":
-        return "Cadastro de viagem em andamento.\nSaindo de onde?"
-    if state == "aguardando_km_destino":
-        return "\n".join(
-            [
-                "Cadastro de viagem em andamento.",
-                f"Origem: {origin}",
-                "Indo para onde?",
-            ]
-        )
-    if state == "aguardando_km_inicio":
-        return "\n".join(
-            [
-                "Cadastro de viagem em andamento.",
-                f"Trajeto previsto: {origin} \u2192 {destination}",
-                "Qual a quilometragem inicial do carro?",
-            ]
-        )
-
-    lines = [
-        "Viagem em andamento.",
-        f"Trajeto previsto: {origin} \u2192 {destination}",
-        f"KM inicial: {_format_km_text(expense.get('km_inicio'))}",
-    ]
-    if state == "aguardando_km_fim":
-        lines.append("Informe a quilometragem final do carro.")
-    else:
-        lines.append("Para finalizar, envie: fim km")
-    lines.append("Para cancelar, envie: cancelar km")
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            "Ja existe uma viagem em andamento.",
+            f"KM inicial: {_format_km_text(expense.get('km_inicio'))}",
+            "Para finalizar, envie: km termino 120500",
+            "Para cancelar, envie: cancelar km",
+        ]
+    )
 
 
 def _is_rdv_excel_command(text: str) -> bool:
@@ -717,17 +603,79 @@ def _handle_global_rdv_command(
             return True, _rdv_excel_fallback_message()
         return True, None
 
-    if normalized_text in KM_START_COMMANDS:
+    km_command = _parse_km_command(normalized_text)
+    if km_command is not None:
+        action, raw_value = km_command
+        if action == "help":
+            return True, KM_HELP_MESSAGE
+        if not raw_value:
+            example_action = "inicio" if action == "start" else "termino"
+            example_value = "120350" if action == "start" else "120500"
+            return True, "\n".join(
+                [
+                    "Informe a quilometragem junto com o comando.",
+                    "",
+                    "Exemplo:",
+                    f"km {example_action} {example_value}",
+                ]
+            )
+        km_value = _parse_km_value(raw_value)
+        if km_value is None:
+            return True, (
+                "Quilometragem invalida. Informe um numero junto com o comando."
+            )
         open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
-        if open_km is not None:
-            return True, _open_trip_message(open_km)
-        rdv_service.create_whatsapp_km_launch(
-            collaborator_id=collaborator["id"],
-            phone=sender_phone,
+        if action == "start":
+            if open_km is not None:
+                return True, _open_trip_message(open_km)
+            started = rdv_service.create_whatsapp_km_launch(
+                collaborator_id=collaborator["id"],
+                phone=sender_phone,
+                km_start=km_value,
+            )
+            return True, "\n".join(
+                [
+                    "Viagem iniciada com sucesso.",
+                    f"KM inicial: {_format_km_text(started['km_inicio'])}",
+                    "",
+                    "Quando terminar, envie:",
+                    "km termino 120500",
+                ]
+            )
+        if open_km is None:
+            return True, _no_open_trip_message()
+        km_start = float(open_km.get("km_inicio") or 0)
+        if km_value <= km_start:
+            return True, (
+                "A quilometragem final deve ser maior que a inicial. "
+                "A viagem continua em andamento."
+            )
+        completed = rdv_service.complete_km_end(open_km["id"], km_value)
+        return True, "\n".join(
+            [
+                "Viagem finalizada com sucesso.",
+                f"KM inicial: {_format_km_text(completed['km_inicio'])}",
+                f"KM final: {_format_km_text(completed['km_fim'])}",
+                f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
+            ]
         )
-        return True, "Saindo de onde?"
 
     return False, None
+
+
+def _parse_km_command(normalized_text: str) -> tuple[str, str] | None:
+    if normalized_text == "km":
+        return "help", ""
+
+    patterns = (
+        ("start", r"^(?:km inicio|inicio km|iniciar km)(?:\s+(.*))?$"),
+        ("end", r"^(?:km termino|km fim|fim km|finalizar km)(?:\s+(.*))?$"),
+    )
+    for action, pattern in patterns:
+        match = re.fullmatch(pattern, normalized_text)
+        if match:
+            return action, str(match.group(1) or "").strip()
+    return None
 
 
 def _send_weekly_rdv_excel(sender_phone: str) -> None:

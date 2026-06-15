@@ -68,8 +68,8 @@ def main() -> None:
 
             assert api_whatsapp.handle_rdv_text_message(
                 sender,
-                "nova viagem",
-            ) == "Saindo de onde?"
+                "km inicio 2000",
+            ).startswith("Viagem iniciada com sucesso.")
             assert service.get_open_km_launch_by_phone(sender) is not None
 
             result = api_whatsapp.handle_rdv_text_message(
@@ -83,7 +83,9 @@ def main() -> None:
 
             status = api_whatsapp.handle_rdv_text_message(sender, "status km")
             assert status is not None
-            assert "nao encontrei viagem" in api_whatsapp._normalize_caption(status)
+            assert "nenhuma viagem em andamento" in (
+                api_whatsapp._normalize_caption(status)
+            )
 
             summary = api_whatsapp.handle_rdv_text_message(sender, "meu resumo")
             assert summary is not None
@@ -110,12 +112,8 @@ def main() -> None:
 
 
 def _complete_trip(sender: str, start: str, end: str) -> None:
-    assert api_whatsapp.handle_rdv_text_message(sender, "km") == "Saindo de onde?"
-    assert api_whatsapp.handle_rdv_text_message(sender, "Origem") == "Indo para onde?"
-    api_whatsapp.handle_rdv_text_message(sender, "Destino")
-    api_whatsapp.handle_rdv_text_message(sender, start)
-    api_whatsapp.handle_rdv_text_message(sender, "fim km")
-    api_whatsapp.handle_rdv_text_message(sender, end)
+    api_whatsapp.handle_rdv_text_message(sender, f"km inicio {start}")
+    api_whatsapp.handle_rdv_text_message(sender, f"km termino {end}")
 
 
 def _km_launches(service: RDVService) -> list[dict]:

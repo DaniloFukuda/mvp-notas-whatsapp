@@ -42,7 +42,7 @@ def main() -> None:
             assert greeting is not None
             assert "Ciclus Agro - RDV por WhatsApp" in greeting
             assert collaborator["nome"] in greeting
-            assert "Digite km para registrar inicio/fim de viagem." in greeting
+            assert "Digite km para ver como registrar uma viagem." in greeting
 
             sent_messages = []
             original_download = api_whatsapp.download_media
@@ -107,21 +107,10 @@ def main() -> None:
             assert pending_after_summary["status_fluxo"] == "aguardando_valor"
 
             pending_km_reply = api_whatsapp.handle_rdv_text_message(sender, "km")
-            assert pending_km_reply == "Saindo de onde?"
+            assert pending_km_reply == api_whatsapp.KM_HELP_MESSAGE
             pending_after_km = service.get_expense(expense["id"])
             assert pending_after_km is not None
             assert pending_after_km["status_fluxo"] == "aguardando_valor"
-            open_km_during_pending_value = service.get_open_km_launch_by_phone(sender)
-            assert open_km_during_pending_value is not None
-            assert (
-                open_km_during_pending_value["status_fluxo"]
-                == "aguardando_km_origem"
-            )
-            cancelled_pending_km = api_whatsapp.handle_rdv_text_message(
-                sender,
-                "cancelar km",
-            )
-            assert "Viagem cancelada com sucesso." in cancelled_pending_km
             assert service.get_open_km_launch_by_phone(sender) is None
             assert service.get_open_launch_by_phone(sender)["id"] == expense["id"]
 
@@ -277,35 +266,30 @@ def main() -> None:
             assert api_whatsapp._parse_km_value("120.350") == 120350
             assert api_whatsapp._parse_km_value("120350 km") == 120350
             assert api_whatsapp._parse_km_value("120350,5 km") == 120350.5
-            assert "nova viagem" in api_whatsapp.KM_START_COMMANDS
-            assert "terminar viagem" in api_whatsapp.KM_END_COMMANDS
-
             km_reply = api_whatsapp.handle_rdv_text_message(sender, "km")
-            assert km_reply == "Saindo de onde?"
-            km_pending = service.get_open_launch_by_phone(sender)
-            assert km_pending is not None
-            assert km_pending["status_fluxo"] == "aguardando_km_origem"
+            assert km_reply == api_whatsapp.KM_HELP_MESSAGE
+            assert service.get_open_km_launch_by_phone(sender) is None
 
-            assert (
-                api_whatsapp.handle_rdv_text_message(sender, "Ribeirao Preto")
-                == "Indo para onde?"
+            missing_start = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "km inicio",
             )
-            assert (
-                api_whatsapp.handle_rdv_text_message(sender, "Sertaozinho")
-                == "Qual a quilometragem inicial do carro?"
+            assert "Informe a quilometragem junto com o comando." in missing_start
+            assert service.get_open_km_launch_by_phone(sender) is None
+
+            started_reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "km início 120350",
             )
-            assert (
-                api_whatsapp.handle_rdv_text_message(sender, "120.350 km")
-                == "\n".join(
-                    [
-                        "Viagem iniciada com sucesso.",
-                        "Trajeto previsto: Ribeirao Preto \u2192 Sertaozinho",
-                        "KM inicial: 120350",
-                        "Quando chegar, envie: fim km",
-                    ]
-                )
-            )
-            started_trip = service.get_open_launch_by_phone(sender)
+            assert "Viagem iniciada com sucesso." in started_reply
+            assert "KM inicial: 120350" in started_reply
+            km_pending = service.get_open_km_launch_by_phone(sender)
+            assert km_pending is not None
+            assert km_pending["status_fluxo"] == "viagem_em_andamento"
+
+            common_reply = api_whatsapp.handle_rdv_text_message(sender, "ola")
+            assert "Ciclus Agro - RDV por WhatsApp" in common_reply
+            started_trip = service.get_open_km_launch_by_phone(sender)
             assert started_trip is not None
             assert started_trip["status_fluxo"] == "viagem_em_andamento"
             assert started_trip["km_fim"] is None
@@ -314,10 +298,10 @@ def main() -> None:
 
             duplicate_reply = api_whatsapp.handle_rdv_text_message(
                 sender,
-                "iniciar viagem",
+                "iniciar km 120400",
             )
-            assert "Viagem em andamento." in duplicate_reply
-            assert "Para finalizar, envie: fim km" in duplicate_reply
+            assert "Ja existe uma viagem em andamento." in duplicate_reply
+            assert "Para finalizar, envie: km termino 120500" in duplicate_reply
             assert "Para cancelar, envie: cancelar km" in duplicate_reply
             assert len(
                 [
@@ -328,8 +312,7 @@ def main() -> None:
             ) == 1
 
             status_reply = api_whatsapp.handle_rdv_text_message(sender, "status km")
-            assert "Viagem em andamento." in status_reply
-            assert "Ribeirao Preto \u2192 Sertaozinho" in status_reply
+            assert "Ja existe uma viagem em andamento." in status_reply
             assert "KM inicial: 120350" in status_reply
 
             weekly_open_summary = api_whatsapp.handle_rdv_text_message(
@@ -340,42 +323,39 @@ def main() -> None:
             assert "KM rodado: 0 km" in weekly_open_summary
             assert "Viagens em aberto: 1" in weekly_open_summary
 
-            assert (
-                api_whatsapp.handle_rdv_text_message(sender, "fim km")
-                == "Qual a quilometragem final do carro?"
-            )
+            missing_end = api_whatsapp.handle_rdv_text_message(sender, "fim km")
+            assert "Informe a quilometragem junto com o comando." in missing_end
 
             invalid_end_reply = api_whatsapp.handle_rdv_text_message(
                 sender,
-                "120.300",
+                "km fim 120350",
             )
-            assert "nao pode ser menor" in invalid_end_reply.lower()
-            still_pending = service.get_open_launch_by_phone(sender)
+            assert "deve ser maior" in invalid_end_reply.lower()
+            still_pending = service.get_open_km_launch_by_phone(sender)
             assert still_pending is not None
-            assert still_pending["status_fluxo"] == "aguardando_km_fim"
+            assert still_pending["status_fluxo"] == "viagem_em_andamento"
 
             completed_km_reply = api_whatsapp.handle_rdv_text_message(
                 sender,
-                "120500 km",
+                "km término 120500",
             )
             assert completed_km_reply is not None
             assert "Viagem finalizada com sucesso." in completed_km_reply
-            assert "Trajeto: Ribeirao Preto \u2192 Sertaozinho" in completed_km_reply
             assert "KM inicial: 120350" in completed_km_reply
             assert "KM final: 120500" in completed_km_reply
             assert "KM rodado: 150 km" in completed_km_reply
 
             completed_km = service.get_expense(km_pending["id"])
             assert completed_km is not None
-            assert completed_km["cidade_origem"] == "Ribeirao Preto"
-            assert completed_km["cidade_destino"] == "Sertaozinho"
+            assert not completed_km["cidade_origem"]
+            assert not completed_km["cidade_destino"]
             assert completed_km["km_inicio"] == 120350
             assert completed_km["km_fim"] == 120500
             assert completed_km["km_rodado"] == 150
             assert completed_km["quilometragem"] == 150
             assert completed_km["status_fluxo"] == "completo"
             assert completed_km["status_revisao"] == "pendente"
-            assert service.get_open_launch_by_phone(sender) is None
+            assert service.get_open_km_launch_by_phone(sender) is None
 
             weekly_summary = api_whatsapp.handle_rdv_text_message(
                 sender,
@@ -386,26 +366,16 @@ def main() -> None:
             assert "Viagens em aberto: 0" in weekly_summary
 
             assert (
-                api_whatsapp.handle_rdv_text_message(sender, "terminar viagem")
-                == (
-                    "Não encontrei viagem em andamento. "
-                    "Para iniciar uma nova viagem, envie: km"
-                )
+                api_whatsapp.handle_rdv_text_message(sender, "km termino 120600")
+                == api_whatsapp._no_open_trip_message()
             )
 
-            assert (
-                api_whatsapp.handle_rdv_text_message(sender, "nova viagem")
-                == "Saindo de onde?"
-            )
-            api_whatsapp.handle_rdv_text_message(sender, "Campinas")
-            api_whatsapp.handle_rdv_text_message(sender, "Jundiai")
-            api_whatsapp.handle_rdv_text_message(sender, "50000")
+            api_whatsapp.handle_rdv_text_message(sender, "inicio km 50000")
             cancelled_reply = api_whatsapp.handle_rdv_text_message(
                 sender,
                 "cancelar km",
             )
             assert "Viagem cancelada com sucesso." in cancelled_reply
-            assert "mantido no historico como cancelado" in cancelled_reply
             cancelled = service.get_expense(
                 max(launch["id"] for launch in service.list_launches())
             )
@@ -423,10 +393,7 @@ def main() -> None:
             assert "Viagens em aberto: 0" in summary_after_cancel
             assert (
                 api_whatsapp.handle_rdv_text_message(sender, "status km")
-                == (
-                    "Não encontrei viagem em andamento. "
-                    "Para iniciar uma nova viagem, envie: km"
-                )
+                == api_whatsapp._no_open_trip_message()
             )
 
             unknown_sender = "5599999999999"
