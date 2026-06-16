@@ -42,17 +42,12 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
             started = api_whatsapp.handle_rdv_text_message(
                 sender, "km início 120350"
             )
-            assert "Viagem iniciada com sucesso." in started
             assert "KM inicial: 120350" in started
+            assert "Qual a cidade/local de origem?" in started
             trip = service.get_open_km_launch_by_phone(sender)
-            assert trip["status_fluxo"] == "viagem_em_andamento"
+            assert trip["status_fluxo"] == "aguardando_km_origem"
             assert not trip["cidade_origem"]
             assert not trip["cidade_destino"]
-
-            regular = api_whatsapp.handle_rdv_text_message(sender, "ola")
-            assert "Ciclus Agro - RDV por WhatsApp" in regular
-            assert "quilometragem" not in regular.lower()
-            assert service.get_open_km_launch_by_phone(sender)["id"] == trip["id"]
 
             summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
             assert "Resumo geral da semana" in summary
@@ -72,9 +67,48 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
                 [
                     item
                     for item in service.list_launches()
-                    if item["status_fluxo"] == "viagem_em_andamento"
+                    if item["status_fluxo"] in {
+                        "aguardando_km_origem",
+                        "aguardando_km_destino",
+                        "viagem_em_andamento",
+                    }
                 ]
             ) == 1
+
+            premature_end = api_whatsapp.handle_rdv_text_message(
+                sender, "km termino 120500"
+            )
+            assert "origem" in premature_end.lower()
+
+            origin_reply = api_whatsapp.handle_rdv_text_message(sender, "Formosa")
+            assert origin_reply == "\n".join(
+                [
+                    "Origem registrada: Formosa.",
+                    "Qual a cidade/local de destino?",
+                ]
+            )
+            trip = service.get_open_km_launch_by_phone(sender)
+            assert trip["status_fluxo"] == "aguardando_km_destino"
+            assert trip["cidade_origem"] == "Formosa"
+
+            premature_end = api_whatsapp.handle_rdv_text_message(
+                sender, "km termino 120500"
+            )
+            assert "destino" in premature_end.lower()
+
+            destination_reply = api_whatsapp.handle_rdv_text_message(
+                sender, "Fazenda Santa Rita"
+            )
+            assert destination_reply == "\n".join(
+                [
+                    "Destino registrado: Fazenda Santa Rita.",
+                    "Quando terminar, envie:",
+                    "km termino 120500",
+                ]
+            )
+            trip = service.get_open_km_launch_by_phone(sender)
+            assert trip["status_fluxo"] == "viagem_em_andamento"
+            assert trip["cidade_destino"] == "Fazenda Santa Rita"
 
             missing_end = api_whatsapp.handle_rdv_text_message(
                 sender, "km termino"
@@ -95,6 +129,8 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
             assert completed_reply == "\n".join(
                 [
                     "Viagem finalizada com sucesso.",
+                    "Origem: Formosa",
+                    "Destino: Fazenda Santa Rita",
                     "KM inicial: 120350",
                     "KM final: 120500",
                     "KM rodado: 150 km",
@@ -150,10 +186,51 @@ def test_manual_value_state_still_accepts_number():
             reply = api_whatsapp.handle_rdv_text_message(sender, "1200")
 
             assert "Valor registrado manualmente: R$ 1.200,00." in reply
+            assert "data do comprovante" in reply
             saved = service.get_expense(pending["id"])
             assert saved["valor"] == 1200
             assert saved["origem_valor"] == "manual"
-            assert saved["status_fluxo"] == "aguardando_categoria"
+            assert saved["status_fluxo"] == "aguardando_data_comprovante"
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_manual_value_then_manual_date_and_category_completes_rdv():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            pending = service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_valor",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            value_reply = api_whatsapp.handle_rdv_text_message(sender, "64,00")
+            assert "data do comprovante" in value_reply
+
+            invalid_date = api_whatsapp.handle_rdv_text_message(sender, "17/06/2026")
+            assert invalid_date == (
+                "Data invalida. Informe a data do comprovante no formato 11/06/2026."
+            )
+
+            date_reply = api_whatsapp.handle_rdv_text_message(sender, "11-06-2026")
+            assert "Data registrada: 11/06/2026. Qual a categoria?" in date_reply
+
+            completed_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "RDV registrado com sucesso." in completed_reply
+            completed = service.get_expense(pending["id"])
+            assert completed["status_fluxo"] == "completo"
+            assert completed["categoria"] == "combustivel"
+            assert completed["data_despesa"] == "2026-06-11"
+            assert completed["data_detectada"] == "2026-06-11"
     finally:
         api_whatsapp.rdv_service = original_service
 

@@ -1,4 +1,5 @@
 import tempfile
+import pytest
 import sys
 from datetime import date
 from pathlib import Path
@@ -10,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from services.rdv_service import RDVService, calculate_week_reference
 
 
-def test_service_starts_and_completes_trip_without_route_fields():
+def test_service_starts_trip_waiting_for_origin_and_completes_with_route():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = RDVService(Path(temp_dir) / "rdv.db")
         collaborator = service.get_collaborator_by_phone("5500000000001")
@@ -19,16 +20,114 @@ def test_service_starts_and_completes_trip_without_route_fields():
             phone=collaborator["telefone_whatsapp"],
             km_start=120350,
         )
-        assert trip["status_fluxo"] == "viagem_em_andamento"
+        assert trip["status_fluxo"] == "aguardando_km_origem"
         assert trip["km_inicio"] == 120350
         assert not trip["cidade_origem"]
         assert not trip["cidade_destino"]
 
+        with pytest.raises(ValueError):
+            service.complete_km_end(trip["id"], 120500)
+
+        with_origin = service.save_km_origin(trip["id"], "Formosa")
+        assert with_origin["status_fluxo"] == "aguardando_km_destino"
+        assert with_origin["cidade_origem"] == "Formosa"
+
+        underway = service.save_km_destination(trip["id"], "Fazenda Santa Rita")
+        assert underway["status_fluxo"] == "viagem_em_andamento"
+        assert underway["cidade_destino"] == "Fazenda Santa Rita"
+
         completed = service.complete_km_end(trip["id"], 120500)
         assert completed["status_fluxo"] == "completo"
+        assert completed["cidade_origem"] == "Formosa"
+        assert completed["cidade_destino"] == "Fazenda Santa Rita"
         assert completed["km_fim"] == 120500
         assert completed["km_rodado"] == 150
         assert completed["quilometragem"] == 150
+
+
+def test_receipt_with_detected_value_and_valid_date_waits_for_category():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.valid-date",
+            received_at="16/06/2026 10:00",
+            analysis={
+                "valor_detectado": 64,
+                "data_detectada": "2026-06-11",
+                "origem_valor": "ocr",
+            },
+        )
+
+        assert receipt["status_fluxo"] == "aguardando_categoria"
+        assert receipt["data_despesa"] == "2026-06-11"
+        assert receipt["data_detectada"] == "2026-06-11"
+        assert receipt["semana_referencia"] == calculate_week_reference("2026-06-11")
+
+
+def test_receipt_with_detected_value_without_date_waits_for_manual_date():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.no-date",
+            received_at="16/06/2026 10:00",
+            analysis={"valor_detectado": 64, "origem_valor": "ocr"},
+        )
+
+        assert receipt["status_fluxo"] == "aguardando_data_comprovante"
+        assert receipt["data_despesa"] == "2026-06-16"
+        assert receipt["data_detectada"] == ""
+
+
+def test_manual_receipt_date_updates_expense_date_detected_date_and_week():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.manual-date",
+            received_at="16/06/2026 10:00",
+            analysis={"valor_detectado": 64, "origem_valor": "ocr"},
+        )
+
+        saved = service.save_launch_receipt_date(receipt["id"], "11.06.2026")
+
+        assert saved["status_fluxo"] == "aguardando_categoria"
+        assert saved["data_despesa"] == "2026-06-11"
+        assert saved["data_detectada"] == "2026-06-11"
+        assert saved["semana_referencia"] == calculate_week_reference("2026-06-11")
+
+
+def test_future_receipt_date_is_rejected():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.future-date",
+            received_at="16/06/2026 10:00",
+            analysis={"valor_detectado": 64, "origem_valor": "ocr"},
+        )
+
+        with pytest.raises(ValueError):
+            service.save_launch_receipt_date(receipt["id"], "17/06/2026")
 
 
 def test_weekly_report_ignores_cancelled_launches():
@@ -63,6 +162,8 @@ def test_weekly_report_keeps_completed_km_out_of_expense_totals():
             phone=collaborator["telefone_whatsapp"],
             km_start=1200,
         )
+        service.save_km_origin(trip["id"], "Formosa")
+        service.save_km_destination(trip["id"], "Fazenda Santa Rita")
         service.complete_km_end(trip["id"], 1300)
 
         report = service.weekly_report(week=calculate_week_reference(date.today()))
@@ -107,6 +208,8 @@ def test_weekly_report_shows_km_separate_from_real_expense():
             phone=collaborator["telefone_whatsapp"],
             km_start=1200,
         )
+        service.save_km_origin(trip["id"], "Formosa")
+        service.save_km_destination(trip["id"], "Fazenda Santa Rita")
         service.complete_km_end(trip["id"], 1300)
         service.register_whatsapp_expense(
             colaborador_id=collaborator["id"],

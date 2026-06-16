@@ -19,7 +19,9 @@ def build_weekly_rdv_workbook(report_data: dict) -> bytes:
     workbook = Workbook()
     workbook.remove(workbook.active)
 
-    launches = report_data.get("lancamentos") or []
+    launches = (report_data.get("lancamentos") or []) + (
+        report_data.get("quilometragens") or []
+    )
     collaborators = report_data.get("resumo_colaboradores") or []
     categories = report_data.get("resumo_categorias") or []
     pending = report_data.get("pendencias") or []

@@ -512,6 +512,26 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         rdv_service.cancel_km_launch(open_km["id"])
         return "Viagem cancelada com sucesso."
 
+    if open_km is not None and pending is None:
+        km_state = open_km.get("status_fluxo")
+        if km_state == "aguardando_km_origem":
+            saved = rdv_service.save_km_origin(open_km["id"], text)
+            return "\n".join(
+                [
+                    f"Origem registrada: {saved['cidade_origem']}.",
+                    "Qual a cidade/local de destino?",
+                ]
+            )
+        if km_state == "aguardando_km_destino":
+            saved = rdv_service.save_km_destination(open_km["id"], text)
+            return "\n".join(
+                [
+                    f"Destino registrado: {saved['cidade_destino']}.",
+                    "Quando terminar, envie:",
+                    "km termino 120500",
+                ]
+            )
+
     if pending is None:
         if normalized == "3":
             return _weekly_summary_message()
@@ -531,8 +551,22 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         if value is None:
             return "Valor invalido. Informe somente o valor, por exemplo: 125,50"
         saved = rdv_service.save_launch_value(pending["id"], value)
+        if saved.get("status_fluxo") == "aguardando_data_comprovante":
+            return (
+                f"Valor registrado manualmente: {_format_brl_text(saved['valor'])}. "
+                "Informe a data do comprovante no formato 11/06/2026."
+            )
         return _category_prompt(
             f"Valor registrado manualmente: {_format_brl_text(saved['valor'])}."
+        )
+
+    if state == "aguardando_data_comprovante":
+        try:
+            saved = rdv_service.save_launch_receipt_date(pending["id"], text)
+        except ValueError:
+            return "Data invalida. Informe a data do comprovante no formato 11/06/2026."
+        return _category_prompt(
+            f"Data registrada: {_format_date_br(saved['data_despesa'])}."
         )
 
     if state == "aguardando_categoria":
@@ -573,14 +607,23 @@ def _no_open_trip_message() -> str:
 
 
 def _open_trip_message(expense: dict) -> str:
-    return "\n".join(
-        [
-            "Ja existe uma viagem em andamento.",
-            f"KM inicial: {_format_km_text(expense.get('km_inicio'))}",
-            "Para finalizar, envie: km termino 120500",
-            "Para cancelar, envie: cancelar km",
-        ]
-    )
+    lines = [
+        "Ja existe uma viagem em andamento.",
+        f"KM inicial: {_format_km_text(expense.get('km_inicio'))}",
+    ]
+    if expense.get("cidade_origem"):
+        lines.append(f"Origem: {expense['cidade_origem']}")
+    if expense.get("cidade_destino"):
+        lines.append(f"Destino: {expense['cidade_destino']}")
+    state = expense.get("status_fluxo")
+    if state == "aguardando_km_origem":
+        lines.append("Informe a cidade/local de origem.")
+    elif state == "aguardando_km_destino":
+        lines.append("Informe a cidade/local de destino.")
+    else:
+        lines.append("Para finalizar, envie: km termino 120500")
+    lines.append("Para cancelar, envie: cancelar km")
+    return "\n".join(lines)
 
 
 def _is_rdv_excel_command(text: str) -> bool:
@@ -639,15 +682,20 @@ def _handle_global_rdv_command(
             )
             return True, "\n".join(
                 [
-                    "Viagem iniciada com sucesso.",
                     f"KM inicial: {_format_km_text(started['km_inicio'])}",
-                    "",
-                    "Quando terminar, envie:",
-                    "km termino 120500",
+                    "Qual a cidade/local de origem?",
                 ]
             )
         if open_km is None:
             return True, _no_open_trip_message()
+        if open_km.get("status_fluxo") == "aguardando_km_origem":
+            return True, (
+                "Antes de finalizar, informe a cidade/local de origem da viagem."
+            )
+        if open_km.get("status_fluxo") == "aguardando_km_destino":
+            return True, (
+                "Antes de finalizar, informe a cidade/local de destino da viagem."
+            )
         km_start = float(open_km.get("km_inicio") or 0)
         if km_value <= km_start:
             return True, (
@@ -658,6 +706,8 @@ def _handle_global_rdv_command(
         return True, "\n".join(
             [
                 "Viagem finalizada com sucesso.",
+                f"Origem: {completed.get('cidade_origem') or '-'}",
+                f"Destino: {completed.get('cidade_destino') or '-'}",
                 f"KM inicial: {_format_km_text(completed['km_inicio'])}",
                 f"KM final: {_format_km_text(completed['km_fim'])}",
                 f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
@@ -775,6 +825,12 @@ def _rdv_received_message(expense: dict) -> str:
                 f"Detectei o valor {_format_brl_text(expense.get('valor'))}.",
                 _category_prompt(),
             ]
+        )
+    if expense.get("status_fluxo") == "aguardando_data_comprovante":
+        return (
+            "Comprovante recebido. "
+            f"Detectei o valor {_format_brl_text(expense.get('valor'))}. "
+            "Informe a data do comprovante no formato 11/06/2026."
         )
     if expense.get("_retry_attempt"):
         return (
@@ -1224,6 +1280,14 @@ def _format_km_text(value: object) -> str:
     if parsed.is_integer():
         return str(int(parsed))
     return f"{parsed:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _format_date_br(value: object) -> str:
+    text = str(value or "").strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return text
 
 
 def _register_processing_error(

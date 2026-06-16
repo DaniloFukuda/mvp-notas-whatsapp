@@ -352,11 +352,11 @@ def _ocr_text_score(text: str) -> int:
 
 
 def _extract_date(text: str) -> str:
-    match = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})\b", text)
+    match = re.search(r"\b(\d{2}[/. -]\d{2}[/. -]\d{4}|\d{4}-\d{2}-\d{2})\b", text)
     if not match:
         return ""
     value = match.group(1)
-    for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+    for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, date_format).date().isoformat()
         except ValueError:
