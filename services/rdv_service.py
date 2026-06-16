@@ -21,6 +21,7 @@ REVIEW_STATUSES = ("pendente", "aprovado", "rejeitado")
 FLOW_STATUSES = (
     "pendente",
     "aguardando_valor",
+    "aguardando_data_comprovante",
     "aguardando_categoria",
     "aguardando_km_origem",
     "aguardando_km_destino",
@@ -33,6 +34,7 @@ FLOW_STATUSES = (
 )
 OPEN_FLOW_STATUSES = (
     "aguardando_valor",
+    "aguardando_data_comprovante",
     "aguardando_categoria",
     "aguardando_km_origem",
     "aguardando_km_destino",
@@ -42,6 +44,7 @@ OPEN_FLOW_STATUSES = (
 )
 INTERACTIVE_EXPENSE_FLOW_STATUSES = (
     "aguardando_valor",
+    "aguardando_data_comprovante",
     "aguardando_categoria",
 )
 LEGACY_KM_FLOW_STATUSES = (
@@ -54,9 +57,7 @@ ALL_OPEN_KM_FLOW_STATUSES = (
     *LEGACY_KM_FLOW_STATUSES,
     "viagem_em_andamento",
 )
-OPEN_KM_FLOW_STATUSES = (
-    "viagem_em_andamento",
-)
+OPEN_KM_FLOW_STATUSES = ALL_OPEN_KM_FLOW_STATUSES
 KM_FLOW_OBSERVATIONS = (
     "quilometragem registrada pelo WhatsApp",
     "viagem cancelada pelo WhatsApp",
@@ -319,16 +320,25 @@ class RDVService:
         safe_input_type = _validate_choice(input_type, INPUT_TYPES, "tipo de entrada")
         analysis = analysis or {}
         detected_value = _to_float(analysis.get("valor_detectado"))
+        detected_date = _valid_receipt_date(analysis.get("data_detectada"))
+        expense_date = detected_date or _date_from_received_at(received_at)
         automatic_read_ok = (
             detected_value is not None
+            and detected_date is not None
             and _clean(analysis.get("origem_valor")) in {"qr_code", "ocr"}
         )
+        if detected_value is None:
+            flow_status = "aguardando_valor"
+        elif detected_date is None:
+            flow_status = "aguardando_data_comprovante"
+        else:
+            flow_status = "aguardando_categoria"
         return self.register_whatsapp_expense(
             colaborador_id=collaborator["id"],
             colaborador=collaborator["nome"],
             telefone_origem=normalize_phone(phone),
             tipo_entrada=safe_input_type,
-            data_despesa=_date_from_received_at(received_at).isoformat(),
+            data_despesa=expense_date.isoformat(),
             categoria="outro",
             valor=detected_value,
             fornecedor=_clean(analysis.get("fornecedor_detectado")),
@@ -336,7 +346,7 @@ class RDVService:
             qr_code_url=_clean(analysis.get("qr_code_url")),
             chave_acesso=_clean(analysis.get("chave_acesso")),
             valor_detectado=detected_value,
-            data_detectada=_clean(analysis.get("data_detectada")),
+            data_detectada=detected_date.isoformat() if detected_date else "",
             fornecedor_detectado=_clean(analysis.get("fornecedor_detectado")),
             origem_valor=_clean(analysis.get("origem_valor")),
             falha_leitura=0 if automatic_read_ok else 1,
@@ -347,11 +357,7 @@ class RDVService:
             ),
             caminho_arquivo=file_path,
             whatsapp_message_id=whatsapp_message_id,
-            status_fluxo=(
-                "aguardando_categoria"
-                if detected_value is not None
-                else "aguardando_valor"
-            ),
+            status_fluxo=flow_status,
             recebido_em=_normalize_datetime(received_at),
             observacao=observation or "comprovante recebido pelo WhatsApp",
         )
@@ -424,7 +430,7 @@ class RDVService:
             valor=None,
             km_inicio=parsed_start,
             observacao="quilometragem registrada pelo WhatsApp",
-            status_fluxo="viagem_em_andamento",
+            status_fluxo="aguardando_km_origem",
             status_revisao="pendente",
             recebido_em=_normalize_datetime(received_at),
         )
@@ -451,7 +457,7 @@ class RDVService:
             expected_status="aguardando_km_destino",
             updates={
                 "cidade_destino": safe_destination,
-                "status_fluxo": "aguardando_km_inicio",
+                "status_fluxo": "viagem_em_andamento",
             },
         )
 
@@ -485,6 +491,10 @@ class RDVService:
             raise ValueError("Lancamento RDV nao encontrado.")
         if current.get("status_fluxo") != "viagem_em_andamento":
             raise ValueError("Lancamento RDV fora da etapa esperada.")
+        if not _clean(current.get("cidade_origem")) or not _clean(
+            current.get("cidade_destino")
+        ):
+            raise ValueError("Informe origem e destino antes de finalizar a viagem.")
 
         parsed_start = _to_float(current.get("km_inicio"))
         if parsed_start is None:
@@ -522,27 +532,7 @@ class RDVService:
         )
 
     def cancel_legacy_km_launches_by_phone(self, phone: str) -> int:
-        self.init_database()
-        normalized_phone = normalize_phone(phone)
-        if not normalized_phone:
-            return 0
-        placeholders = ", ".join("?" for _ in LEGACY_KM_FLOW_STATUSES)
-        now = datetime.now().isoformat(timespec="seconds")
-        with closing(self._connect()) as connection:
-            cursor = connection.execute(
-                f"""
-                UPDATE rdv_despesas
-                SET status_fluxo = 'cancelado',
-                    status_revisao = 'pendente',
-                    observacao = 'viagem cancelada pelo WhatsApp',
-                    updated_at = ?
-                WHERE telefone_origem = ?
-                  AND status_fluxo IN ({placeholders})
-                """,
-                (now, normalized_phone, *LEGACY_KM_FLOW_STATUSES),
-            )
-            connection.commit()
-        return max(int(cursor.rowcount or 0), 0)
+        return 0
 
     def clear_km_trips(self) -> int:
         self.init_database()
@@ -584,16 +574,43 @@ class RDVService:
         parsed_value = _to_float(value)
         if parsed_value is None or parsed_value < 0:
             raise ValueError("Valor da despesa invalido.")
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        receipt_date = _valid_receipt_date(current.get("data_detectada"))
+        updates = {
+            "valor": parsed_value,
+            "origem_valor": "manual",
+            "falha_leitura": 1,
+            "motivo_revisao": "valor informado manualmente apos falha de leitura",
+            "status_fluxo": (
+                "aguardando_categoria"
+                if receipt_date is not None
+                else "aguardando_data_comprovante"
+            ),
+        }
+        if receipt_date is not None:
+            updates.update(
+                {
+                    "data_despesa": receipt_date.isoformat(),
+                    "semana_referencia": calculate_week_reference(receipt_date),
+                }
+            )
         return self._update_launch(
             expense_id,
             expected_status="aguardando_valor",
+            updates=updates,
+        )
+
+    def save_launch_receipt_date(self, expense_id: int, value: object) -> dict:
+        receipt_date = parse_receipt_date(value)
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_data_comprovante",
             updates={
-                "valor": parsed_value,
-                "origem_valor": "manual",
-                "falha_leitura": 1,
-                "motivo_revisao": (
-                    "valor informado manualmente após falha de leitura"
-                ),
+                "data_despesa": receipt_date.isoformat(),
+                "data_detectada": receipt_date.isoformat(),
+                "semana_referencia": calculate_week_reference(receipt_date),
                 "status_fluxo": "aguardando_categoria",
             },
         )
@@ -619,8 +636,10 @@ class RDVService:
         safe_input_type = _validate_choice(input_type, INPUT_TYPES, "tipo de entrada")
         analysis = analysis or {}
         detected_value = _to_float(analysis.get("valor_detectado"))
+        detected_date = _valid_receipt_date(analysis.get("data_detectada"))
         automatic_read_ok = (
             detected_value is not None
+            and detected_date is not None
             and _clean(analysis.get("origem_valor")) in {"qr_code", "ocr"}
         )
         updates = {
@@ -629,7 +648,7 @@ class RDVService:
             "qr_code_text": _clean(analysis.get("qr_code_text")),
             "qr_code_url": _clean(analysis.get("qr_code_url")),
             "chave_acesso": _clean(analysis.get("chave_acesso")),
-            "data_detectada": _clean(analysis.get("data_detectada")),
+            "data_detectada": detected_date.isoformat() if detected_date else "",
             "fornecedor_detectado": _clean(analysis.get("fornecedor_detectado")),
             "fornecedor": _clean(analysis.get("fornecedor_detectado")),
             "falha_leitura": 0 if automatic_read_ok else 1,
@@ -639,6 +658,13 @@ class RDVService:
                 else _analysis_failure_reason(analysis.get("reasons"))
             ),
         }
+        if detected_date is not None:
+            updates.update(
+                {
+                    "data_despesa": detected_date.isoformat(),
+                    "semana_referencia": calculate_week_reference(detected_date),
+                }
+            )
         if automatic_read_ok:
             updates.update(
                 {
@@ -646,6 +672,15 @@ class RDVService:
                     "valor_detectado": detected_value,
                     "origem_valor": _clean(analysis.get("origem_valor")),
                     "status_fluxo": "aguardando_categoria",
+                }
+            )
+        elif detected_value is not None:
+            updates.update(
+                {
+                    "valor": detected_value,
+                    "valor_detectado": detected_value,
+                    "origem_valor": _clean(analysis.get("origem_valor")),
+                    "status_fluxo": "aguardando_data_comprovante",
                 }
             )
 
@@ -699,6 +734,9 @@ class RDVService:
         current = self.get_expense(expense_id)
         if current is None:
             raise ValueError("Lancamento RDV nao encontrado.")
+        receipt_date = _valid_receipt_date(current.get("data_detectada"))
+        if receipt_date is None:
+            raise ValueError("Data do comprovante nao informada.")
         automatic_read_ok = (
             current.get("origem_valor") in {"qr_code", "ocr"}
             and current.get("valor_detectado") is not None
@@ -709,6 +747,8 @@ class RDVService:
             expected_status="aguardando_categoria",
             updates={
                 "categoria": normalized_category,
+                "data_despesa": receipt_date.isoformat(),
+                "semana_referencia": calculate_week_reference(receipt_date),
                 "status_fluxo": "completo",
                 "status_revisao": "aprovado" if automatic_read_ok else "pendente",
             },
@@ -751,6 +791,7 @@ class RDVService:
         collaborator_id: int | str = "",
         status: str = "",
         week: str = "",
+        month: str = "",
     ) -> list[dict]:
         self.init_database()
         clauses = []
@@ -764,6 +805,9 @@ class RDVService:
         if str(week or "").strip():
             clauses.append("semana_referencia = ?")
             values.append(str(week).strip())
+        if str(month or "").strip():
+            clauses.append("substr(data_despesa, 1, 7) = ?")
+            values.append(str(month).strip())
         return self._select_expenses(clauses, values)
 
     def get_expense(self, expense_id: int) -> dict | None:
@@ -872,8 +916,43 @@ class RDVService:
             "viagens_em_aberto": sum(
                 1
                 for expense in km_launches
-                if expense.get("status_fluxo")
-                in {"viagem_em_andamento", "aguardando_km_fim"}
+                if expense.get("status_fluxo") in ALL_OPEN_KM_FLOW_STATUSES
+            ),
+            "quantidade_lancamentos": len(expenses),
+            "pendentes_revisao": len(dataset["pendencias"]),
+        }
+
+    def monthly_report(
+        self,
+        month: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        dataset = self.monthly_report_data(
+            month=month,
+            collaborator_id=collaborator_id,
+            status=status,
+        )
+        expenses = dataset["lancamentos"]
+        km_launches = dataset.get("quilometragens") or []
+        summary = _summarize_expenses(expenses)
+        return {
+            "mes": dataset["mes"],
+            "total_geral": summary["total_geral"],
+            "por_colaborador": summary["por_colaborador"],
+            "por_categoria": summary["por_categoria"],
+            "quantidade_comprovantes": sum(
+                1 for expense in expenses if _has_receipt_attachment(expense)
+            ),
+            "quilometragem_total": sum(
+                float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
+                for expense in km_launches
+                if expense.get("status_fluxo") in {"completo", "revisao"}
+            ),
+            "viagens_em_aberto": sum(
+                1
+                for expense in km_launches
+                if expense.get("status_fluxo") in ALL_OPEN_KM_FLOW_STATUSES
             ),
             "quantidade_lancamentos": len(expenses),
             "pendentes_revisao": len(dataset["pendencias"]),
@@ -891,6 +970,28 @@ class RDVService:
             status=status,
             week=selected_week,
         )
+        dataset = self._build_report_data(expenses)
+        dataset["semana"] = selected_week
+        return dataset
+
+    def monthly_report_data(
+        self,
+        month: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        selected_month = str(month or "").strip() or calculate_month_reference(date.today())
+        expenses = self.list_launches(
+            collaborator_id=collaborator_id,
+            status=status,
+            month=selected_month,
+        )
+        dataset = self._build_report_data(expenses)
+        dataset["mes"] = selected_month
+        return dataset
+
+    @staticmethod
+    def _build_report_data(expenses: list[dict]) -> dict:
         report_expenses = [
             expense for expense in expenses if _is_reportable_expense(expense)
         ]
@@ -950,12 +1051,34 @@ class RDVService:
                     "pendentes": 0,
                 },
             )
+            collaborator_summary["quantidade"] += 1
             collaborator_summary["quilometragem_total"] += distance
+            if _is_pending_launch(expense):
+                pending.append(expense)
+                collaborator_summary["pendentes"] += 1
 
+        summary = _summarize_expenses(report_expenses)
         return {
-            "semana": selected_week,
             "lancamentos": report_expenses,
             "quilometragens": km_launches,
+            "total_geral": summary["total_geral"],
+            "por_colaborador": summary["por_colaborador"],
+            "por_categoria": summary["por_categoria"],
+            "quantidade_comprovantes": sum(
+                1 for expense in report_expenses if _has_receipt_attachment(expense)
+            ),
+            "quilometragem_total": sum(
+                float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
+                for expense in km_launches
+                if expense.get("status_fluxo") in {"completo", "revisao"}
+            ),
+            "viagens_em_aberto": sum(
+                1
+                for expense in km_launches
+                if expense.get("status_fluxo") in ALL_OPEN_KM_FLOW_STATUSES
+            ),
+            "quantidade_lancamentos": len(report_expenses),
+            "pendentes_revisao": len(pending),
             "resumo_colaboradores": sorted(
                 by_collaborator.values(),
                 key=lambda item: item["colaborador"],
@@ -1118,6 +1241,8 @@ class RDVService:
         self.init_database()
         allowed_columns = {
             "valor",
+            "data_despesa",
+            "semana_referencia",
             "origem_valor",
             "falha_leitura",
             "motivo_revisao",
@@ -1221,6 +1346,18 @@ def calculate_week_reference(value: str | date | datetime) -> str:
     return f"{iso_year}-W{iso_week:02d}"
 
 
+def calculate_month_reference(value: str | date | datetime) -> str:
+    expense_date = _date_value(value)
+    return f"{expense_date.year:04d}-{expense_date.month:02d}"
+
+
+def parse_receipt_date(value: object) -> date:
+    parsed = _parse_receipt_date_value(value)
+    if parsed is None or parsed > date.today():
+        raise ValueError("Data da despesa invalida.")
+    return parsed
+
+
 def calculate_distance(km_inicio: object, km_fim: object) -> float | None:
     start = _to_float(km_inicio)
     end = _to_float(km_fim)
@@ -1252,6 +1389,95 @@ def _date_value(value: object) -> date:
         except ValueError:
             continue
     raise ValueError("Data da despesa invalida.")
+
+
+def _valid_receipt_date(value: object) -> date | None:
+    parsed = _parse_receipt_date_value(value)
+    if parsed is None or parsed > date.today():
+        return None
+    return parsed
+
+
+def _parse_receipt_date_value(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    text = str(value or "").strip()
+    textual = re.search(
+        r"\b(\d{1,2})\s*(?:/|\s+de\s+)\s*"
+        r"(janeiro|fevereiro|mar(?:c|\u00e7)o|abril|maio|junho|julho|agosto|"
+        r"setembro|outubro|novembro|dezembro)"
+        r"\s*(?:/|\s+de\s+)\s*(\d{4})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if textual:
+        month = _portuguese_month_number(textual.group(2))
+        if month:
+            try:
+                return date(int(textual.group(3)), month, int(textual.group(1)))
+            except ValueError:
+                return None
+
+    for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, date_format).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _portuguese_month_number(value: str) -> int:
+    normalized = _strip_accents(value).lower()
+    months = {
+        "janeiro": 1,
+        "fevereiro": 2,
+        "marco": 3,
+        "abril": 4,
+        "maio": 5,
+        "junho": 6,
+        "julho": 7,
+        "agosto": 8,
+        "setembro": 9,
+        "outubro": 10,
+        "novembro": 11,
+        "dezembro": 12,
+    }
+    return months.get(normalized, 0)
+
+
+def _strip_accents(value: str) -> str:
+    replacements = str.maketrans(
+        {
+            "\u00e1": "a",
+            "\u00e0": "a",
+            "\u00e2": "a",
+            "\u00e3": "a",
+            "\u00e9": "e",
+            "\u00ea": "e",
+            "\u00ed": "i",
+            "\u00f3": "o",
+            "\u00f4": "o",
+            "\u00f5": "o",
+            "\u00fa": "u",
+            "\u00e7": "c",
+            "\u00c1": "A",
+            "\u00c0": "A",
+            "\u00c2": "A",
+            "\u00c3": "A",
+            "\u00c9": "E",
+            "\u00ca": "E",
+            "\u00cd": "I",
+            "\u00d3": "O",
+            "\u00d4": "O",
+            "\u00d5": "O",
+            "\u00da": "U",
+            "\u00c7": "C",
+        }
+    )
+    return str(value or "").translate(replacements)
 
 
 def _date_from_received_at(value: str | datetime | None) -> date:

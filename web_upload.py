@@ -27,7 +27,10 @@ from services.rdv_service import (
     RDVService,
     calculate_week_reference,
 )
-from services.rdv_excel_service import build_weekly_rdv_workbook
+from services.rdv_excel_service import (
+    build_monthly_rdv_workbook,
+    build_weekly_rdv_workbook,
+)
 
 
 app = FastAPI(title="Envio de Documentos")
@@ -1237,6 +1240,19 @@ def relatorio_semanal_rdv_ciclus(
     )
 
 
+@app.get("/ciclus/rdv/relatorio-mensal")
+def relatorio_mensal_rdv_ciclus(
+    mes: str = Query(""),
+    colaborador_id: str = Query(""),
+    status: str = Query(""),
+) -> dict:
+    return rdv_service.monthly_report(
+        month=mes.strip(),
+        collaborator_id=colaborador_id.strip(),
+        status=status.strip(),
+    )
+
+
 @app.get("/ciclus/rdv/relatorio-semanal.xlsx")
 def exportar_relatorio_semanal_rdv_excel(
     semana: str = Query(""),
@@ -1258,6 +1274,32 @@ def exportar_relatorio_semanal_rdv_excel(
         headers={
             "Content-Disposition": (
                 f'attachment; filename="rdv_ciclus_agro_{safe_week}.xlsx"'
+            )
+        },
+    )
+
+
+@app.get("/ciclus/rdv/relatorio-mensal.xlsx")
+def exportar_relatorio_mensal_rdv_excel(
+    mes: str = Query(""),
+    colaborador_id: str = Query(""),
+    status: str = Query(""),
+) -> Response:
+    report_data = rdv_service.monthly_report_data(
+        month=mes.strip(),
+        collaborator_id=colaborador_id.strip(),
+        status=status.strip(),
+    )
+    content = build_monthly_rdv_workbook(report_data)
+    safe_month = report_data["mes"].replace("-", "_")
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="rdv_ciclus_agro_mensal_{safe_month}.xlsx"'
             )
         },
     )

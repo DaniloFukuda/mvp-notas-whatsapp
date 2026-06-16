@@ -55,7 +55,7 @@ def test_km_cancel_alias_cancels_open_trip():
         api_whatsapp.rdv_service = original_service
 
 
-def test_legacy_km_state_is_cancelled_on_next_message():
+def test_open_km_state_is_not_cancelled_until_explicit_cancel():
     original_service = api_whatsapp.rdv_service
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -73,6 +73,38 @@ def test_legacy_km_state_is_cancelled_on_next_message():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "km")
             assert reply == api_whatsapp.KM_HELP_MESSAGE
+            assert service.get_expense(legacy["id"])["status_fluxo"] == "aguardando_km_fim"
+            assert api_whatsapp.handle_rdv_text_message(
+                sender, "cancelar km"
+            ) == "Viagem cancelada com sucesso."
             assert service.get_expense(legacy["id"])["status_fluxo"] == "cancelado"
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_cancel_km_works_while_waiting_origin_and_destination():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+
+            api_whatsapp.handle_rdv_text_message(sender, "km inicio 1000")
+            trip = service.get_open_km_launch_by_phone(sender)
+            assert trip["status_fluxo"] == "aguardando_km_origem"
+            assert api_whatsapp.handle_rdv_text_message(
+                sender, "cancelar km"
+            ) == "Viagem cancelada com sucesso."
+
+            api_whatsapp.handle_rdv_text_message(sender, "km inicio 1000")
+            api_whatsapp.handle_rdv_text_message(sender, "Formosa")
+            trip = service.get_open_km_launch_by_phone(sender)
+            assert trip["status_fluxo"] == "aguardando_km_destino"
+            assert api_whatsapp.handle_rdv_text_message(
+                sender, "km cancelar"
+            ) == "Viagem cancelada com sucesso."
+            assert service.get_open_km_launch_by_phone(sender) is None
     finally:
         api_whatsapp.rdv_service = original_service
