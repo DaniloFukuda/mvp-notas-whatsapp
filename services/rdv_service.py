@@ -854,27 +854,24 @@ class RDVService:
             status=status,
         )
         expenses = dataset["lancamentos"]
+        km_launches = dataset.get("quilometragens") or []
         summary = _summarize_expenses(expenses)
-        completed = [
-            expense
-            for expense in expenses
-            if expense.get("status_fluxo") in {"completo", "revisao"}
-        ]
         return {
             "semana": dataset["semana"],
             "total_geral": summary["total_geral"],
             "por_colaborador": summary["por_colaborador"],
             "por_categoria": summary["por_categoria"],
             "quantidade_comprovantes": sum(
-                1 for expense in expenses if expense.get("caminho_arquivo")
+                1 for expense in expenses if _has_receipt_attachment(expense)
             ),
             "quilometragem_total": sum(
                 float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
-                for expense in completed
+                for expense in km_launches
+                if expense.get("status_fluxo") in {"completo", "revisao"}
             ),
             "viagens_em_aberto": sum(
                 1
-                for expense in expenses
+                for expense in km_launches
                 if expense.get("status_fluxo")
                 in {"viagem_em_andamento", "aguardando_km_fim"}
             ),
@@ -894,14 +891,19 @@ class RDVService:
             status=status,
             week=selected_week,
         )
+        report_expenses = [
+            expense for expense in expenses if _is_reportable_expense(expense)
+        ]
+        km_launches = [
+            expense
+            for expense in expenses
+            if not _is_cancelled_launch(expense) and _is_km_launch(expense)
+        ]
         by_collaborator: dict[str, dict] = {}
         by_category: dict[str, dict] = {}
         pending = []
-        for expense in expenses:
+        for expense in report_expenses:
             value = float(expense.get("valor") or 0)
-            distance = float(
-                expense.get("quilometragem") or expense.get("km_rodado") or 0
-            )
             collaborator = str(expense.get("colaborador") or "Nao informado")
             category = str(expense.get("categoria") or "outro")
 
@@ -917,7 +919,6 @@ class RDVService:
             )
             collaborator_summary["total"] += value
             collaborator_summary["quantidade"] += 1
-            collaborator_summary["quilometragem_total"] += distance
 
             category_summary = by_category.setdefault(
                 category,
@@ -934,9 +935,27 @@ class RDVService:
                 pending.append(expense)
                 collaborator_summary["pendentes"] += 1
 
+        for expense in km_launches:
+            distance = float(
+                expense.get("quilometragem") or expense.get("km_rodado") or 0
+            )
+            collaborator = str(expense.get("colaborador") or "Nao informado")
+            collaborator_summary = by_collaborator.setdefault(
+                collaborator,
+                {
+                    "colaborador": collaborator,
+                    "total": 0.0,
+                    "quantidade": 0,
+                    "quilometragem_total": 0.0,
+                    "pendentes": 0,
+                },
+            )
+            collaborator_summary["quilometragem_total"] += distance
+
         return {
             "semana": selected_week,
-            "lancamentos": expenses,
+            "lancamentos": report_expenses,
+            "quilometragens": km_launches,
             "resumo_colaboradores": sorted(
                 by_collaborator.values(),
                 key=lambda item: item["colaborador"],
@@ -1320,6 +1339,44 @@ def _summarize_expenses(expenses: list[dict]) -> dict:
         "por_semana": by_week,
         "por_categoria": by_category,
     }
+
+
+def _is_cancelled_launch(expense: dict) -> bool:
+    return str(expense.get("status_fluxo") or "").lower() == "cancelado"
+
+
+def _is_km_launch(expense: dict) -> bool:
+    if any(
+        expense.get(field) not in (None, "")
+        for field in ("km_inicio", "km_fim", "km_rodado", "quilometragem")
+    ):
+        return True
+    observation = str(expense.get("observacao") or "").lower()
+    return "quilometragem" in observation or "viagem" in observation
+
+
+def _has_receipt_attachment(expense: dict) -> bool:
+    input_type = str(expense.get("tipo_entrada") or "").lower()
+    return bool(expense.get("caminho_arquivo")) or input_type in {
+        "imagem",
+        "documento",
+    }
+
+
+def _is_reportable_expense(expense: dict) -> bool:
+    if _is_cancelled_launch(expense) or _is_km_launch(expense):
+        return False
+    if _has_receipt_attachment(expense):
+        return True
+    if str(expense.get("origem") or "").lower() == "web":
+        return True
+    if expense.get("whatsapp_message_id"):
+        return True
+    value = expense.get("valor")
+    try:
+        return float(value) != 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_pending_launch(expense: dict) -> bool:
