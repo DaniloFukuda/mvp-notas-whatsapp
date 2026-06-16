@@ -18,9 +18,13 @@ from core.storage import save_processing_result
 from services.rdv_service import (
     CATEGORIES as RDV_CATEGORIES,
     RDVService,
+    calculate_month_reference,
     calculate_week_reference,
 )
-from services.rdv_excel_service import build_weekly_rdv_workbook
+from services.rdv_excel_service import (
+    build_monthly_rdv_workbook,
+    build_weekly_rdv_workbook,
+)
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 
 
@@ -38,23 +42,13 @@ logger.setLevel(logging.INFO)
 router = APIRouter()
 WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
-RDV_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
+RDV_MONTHLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_mensal.xlsx"
+RDV_WEEKLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
 RDV_EXCEL_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-RDV_EXCEL_COMMANDS = {
-    "planilha",
-    "planilha semanal",
-    "excel",
-    "relatorio",
-    "relatorio semanal",
-    "rdv",
-}
-RDV_SUMMARY_COMMANDS = {
-    "resumo",
-    "resumo semanal",
-}
-RDV_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
+RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
+RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km", "km cancelar"}
 KM_HELP_MESSAGE = "\n".join(
@@ -89,8 +83,8 @@ RDV_MENU = "\n".join(
         "Envie uma foto ou documento do comprovante para iniciar.",
         "Depois vou pedir apenas os dados que nao forem detectados.",
         "",
-        "Digite resumo para consultar a semana atual.",
-        "Digite planilha para receber o relatorio semanal em Excel.",
+        "Digite resumo para consultar o mes atual.",
+        "Digite planilha para receber o relatorio mensal em Excel.",
         "Digite km para ver como registrar uma viagem.",
     ]
 )
@@ -247,7 +241,7 @@ def send_whatsapp_text(to: str, message: str) -> None:
 
 def upload_whatsapp_document(
     content: bytes,
-    filename: str = RDV_EXCEL_FILENAME,
+    filename: str = RDV_MONTHLY_EXCEL_FILENAME,
     mime_type: str = RDV_EXCEL_MIME_TYPE,
 ) -> str:
     if not content:
@@ -284,8 +278,8 @@ def upload_whatsapp_document(
 def send_whatsapp_document(
     to: str,
     content: bytes,
-    filename: str = RDV_EXCEL_FILENAME,
-    caption: str = RDV_EXCEL_CAPTION,
+    filename: str = RDV_MONTHLY_EXCEL_FILENAME,
+    caption: str = RDV_MONTHLY_EXCEL_CAPTION,
     mime_type: str = RDV_EXCEL_MIME_TYPE,
 ) -> None:
     recipient = str(to or "").strip()
@@ -534,9 +528,9 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
 
     if pending is None:
         if normalized == "3":
-            return _weekly_summary_message()
+            return _monthly_summary_message()
         if normalized in {"meu resumo", "meuresumo", "individual"}:
-            return _weekly_summary_message(collaborator["id"])
+            return _monthly_summary_message(collaborator["id"])
         if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
             return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
         if _is_standalone_number(normalized):
@@ -580,14 +574,29 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         lines = [
             "RDV registrado com sucesso.",
             f"Lancamento #{completed['id']}.",
+            f"Data do comprovante: {_format_date_br(completed['data_despesa'])}.",
+            f"Mes: {calculate_month_reference(completed['data_despesa'])}.",
+            f"Semana: {completed['semana_referencia']}.",
             f"Valor: {_format_brl_text(completed['valor'])}.",
             f"Categoria: {_category_label(completed['categoria'])}.",
             "Status: completo.",
         ]
         if completed.get("origem_valor") == "manual":
             lines.append("Valor informado manualmente.")
-        lines.append("Para receber a planilha semanal, envie: planilha.")
-        return " ".join(lines)
+        if completed.get("semana_referencia") != calculate_week_reference(date.today()):
+            lines.append(
+                "Este comprovante entrou pela data real do documento, "
+                "nao pela data de envio no WhatsApp."
+            )
+        month = calculate_month_reference(completed["data_despesa"])
+        lines.extend(
+            [
+                "",
+                "Para receber a planilha do mes, envie:",
+                f"planilha {month}",
+            ]
+        )
+        return "\n".join(lines)
 
     return RDV_MENU
 
@@ -627,7 +636,8 @@ def _open_trip_message(expense: dict) -> str:
 
 
 def _is_rdv_excel_command(text: str) -> bool:
-    return _normalize_caption(text) in RDV_EXCEL_COMMANDS
+    request = _parse_rdv_report_command(_normalize_caption(text))
+    return request is not None and request["kind"] == "excel"
 
 
 def _handle_global_rdv_command(
@@ -635,12 +645,21 @@ def _handle_global_rdv_command(
     collaborator: dict,
     normalized_text: str,
 ) -> tuple[bool, str | None]:
-    if normalized_text in RDV_SUMMARY_COMMANDS:
-        return True, _weekly_summary_message()
+    report_request = _parse_rdv_report_command(normalized_text)
+    if report_request is not None and report_request["kind"] == "summary":
+        if report_request["period"] == "week":
+            return True, _weekly_summary_message(week=report_request["reference"])
+        return True, _monthly_summary_message(
+            collaborator_id=collaborator["id"] if report_request["scope"] == "mine" else "",
+            month=report_request["reference"],
+        )
 
-    if normalized_text in RDV_EXCEL_COMMANDS:
+    if report_request is not None and report_request["kind"] == "excel":
         try:
-            _send_weekly_rdv_excel(sender_phone)
+            if report_request["period"] == "week":
+                _send_weekly_rdv_excel(sender_phone, week=report_request["reference"])
+            else:
+                _send_monthly_rdv_excel(sender_phone, month=report_request["reference"])
         except Exception as exc:
             logger.exception(
                 "Falha ao enviar Excel RDV pelo WhatsApp: to=%s erro=%s",
@@ -736,16 +755,87 @@ def _is_standalone_number(text: str) -> bool:
     return re.fullmatch(r"\d+(?:[.,]\d+)?", str(text or "").strip()) is not None
 
 
-def _send_weekly_rdv_excel(sender_phone: str) -> None:
+def _parse_rdv_report_command(normalized_text: str) -> dict | None:
+    text = str(normalized_text or "").strip()
+    match = re.fullmatch(r"(resumo|planilha|relatorio|excel)(?:\s+(.+))?", text)
+    if match is None:
+        return None
+
+    command = match.group(1)
+    argument = str(match.group(2) or "").strip()
+    kind = "summary" if command == "resumo" else "excel"
+
+    if re.fullmatch(r"\d{4}-W\d{2}", argument, flags=re.IGNORECASE):
+        return {
+            "kind": kind,
+            "period": "week",
+            "reference": argument.upper(),
+            "scope": "all",
+        }
+    if re.fullmatch(r"\d{4}-\d{2}", argument):
+        return {
+            "kind": kind,
+            "period": "month",
+            "reference": argument,
+            "scope": "all",
+        }
+    if argument in {"semanal", "semana"}:
+        return {
+            "kind": kind,
+            "period": "week",
+            "reference": calculate_week_reference(date.today()),
+            "scope": "all",
+        }
+    if argument in {"anterior", "mes anterior"}:
+        return {
+            "kind": kind,
+            "period": "month",
+            "reference": _previous_month_reference(date.today()),
+            "scope": "all",
+        }
+    if argument in {"", "mensal", "mes"}:
+        return {
+            "kind": kind,
+            "period": "month",
+            "reference": calculate_month_reference(date.today()),
+            "scope": "all",
+        }
+    return None
+
+
+def _previous_month_reference(today: date) -> str:
+    year = today.year
+    month = today.month - 1
+    if month == 0:
+        year -= 1
+        month = 12
+    return f"{year:04d}-{month:02d}"
+
+
+def _send_monthly_rdv_excel(sender_phone: str, month: str = "") -> None:
+    selected_month = month or calculate_month_reference(date.today())
+    report_data = rdv_service.monthly_report_data(month=selected_month)
+    content = build_monthly_rdv_workbook(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_MONTHLY_EXCEL_FILENAME,
+        caption=RDV_MONTHLY_EXCEL_CAPTION,
+        mime_type=RDV_EXCEL_MIME_TYPE,
+    )
+
+
+def _send_weekly_rdv_excel(sender_phone: str, week: str = "") -> None:
+    selected_week = week or calculate_week_reference(date.today())
     report_data = rdv_service.weekly_report_data(
-        week=calculate_week_reference(date.today()),
+        week=selected_week,
     )
     content = build_weekly_rdv_workbook(report_data)
     send_whatsapp_document(
         sender_phone,
         content,
-        filename=RDV_EXCEL_FILENAME,
-        caption=RDV_EXCEL_CAPTION,
+        filename=RDV_WEEKLY_EXCEL_FILENAME,
+        caption=RDV_WEEKLY_EXCEL_CAPTION,
         mime_type=RDV_EXCEL_MIME_TYPE,
     )
 
@@ -753,7 +843,7 @@ def _send_weekly_rdv_excel(sender_phone: str) -> None:
 def _rdv_excel_fallback_message() -> str:
     public_url = _base_public_url()
     if public_url:
-        download_url = f"{public_url}/ciclus/rdv/relatorio-semanal.xlsx"
+        download_url = f"{public_url}/ciclus/rdv/relatorio-mensal.xlsx"
         return (
             "Nao consegui enviar o arquivo agora. "
             f"Voce pode baixar pelo painel: {download_url}"
@@ -845,19 +935,43 @@ def _rdv_received_message(expense: dict) -> str:
     )
 
 
-def _weekly_summary_message(collaborator_id: int | str = "") -> str:
-    week = calculate_week_reference(date.today())
-    summary = rdv_service.weekly_report(
-        week=week,
+def _monthly_summary_message(
+    collaborator_id: int | str = "",
+    month: str = "",
+) -> str:
+    selected_month = month or calculate_month_reference(date.today())
+    summary = rdv_service.monthly_report(
+        month=selected_month,
         collaborator_id=collaborator_id,
     )
 
     title = (
-        f"Meu resumo da semana {week}"
+        f"Meu resumo do mes {selected_month}"
         if collaborator_id
-        else f"Resumo geral da semana {week}"
+        else f"Resumo geral do mes {selected_month}"
+    )
+    return _summary_lines(title, summary)
+
+
+def _weekly_summary_message(
+    collaborator_id: int | str = "",
+    week: str = "",
+) -> str:
+    selected_week = week or calculate_week_reference(date.today())
+    summary = rdv_service.weekly_report(
+        week=selected_week,
+        collaborator_id=collaborator_id,
     )
 
+    title = (
+        f"Meu resumo da semana {selected_week}"
+        if collaborator_id
+        else f"Resumo geral da semana {selected_week}"
+    )
+    return _summary_lines(title, summary)
+
+
+def _summary_lines(title: str, summary: dict) -> str:
     lines = [
         title,
         f"Lancamentos: {summary['quantidade_lancamentos']}",

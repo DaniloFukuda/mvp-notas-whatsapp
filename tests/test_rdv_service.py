@@ -8,7 +8,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from services.rdv_service import RDVService, calculate_week_reference
+from services.rdv_service import (
+    RDVService,
+    calculate_month_reference,
+    calculate_week_reference,
+)
+
+
+def test_calculate_month_reference_returns_year_month():
+    assert calculate_month_reference(date(2026, 6, 14)) == "2026-06"
 
 
 def test_service_starts_trip_waiting_for_origin_and_completes_with_route():
@@ -350,3 +358,91 @@ def test_weekly_report_ignores_zero_text_without_receipt_or_real_expense():
         assert report["quantidade_comprovantes"] == 0
         assert report["total_geral"] == 0
         assert report["por_categoria"] == {}
+
+
+def test_monthly_report_includes_only_document_month_and_sums_totals():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        danilo = service.get_collaborator_by_phone("5500000000001")
+        marcelo = service.get_collaborator_by_phone("5500000000002")
+
+        june = service.create_whatsapp_receipt(
+            collaborator_id=danilo["id"],
+            phone=danilo["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="junho.jpg",
+            whatsapp_message_id="wamid.month.june",
+            received_at="2026-07-01T09:00:00",
+            analysis={
+                "valor_detectado": 80,
+                "data_detectada": "2026-06-14",
+                "origem_valor": "ocr",
+            },
+        )
+        service.complete_launch_category(june["id"], "alimentacao")
+        service.register_whatsapp_expense(
+            colaborador_id=marcelo["id"],
+            colaborador=marcelo["nome"],
+            telefone_origem=marcelo["telefone_whatsapp"],
+            tipo_entrada="imagem",
+            data_despesa="2026-06-20",
+            data_detectada="2026-06-20",
+            categoria="pedagio",
+            valor=25,
+            caminho_arquivo="pedagio.jpg",
+            status_fluxo="completo",
+        )
+        service.register_whatsapp_expense(
+            colaborador_id=danilo["id"],
+            colaborador=danilo["nome"],
+            telefone_origem=danilo["telefone_whatsapp"],
+            tipo_entrada="imagem",
+            data_despesa="2026-05-31",
+            data_detectada="2026-05-31",
+            categoria="combustivel",
+            valor=200,
+            caminho_arquivo="maio.jpg",
+            status_fluxo="completo",
+        )
+
+        report_data = service.monthly_report_data(month="2026-06")
+        report = service.monthly_report(month="2026-06")
+
+        assert report_data["mes"] == "2026-06"
+        assert {item["data_despesa"] for item in report_data["lancamentos"]} == {
+            "2026-06-14",
+            "2026-06-20",
+        }
+        assert report["quantidade_lancamentos"] == 2
+        assert report["quantidade_comprovantes"] == 2
+        assert report["total_geral"] == 105
+        assert report["por_colaborador"] == {
+            "Danilo": 80,
+            "Marcelo": 25,
+        }
+        assert report["por_categoria"] == {
+            "alimentacao": 80,
+            "pedagio": 25,
+        }
+
+
+def test_monthly_report_includes_km_for_month():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+        trip = service.create_whatsapp_km_launch(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            km_start=1000,
+            received_at="2026-06-10T08:00:00",
+        )
+        service.save_km_origin(trip["id"], "Formosa")
+        service.save_km_destination(trip["id"], "Fazenda")
+        service.complete_km_end(trip["id"], 1120)
+
+        report = service.monthly_report(month="2026-06")
+        report_data = service.monthly_report_data(month="2026-06")
+
+        assert report["quantidade_lancamentos"] == 0
+        assert report["quilometragem_total"] == 120
+        assert len(report_data["quilometragens"]) == 1

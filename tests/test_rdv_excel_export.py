@@ -162,6 +162,72 @@ def test_weekly_rdv_excel_export_contains_expenses_km_and_pending_rows():
         web_upload.rdv_service = original_service
 
 
+def test_monthly_rdv_excel_export_uses_receipt_date_and_audit_sheet():
+    original_service = web_upload.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv_monthly_excel_test.db")
+            web_upload.rdv_service = service
+            danilo = service.get_collaborator_by_phone("5500000000001")
+
+            receipt = service.create_whatsapp_receipt(
+                collaborator_id=danilo["id"],
+                phone=danilo["telefone_whatsapp"],
+                input_type="imagem",
+                file_path="data/documentos/uploads/whatsapp/mercado_pago.jpg",
+                whatsapp_message_id="wamid.monthly.excel",
+                received_at="2026-06-16T10:17:47",
+                analysis={
+                    "valor_detectado": 80,
+                    "data_detectada": "2026-06-14",
+                    "fornecedor_detectado": "Mercado Pago",
+                    "origem_valor": "ocr",
+                },
+            )
+            service.complete_launch_category(receipt["id"], "alimentacao")
+
+            response = web_upload.exportar_relatorio_mensal_rdv_excel(
+                mes="2026-06",
+                colaborador_id="",
+                status="",
+            )
+
+            assert response.media_type == (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            workbook = load_workbook(BytesIO(response.body))
+            assert tuple(workbook.sheetnames) == (
+                "Lancamentos",
+                "Resumo por Colaborador",
+                "Resumo por Categoria",
+                "Pendencias",
+                "Auditoria",
+            )
+
+            launches = workbook["Lancamentos"]
+            headers = _headers(launches)
+            assert headers[0] == "Data do comprovante"
+            assert "Data detectada" not in headers
+            assert "Recebido em" not in headers
+            assert _date_value(launches.cell(2, 1).value) == date(2026, 6, 14)
+            assert launches.cell(2, 5).value == 80
+            assert launches.cell(2, 6).value == "Mercado Pago"
+
+            audit = workbook["Auditoria"]
+            assert _headers(audit) == (
+                "id",
+                "data_detectada",
+                "recebido_em",
+                "whatsapp_message_id",
+                "caminho_arquivo",
+            )
+            assert _date_value(audit.cell(2, 2).value) == date(2026, 6, 14)
+            assert audit.cell(2, 3).value == datetime(2026, 6, 16, 10, 17, 47)
+            assert audit.cell(2, 4).value == "wamid.monthly.excel"
+    finally:
+        web_upload.rdv_service = original_service
+
+
 def _headers(sheet) -> tuple:
     return tuple(cell.value for cell in sheet[1])
 

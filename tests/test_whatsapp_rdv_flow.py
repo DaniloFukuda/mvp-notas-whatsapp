@@ -13,6 +13,7 @@ from services.rdv_service import RDVService
 def test_explicit_km_flow_does_not_capture_regular_messages():
     original_service = api_whatsapp.rdv_service
     original_excel_sender = api_whatsapp._send_weekly_rdv_excel
+    original_monthly_excel_sender = api_whatsapp._send_monthly_rdv_excel
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = RDVService(Path(temp_dir) / "rdv.db")
@@ -50,13 +51,20 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
             assert not trip["cidade_destino"]
 
             summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
-            assert "Resumo geral da semana" in summary
+            assert "Resumo geral do mes" in summary
             assert service.get_open_km_launch_by_phone(sender)["id"] == trip["id"]
 
             sent = []
-            api_whatsapp._send_weekly_rdv_excel = lambda phone: sent.append(phone)
+            api_whatsapp._send_monthly_rdv_excel = lambda phone, month="": sent.append(
+                (phone, month)
+            )
             assert api_whatsapp.handle_rdv_text_message(sender, "planilha") is None
-            assert sent == [sender]
+            assert sent == [
+                (
+                    sender,
+                    api_whatsapp.calculate_month_reference(api_whatsapp.date.today()),
+                )
+            ]
             assert service.get_open_km_launch_by_phone(sender)["id"] == trip["id"]
 
             duplicate = api_whatsapp.handle_rdv_text_message(
@@ -143,6 +151,7 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
     finally:
         api_whatsapp.rdv_service = original_service
         api_whatsapp._send_weekly_rdv_excel = original_excel_sender
+        api_whatsapp._send_monthly_rdv_excel = original_monthly_excel_sender
 
 
 def test_loose_number_outside_manual_value_state_does_not_create_launch():
@@ -163,6 +172,91 @@ def test_loose_number_outside_manual_value_state_does_not_create_launch():
             assert "Total: R$ 0,00" in summary
     finally:
         api_whatsapp.rdv_service = original_service
+
+
+def test_rdv_summary_commands_support_month_week_and_previous_month():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                data_despesa="2026-06-14",
+                data_detectada="2026-06-14",
+                categoria="alimentacao",
+                valor=80,
+                caminho_arquivo="junho.jpg",
+                status_fluxo="completo",
+            )
+
+            monthly = api_whatsapp.handle_rdv_text_message(sender, "resumo")
+            specific_month = api_whatsapp.handle_rdv_text_message(
+                sender, "resumo 2026-06"
+            )
+            weekly = api_whatsapp.handle_rdv_text_message(sender, "resumo 2026-W24")
+            weekly_alias = api_whatsapp.handle_rdv_text_message(
+                sender, "resumo semanal"
+            )
+
+            assert "Resumo geral do mes" in monthly
+            assert "Resumo geral do mes 2026-06" in specific_month
+            assert "Total: R$ 80,00" in specific_month
+            assert "Resumo geral da semana 2026-W24" in weekly
+            assert "Total: R$ 80,00" in weekly
+            assert "Resumo geral da semana" in weekly_alias
+
+            previous = api_whatsapp.handle_rdv_text_message(sender, "resumo anterior")
+            assert "Resumo geral do mes" in previous
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_rdv_excel_commands_support_month_week_and_specific_references():
+    original_service = api_whatsapp.rdv_service
+    original_weekly_excel_sender = api_whatsapp._send_weekly_rdv_excel
+    original_monthly_excel_sender = api_whatsapp._send_monthly_rdv_excel
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            monthly = []
+            weekly = []
+            api_whatsapp._send_monthly_rdv_excel = (
+                lambda phone, month="": monthly.append((phone, month))
+            )
+            api_whatsapp._send_weekly_rdv_excel = (
+                lambda phone, week="": weekly.append((phone, week))
+            )
+
+            assert api_whatsapp.handle_rdv_text_message(sender, "planilha") is None
+            assert api_whatsapp.handle_rdv_text_message(sender, "excel mensal") is None
+            assert api_whatsapp.handle_rdv_text_message(sender, "relatorio 2026-06") is None
+            assert api_whatsapp.handle_rdv_text_message(sender, "planilha semanal") is None
+            assert api_whatsapp.handle_rdv_text_message(sender, "excel 2026-W24") is None
+
+            assert monthly[0] == (
+                sender,
+                api_whatsapp.calculate_month_reference(api_whatsapp.date.today()),
+            )
+            assert monthly[1] == (sender, "2026-06")
+            assert monthly[2] == (sender, "2026-06")
+            assert weekly[0] == (
+                sender,
+                api_whatsapp.calculate_week_reference(api_whatsapp.date.today()),
+            )
+            assert weekly[1] == (sender, "2026-W24")
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp._send_weekly_rdv_excel = original_weekly_excel_sender
+        api_whatsapp._send_monthly_rdv_excel = original_monthly_excel_sender
 
 
 def test_manual_value_state_still_accepts_number():

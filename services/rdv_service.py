@@ -791,6 +791,7 @@ class RDVService:
         collaborator_id: int | str = "",
         status: str = "",
         week: str = "",
+        month: str = "",
     ) -> list[dict]:
         self.init_database()
         clauses = []
@@ -804,6 +805,9 @@ class RDVService:
         if str(week or "").strip():
             clauses.append("semana_referencia = ?")
             values.append(str(week).strip())
+        if str(month or "").strip():
+            clauses.append("substr(data_despesa, 1, 7) = ?")
+            values.append(str(month).strip())
         return self._select_expenses(clauses, values)
 
     def get_expense(self, expense_id: int) -> dict | None:
@@ -918,6 +922,42 @@ class RDVService:
             "pendentes_revisao": len(dataset["pendencias"]),
         }
 
+    def monthly_report(
+        self,
+        month: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        dataset = self.monthly_report_data(
+            month=month,
+            collaborator_id=collaborator_id,
+            status=status,
+        )
+        expenses = dataset["lancamentos"]
+        km_launches = dataset.get("quilometragens") or []
+        summary = _summarize_expenses(expenses)
+        return {
+            "mes": dataset["mes"],
+            "total_geral": summary["total_geral"],
+            "por_colaborador": summary["por_colaborador"],
+            "por_categoria": summary["por_categoria"],
+            "quantidade_comprovantes": sum(
+                1 for expense in expenses if _has_receipt_attachment(expense)
+            ),
+            "quilometragem_total": sum(
+                float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
+                for expense in km_launches
+                if expense.get("status_fluxo") in {"completo", "revisao"}
+            ),
+            "viagens_em_aberto": sum(
+                1
+                for expense in km_launches
+                if expense.get("status_fluxo") in ALL_OPEN_KM_FLOW_STATUSES
+            ),
+            "quantidade_lancamentos": len(expenses),
+            "pendentes_revisao": len(dataset["pendencias"]),
+        }
+
     def weekly_report_data(
         self,
         week: str = "",
@@ -930,6 +970,28 @@ class RDVService:
             status=status,
             week=selected_week,
         )
+        dataset = self._build_report_data(expenses)
+        dataset["semana"] = selected_week
+        return dataset
+
+    def monthly_report_data(
+        self,
+        month: str = "",
+        collaborator_id: int | str = "",
+        status: str = "",
+    ) -> dict:
+        selected_month = str(month or "").strip() or calculate_month_reference(date.today())
+        expenses = self.list_launches(
+            collaborator_id=collaborator_id,
+            status=status,
+            month=selected_month,
+        )
+        dataset = self._build_report_data(expenses)
+        dataset["mes"] = selected_month
+        return dataset
+
+    @staticmethod
+    def _build_report_data(expenses: list[dict]) -> dict:
         report_expenses = [
             expense for expense in expenses if _is_reportable_expense(expense)
         ]
@@ -995,10 +1057,28 @@ class RDVService:
                 pending.append(expense)
                 collaborator_summary["pendentes"] += 1
 
+        summary = _summarize_expenses(report_expenses)
         return {
-            "semana": selected_week,
             "lancamentos": report_expenses,
             "quilometragens": km_launches,
+            "total_geral": summary["total_geral"],
+            "por_colaborador": summary["por_colaborador"],
+            "por_categoria": summary["por_categoria"],
+            "quantidade_comprovantes": sum(
+                1 for expense in report_expenses if _has_receipt_attachment(expense)
+            ),
+            "quilometragem_total": sum(
+                float(expense.get("quilometragem") or expense.get("km_rodado") or 0)
+                for expense in km_launches
+                if expense.get("status_fluxo") in {"completo", "revisao"}
+            ),
+            "viagens_em_aberto": sum(
+                1
+                for expense in km_launches
+                if expense.get("status_fluxo") in ALL_OPEN_KM_FLOW_STATUSES
+            ),
+            "quantidade_lancamentos": len(report_expenses),
+            "pendentes_revisao": len(pending),
             "resumo_colaboradores": sorted(
                 by_collaborator.values(),
                 key=lambda item: item["colaborador"],
@@ -1264,6 +1344,11 @@ def calculate_week_reference(value: str | date | datetime) -> str:
     expense_date = _date_value(value)
     iso_year, iso_week, _ = expense_date.isocalendar()
     return f"{iso_year}-W{iso_week:02d}"
+
+
+def calculate_month_reference(value: str | date | datetime) -> str:
+    expense_date = _date_value(value)
+    return f"{expense_date.year:04d}-{expense_date.month:02d}"
 
 
 def parse_receipt_date(value: object) -> date:

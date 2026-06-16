@@ -36,6 +36,28 @@ def build_weekly_rdv_workbook(report_data: dict) -> bytes:
     return output.getvalue()
 
 
+def build_monthly_rdv_workbook(report_data: dict) -> bytes:
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+
+    launches = (report_data.get("lancamentos") or []) + (
+        report_data.get("quilometragens") or []
+    )
+    collaborators = report_data.get("resumo_colaboradores") or []
+    categories = report_data.get("resumo_categorias") or []
+    pending = report_data.get("pendencias") or []
+
+    _build_monthly_launches_sheet(workbook, launches, "Lancamentos")
+    _build_collaborators_sheet(workbook, collaborators)
+    _build_categories_sheet(workbook, categories)
+    _build_monthly_launches_sheet(workbook, pending, "Pendencias")
+    _build_audit_sheet(workbook, launches)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> None:
     sheet = workbook.create_sheet(title)
     headers = (
@@ -98,6 +120,95 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
         sheet.cell(row_index, 13).number_format = DISTANCE_FORMAT
         sheet.cell(row_index, 14).number_format = DISTANCE_FORMAT
         sheet.cell(row_index, 19).number_format = DATETIME_FORMAT
+
+
+def _build_monthly_launches_sheet(
+    workbook: Workbook,
+    rows: list[dict],
+    title: str,
+) -> None:
+    sheet = workbook.create_sheet(title)
+    headers = (
+        "Data do comprovante",
+        "Colaborador",
+        "Telefone",
+        "Categoria",
+        "Valor",
+        "Fornecedor detectado",
+        "Origem do valor",
+        "Chave de acesso / QR Code / URL",
+        "Cidade origem",
+        "Cidade destino",
+        "KM inicial",
+        "KM final",
+        "KM rodado",
+        "Status",
+        "Observacao",
+        "Tipo de entrada",
+        "Comprovante/arquivo",
+    )
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(
+            (
+                _parse_date(row.get("data_despesa")),
+                row.get("colaborador") or "",
+                row.get("telefone_origem") or "",
+                _humanize(row.get("categoria")),
+                float(row.get("valor") or 0),
+                row.get("fornecedor_detectado") or row.get("fornecedor") or "",
+                _humanize(row.get("origem_valor")),
+                _fiscal_reference(row),
+                row.get("cidade_origem") or "",
+                row.get("cidade_destino") or "",
+                _optional_float(row.get("km_inicio")),
+                _optional_float(row.get("km_fim")),
+                _optional_float(
+                    row.get("quilometragem")
+                    if row.get("quilometragem") is not None
+                    else row.get("km_rodado")
+                ),
+                _launch_status(row),
+                row.get("observacao") or "",
+                _humanize(row.get("tipo_entrada")),
+                _safe_file_reference(row.get("caminho_arquivo")),
+            )
+        )
+
+    _prepare_sheet(sheet)
+    for row_index in range(2, sheet.max_row + 1):
+        sheet.cell(row_index, 1).number_format = DATE_FORMAT
+        sheet.cell(row_index, 5).number_format = CURRENCY_FORMAT
+        sheet.cell(row_index, 11).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 12).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 13).number_format = DISTANCE_FORMAT
+
+
+def _build_audit_sheet(workbook: Workbook, rows: list[dict]) -> None:
+    sheet = workbook.create_sheet("Auditoria")
+    headers = (
+        "id",
+        "data_detectada",
+        "recebido_em",
+        "whatsapp_message_id",
+        "caminho_arquivo",
+    )
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(
+            (
+                row.get("id"),
+                _parse_date(row.get("data_detectada")),
+                _parse_datetime(row.get("recebido_em")),
+                row.get("whatsapp_message_id") or "",
+                row.get("caminho_arquivo") or "",
+            )
+        )
+
+    _prepare_sheet(sheet)
+    for row_index in range(2, sheet.max_row + 1):
+        sheet.cell(row_index, 2).number_format = DATE_FORMAT
+        sheet.cell(row_index, 3).number_format = DATETIME_FORMAT
 
 
 def _build_collaborators_sheet(workbook: Workbook, rows: list[dict]) -> None:
