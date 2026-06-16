@@ -577,21 +577,29 @@ class RDVService:
         current = self.get_expense(expense_id)
         if current is None:
             raise ValueError("Lancamento RDV nao encontrado.")
-        has_receipt_date = _valid_receipt_date(current.get("data_detectada")) is not None
+        receipt_date = _valid_receipt_date(current.get("data_detectada"))
+        updates = {
+            "valor": parsed_value,
+            "origem_valor": "manual",
+            "falha_leitura": 1,
+            "motivo_revisao": "valor informado manualmente apos falha de leitura",
+            "status_fluxo": (
+                "aguardando_categoria"
+                if receipt_date is not None
+                else "aguardando_data_comprovante"
+            ),
+        }
+        if receipt_date is not None:
+            updates.update(
+                {
+                    "data_despesa": receipt_date.isoformat(),
+                    "semana_referencia": calculate_week_reference(receipt_date),
+                }
+            )
         return self._update_launch(
             expense_id,
             expected_status="aguardando_valor",
-            updates={
-                "valor": parsed_value,
-                "origem_valor": "manual",
-                "falha_leitura": 1,
-                "motivo_revisao": "valor informado manualmente apos falha de leitura",
-                "status_fluxo": (
-                    "aguardando_categoria"
-                    if has_receipt_date
-                    else "aguardando_data_comprovante"
-                ),
-            },
+            updates=updates,
         )
 
     def save_launch_receipt_date(self, expense_id: int, value: object) -> dict:
@@ -726,6 +734,9 @@ class RDVService:
         current = self.get_expense(expense_id)
         if current is None:
             raise ValueError("Lancamento RDV nao encontrado.")
+        receipt_date = _valid_receipt_date(current.get("data_detectada"))
+        if receipt_date is None:
+            raise ValueError("Data do comprovante nao informada.")
         automatic_read_ok = (
             current.get("origem_valor") in {"qr_code", "ocr"}
             and current.get("valor_detectado") is not None
@@ -736,6 +747,8 @@ class RDVService:
             expected_status="aguardando_categoria",
             updates={
                 "categoria": normalized_category,
+                "data_despesa": receipt_date.isoformat(),
+                "semana_referencia": calculate_week_reference(receipt_date),
                 "status_fluxo": "completo",
                 "status_revisao": "aprovado" if automatic_read_ok else "pendente",
             },
@@ -1307,12 +1320,79 @@ def _parse_receipt_date_value(value: object) -> date | None:
         return value
 
     text = str(value or "").strip()
+    textual = re.search(
+        r"\b(\d{1,2})\s*(?:/|\s+de\s+)\s*"
+        r"(janeiro|fevereiro|mar(?:c|\u00e7)o|abril|maio|junho|julho|agosto|"
+        r"setembro|outubro|novembro|dezembro)"
+        r"\s*(?:/|\s+de\s+)\s*(\d{4})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if textual:
+        month = _portuguese_month_number(textual.group(2))
+        if month:
+            try:
+                return date(int(textual.group(3)), month, int(textual.group(1)))
+            except ValueError:
+                return None
+
     for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, date_format).date()
         except ValueError:
             continue
     return None
+
+
+def _portuguese_month_number(value: str) -> int:
+    normalized = _strip_accents(value).lower()
+    months = {
+        "janeiro": 1,
+        "fevereiro": 2,
+        "marco": 3,
+        "abril": 4,
+        "maio": 5,
+        "junho": 6,
+        "julho": 7,
+        "agosto": 8,
+        "setembro": 9,
+        "outubro": 10,
+        "novembro": 11,
+        "dezembro": 12,
+    }
+    return months.get(normalized, 0)
+
+
+def _strip_accents(value: str) -> str:
+    replacements = str.maketrans(
+        {
+            "\u00e1": "a",
+            "\u00e0": "a",
+            "\u00e2": "a",
+            "\u00e3": "a",
+            "\u00e9": "e",
+            "\u00ea": "e",
+            "\u00ed": "i",
+            "\u00f3": "o",
+            "\u00f4": "o",
+            "\u00f5": "o",
+            "\u00fa": "u",
+            "\u00e7": "c",
+            "\u00c1": "A",
+            "\u00c0": "A",
+            "\u00c2": "A",
+            "\u00c3": "A",
+            "\u00c9": "E",
+            "\u00ca": "E",
+            "\u00cd": "I",
+            "\u00d3": "O",
+            "\u00d4": "O",
+            "\u00d5": "O",
+            "\u00da": "U",
+            "\u00c7": "C",
+        }
+    )
+    return str(value or "").translate(replacements)
 
 
 def _date_from_received_at(value: str | datetime | None) -> date:

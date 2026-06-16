@@ -1,5 +1,6 @@
 import sys
 import tempfile
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -117,6 +118,13 @@ def test_weekly_rdv_excel_export_contains_expenses_km_and_pending_rows():
                 if launches.cell(row, 18).value == "demo_combustivel.jpg"
             )
             assert launches.cell(detected_row, 6).value == "POSTO FICTICIO LTDA"
+            assert _date_value(launches.cell(detected_row, 1).value) == date(
+                2026, 6, 9
+            )
+            assert _date_value(launches.cell(detected_row, 7).value) == date(
+                2026, 6, 9
+            )
+            assert launches.cell(detected_row, 19).value == datetime(2026, 6, 9, 8, 30)
             assert launches.cell(detected_row, 7).number_format == "dd/mm/yyyy"
 
             km_row = next(
@@ -126,6 +134,21 @@ def test_weekly_rdv_excel_export_contains_expenses_km_and_pending_rows():
             )
             assert launches.cell(km_row, 11).value == "Sertaozinho"
             assert launches.cell(km_row, 14).value == 120
+
+            manual_date_row = next(
+                row
+                for row in range(2, launches.max_row + 1)
+                if launches.cell(row, 18).value == "demo_hotel.pdf"
+            )
+            assert _date_value(launches.cell(manual_date_row, 1).value) == date(
+                2026, 6, 10
+            )
+            assert _date_value(launches.cell(manual_date_row, 7).value) == date(
+                2026, 6, 10
+            )
+            assert launches.cell(manual_date_row, 19).value == datetime(
+                2026, 6, 10, 18, 15
+            )
 
             open_trip_row = next(
                 row
@@ -141,3 +164,7 @@ def test_weekly_rdv_excel_export_contains_expenses_km_and_pending_rows():
 
 def _headers(sheet) -> tuple:
     return tuple(cell.value for cell in sheet[1])
+
+
+def _date_value(value):
+    return value.date() if isinstance(value, datetime) else value

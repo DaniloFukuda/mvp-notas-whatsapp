@@ -70,6 +70,36 @@ def test_receipt_with_detected_value_and_valid_date_waits_for_category():
         assert receipt["semana_referencia"] == calculate_week_reference("2026-06-11")
 
 
+def test_ocr_receipt_uses_document_date_week_instead_of_received_date():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="mercado_pago.jpg",
+            whatsapp_message_id="wamid.mercado-pago-date",
+            received_at="16/06/2026 10:00",
+            analysis={
+                "valor_detectado": 80,
+                "data_detectada": "2026-06-14",
+                "fornecedor_detectado": "Mercado Pago",
+                "origem_valor": "ocr",
+            },
+        )
+
+        assert receipt["status_fluxo"] == "aguardando_categoria"
+        assert receipt["valor"] == 80
+        assert receipt["data_despesa"] == "2026-06-14"
+        assert receipt["data_detectada"] == "2026-06-14"
+        assert receipt["recebido_em"].startswith("2026-06-16")
+        assert receipt["semana_referencia"] == calculate_week_reference("2026-06-14")
+        assert calculate_week_reference("2026-06-14") == "2026-W24"
+        assert calculate_week_reference("2026-06-16") == "2026-W25"
+
+
 def test_receipt_with_detected_value_without_date_waits_for_manual_date():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = RDVService(Path(temp_dir) / "rdv.db")
@@ -110,6 +140,75 @@ def test_manual_receipt_date_updates_expense_date_detected_date_and_week():
         assert saved["data_despesa"] == "2026-06-11"
         assert saved["data_detectada"] == "2026-06-11"
         assert saved["semana_referencia"] == calculate_week_reference("2026-06-11")
+
+
+def test_manual_textual_receipt_dates_update_expense_date_detected_date_and_week():
+    examples = (
+        "14/06/2026",
+        "14-06-2026",
+        "14.06.2026",
+        "2026-06-14",
+        "14/junho/2026",
+        "14 de junho de 2026",
+    )
+    for index, value in enumerate(examples):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            receipt = service.create_whatsapp_receipt(
+                collaborator_id=collaborator["id"],
+                phone=collaborator["telefone_whatsapp"],
+                input_type="imagem",
+                file_path=f"cupom-{index}.jpg",
+                whatsapp_message_id=f"wamid.manual-date-{index}",
+                received_at="16/06/2026 10:00",
+                analysis={"valor_detectado": 64, "origem_valor": "ocr"},
+            )
+
+            saved = service.save_launch_receipt_date(receipt["id"], value)
+
+            assert saved["status_fluxo"] == "aguardando_categoria"
+            assert saved["data_despesa"] == "2026-06-14"
+            assert saved["data_detectada"] == "2026-06-14"
+            assert saved["semana_referencia"] == calculate_week_reference("2026-06-14")
+
+
+def test_manual_value_then_manual_date_and_category_enter_correct_weekly_report():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.manual-report",
+            received_at="16/06/2026 10:00",
+        )
+
+        with_value = service.save_launch_value(receipt["id"], "80,00")
+        assert with_value["status_fluxo"] == "aguardando_data_comprovante"
+
+        with_date = service.save_launch_receipt_date(receipt["id"], "14/junho/2026")
+        assert with_date["status_fluxo"] == "aguardando_categoria"
+
+        completed = service.complete_launch_category(receipt["id"], "alimentacao")
+        assert completed["status_fluxo"] == "completo"
+        assert completed["data_despesa"] == "2026-06-14"
+        assert completed["data_detectada"] == "2026-06-14"
+
+        document_week = calculate_week_reference("2026-06-14")
+        received_week = calculate_week_reference("2026-06-16")
+        document_report = service.weekly_report_data(week=document_week)
+        received_report = service.weekly_report_data(week=received_week)
+        weekly_summary = service.weekly_report(week=document_week)
+
+        assert [item["id"] for item in document_report["lancamentos"]] == [
+            completed["id"]
+        ]
+        assert received_report["lancamentos"] == []
+        assert weekly_summary["quantidade_lancamentos"] == 1
+        assert weekly_summary["total_geral"] == 80
 
 
 def test_future_receipt_date_is_rejected():

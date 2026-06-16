@@ -195,6 +195,20 @@ def test_manual_value_state_still_accepts_number():
         api_whatsapp.rdv_service = original_service
 
 
+def test_received_receipt_with_value_without_date_asks_for_receipt_date():
+    reply = api_whatsapp._rdv_received_message(
+        {
+            "status_fluxo": "aguardando_data_comprovante",
+            "valor": 80,
+        }
+    )
+
+    assert reply == (
+        "Detectei o valor R$ 80,00, mas nao consegui identificar a data do "
+        "comprovante. Informe a data do comprovante no formato 11/06/2026."
+    )
+
+
 def test_manual_value_then_manual_date_and_category_completes_rdv():
     original_service = api_whatsapp.rdv_service
     try:

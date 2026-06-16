@@ -828,8 +828,8 @@ def _rdv_received_message(expense: dict) -> str:
         )
     if expense.get("status_fluxo") == "aguardando_data_comprovante":
         return (
-            "Comprovante recebido. "
-            f"Detectei o valor {_format_brl_text(expense.get('valor'))}. "
+            f"Detectei o valor {_format_brl_text(expense.get('valor'))}, "
+            "mas nao consegui identificar a data do comprovante. "
             "Informe a data do comprovante no formato 11/06/2026."
         )
     if expense.get("_retry_attempt"):
