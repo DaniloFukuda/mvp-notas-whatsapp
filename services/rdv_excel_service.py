@@ -61,7 +61,8 @@ def build_monthly_rdv_workbook(report_data: dict) -> bytes:
 def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> None:
     sheet = workbook.create_sheet(title)
     headers = (
-        "Data",
+        "Data do comprovante",
+        "Data de envio",
         "Colaborador",
         "Telefone",
         "Categoria",
@@ -79,13 +80,13 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
         "Observacao",
         "Tipo de entrada",
         "Comprovante/arquivo",
-        "Recebido em",
     )
     sheet.append(headers)
     for row in rows:
         sheet.append(
             (
                 _parse_date(row.get("data_despesa")),
+                _parse_datetime(row.get("recebido_em")),
                 row.get("colaborador") or "",
                 row.get("telefone_origem") or "",
                 _humanize(row.get("categoria")),
@@ -107,19 +108,18 @@ def _build_launches_sheet(workbook: Workbook, rows: list[dict], title: str) -> N
                 row.get("observacao") or "",
                 _humanize(row.get("tipo_entrada")),
                 _safe_file_reference(row.get("caminho_arquivo")),
-                _parse_datetime(row.get("recebido_em")),
             )
         )
 
     _prepare_sheet(sheet)
     for row_index in range(2, sheet.max_row + 1):
         sheet.cell(row_index, 1).number_format = DATE_FORMAT
-        sheet.cell(row_index, 5).number_format = CURRENCY_FORMAT
-        sheet.cell(row_index, 7).number_format = DATE_FORMAT
-        sheet.cell(row_index, 12).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 2).number_format = DATETIME_FORMAT
+        sheet.cell(row_index, 6).number_format = CURRENCY_FORMAT
+        sheet.cell(row_index, 8).number_format = DATE_FORMAT
         sheet.cell(row_index, 13).number_format = DISTANCE_FORMAT
         sheet.cell(row_index, 14).number_format = DISTANCE_FORMAT
-        sheet.cell(row_index, 19).number_format = DATETIME_FORMAT
+        sheet.cell(row_index, 15).number_format = DISTANCE_FORMAT
 
 
 def _build_monthly_launches_sheet(
@@ -130,6 +130,7 @@ def _build_monthly_launches_sheet(
     sheet = workbook.create_sheet(title)
     headers = (
         "Data do comprovante",
+        "Data de envio",
         "Colaborador",
         "Telefone",
         "Categoria",
@@ -152,6 +153,7 @@ def _build_monthly_launches_sheet(
         sheet.append(
             (
                 _parse_date(row.get("data_despesa")),
+                _parse_datetime(row.get("recebido_em")),
                 row.get("colaborador") or "",
                 row.get("telefone_origem") or "",
                 _humanize(row.get("categoria")),
@@ -178,10 +180,11 @@ def _build_monthly_launches_sheet(
     _prepare_sheet(sheet)
     for row_index in range(2, sheet.max_row + 1):
         sheet.cell(row_index, 1).number_format = DATE_FORMAT
-        sheet.cell(row_index, 5).number_format = CURRENCY_FORMAT
-        sheet.cell(row_index, 11).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 2).number_format = DATETIME_FORMAT
+        sheet.cell(row_index, 6).number_format = CURRENCY_FORMAT
         sheet.cell(row_index, 12).number_format = DISTANCE_FORMAT
         sheet.cell(row_index, 13).number_format = DISTANCE_FORMAT
+        sheet.cell(row_index, 14).number_format = DISTANCE_FORMAT
 
 
 def _build_audit_sheet(workbook: Workbook, rows: list[dict]) -> None:

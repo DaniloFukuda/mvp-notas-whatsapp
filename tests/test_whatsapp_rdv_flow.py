@@ -334,6 +334,10 @@ def test_manual_value_then_manual_date_and_category_completes_rdv():
 
             completed_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
             assert "RDV registrado com sucesso." in completed_reply
+            assert "Data do comprovante: 11/06/2026." in completed_reply
+            assert "Enviado no WhatsApp:" in completed_reply
+            assert "Mes: 2026-06." in completed_reply
+            assert "Semana: 2026-W24." in completed_reply
             completed = service.get_expense(pending["id"])
             assert completed["status_fluxo"] == "completo"
             assert completed["categoria"] == "combustivel"

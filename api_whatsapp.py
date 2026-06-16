@@ -575,6 +575,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             "RDV registrado com sucesso.",
             f"Lancamento #{completed['id']}.",
             f"Data do comprovante: {_format_date_br(completed['data_despesa'])}.",
+            f"Enviado no WhatsApp: {_format_datetime_br(completed.get('recebido_em'))}.",
             f"Mes: {calculate_month_reference(completed['data_despesa'])}.",
             f"Semana: {completed['semana_referencia']}.",
             f"Valor: {_format_brl_text(completed['valor'])}.",
@@ -1400,6 +1401,30 @@ def _format_date_br(value: object) -> str:
     text = str(value or "").strip()
     try:
         return datetime.strptime(text, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return text
+
+
+def _format_datetime_br(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None).strftime("%d/%m/%Y %H:%M")
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    for date_format in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(text, date_format).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(
+            tzinfo=None
+        ).strftime("%d/%m/%Y %H:%M")
     except ValueError:
         return text
 
