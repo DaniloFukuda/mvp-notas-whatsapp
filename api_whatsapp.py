@@ -56,7 +56,7 @@ RDV_SUMMARY_COMMANDS = {
 }
 RDV_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 KM_STATUS_COMMANDS = {"status km"}
-KM_CANCEL_COMMANDS = {"cancelar km"}
+KM_CANCEL_COMMANDS = {"cancelar km", "km cancelar"}
 KM_HELP_MESSAGE = "\n".join(
     [
         "Para registrar uma viagem, envie:",
@@ -519,6 +519,10 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             return _weekly_summary_message(collaborator["id"])
         if normalized in {"menu", "oi", "ola", "rdv", "despesa"}:
             return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
+        if _is_standalone_number(normalized):
+            return KM_HELP_MESSAGE
+        if normalized.startswith("km "):
+            return KM_HELP_MESSAGE
         return RDV_MENU
 
     state = pending.get("status_fluxo")
@@ -669,13 +673,17 @@ def _parse_km_command(normalized_text: str) -> tuple[str, str] | None:
 
     patterns = (
         ("start", r"^(?:km inicio|inicio km|iniciar km)(?:\s+(.*))?$"),
-        ("end", r"^(?:km termino|km fim|fim km|finalizar km)(?:\s+(.*))?$"),
+        ("end", r"^(?:km termino|km fim|km final|fim km|finalizar km)(?:\s+(.*))?$"),
     )
     for action, pattern in patterns:
         match = re.fullmatch(pattern, normalized_text)
         if match:
             return action, str(match.group(1) or "").strip()
     return None
+
+
+def _is_standalone_number(text: str) -> bool:
+    return re.fullmatch(r"\d+(?:[.,]\d+)?", str(text or "").strip()) is not None
 
 
 def _send_weekly_rdv_excel(sender_phone: str) -> None:

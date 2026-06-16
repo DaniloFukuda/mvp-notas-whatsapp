@@ -25,6 +25,14 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
             ) == api_whatsapp.KM_HELP_MESSAGE
             assert service.get_open_km_launch_by_phone(sender) is None
 
+            loose_number = api_whatsapp.handle_rdv_text_message(sender, "1200")
+            assert loose_number == api_whatsapp.KM_HELP_MESSAGE
+            assert service.list_launches() == []
+
+            empty_summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
+            assert "Lancamentos: 0" in empty_summary
+            assert "Total: R$ 0,00" in empty_summary
+
             missing_start = api_whatsapp.handle_rdv_text_message(
                 sender, "km inicio"
             )
@@ -101,6 +109,55 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
         api_whatsapp._send_weekly_rdv_excel = original_excel_sender
 
 
+def test_loose_number_outside_manual_value_state_does_not_create_launch():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "1200")
+
+            assert reply == api_whatsapp.KM_HELP_MESSAGE
+            assert service.list_launches() == []
+            summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
+            assert "Lancamentos: 0" in summary
+            assert "Total: R$ 0,00" in summary
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_manual_value_state_still_accepts_number():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            pending = service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_valor",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "1200")
+
+            assert "Valor registrado manualmente: R$ 1.200,00." in reply
+            saved = service.get_expense(pending["id"])
+            assert saved["valor"] == 1200
+            assert saved["origem_valor"] == "manual"
+            assert saved["status_fluxo"] == "aguardando_categoria"
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
 def test_supported_command_aliases():
     assert api_whatsapp._parse_km_command("inicio km 120350") == (
         "start",
@@ -115,3 +172,4 @@ def test_supported_command_aliases():
         "end",
         "120500",
     )
+    assert api_whatsapp._parse_km_command("km final 120500") == ("end", "120500")
