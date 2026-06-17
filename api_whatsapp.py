@@ -68,84 +68,79 @@ VISITA_FLOW_STEPS = {
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
 MAIN_MENU_MESSAGE = "\n".join(
     [
-        "Olá! Sou o assistente da Ciclus Agro. Escolha uma opção:",
+        "Olá! Sou o assistente da Ciclus Agro.",
         "",
-        "1. RDV / Comprovantes",
-        "2. KM / Viagens",
-        "3. Visitas técnicas",
-        "4. Relatórios",
-        "5. Ajuda",
+        "Veja o que posso fazer:",
         "",
-        "Você também pode digitar comandos diretos, como:",
+        "📌 RDV / Comprovantes",
+        "Registra despesas por foto, PDF ou imagem de comprovante.",
+        "Comandos:",
         "",
-        "* km",
-        "* visita",
-        "* resumo",
-        "* planilha",
-        "* relatório visita",
+        "* Envie uma foto/PDF do comprovante",
+        "* resumo — mostra o resumo mensal do RDV",
+        "* planilha — envia a planilha mensal do RDV",
+        "* resumo semanal — mostra o resumo da semana",
+        "* planilha semanal — envia a planilha da semana",
+        "",
+        "🚗 KM / Viagens",
+        "Registra deslocamentos com KM inicial, origem, destino e KM final.",
+        "Comandos:",
+        "",
+        "* km inicio 120350 — inicia uma viagem",
+        "* km termino 120500 — finaliza a viagem",
+        "* km cancelar — cancela uma viagem aberta",
+        "",
+        "🌱 Visitas técnicas",
+        "Registra fazendas visitadas, gerente, área, fotos, localização e relatório.",
+        "Comandos:",
+        "",
+        "* visita — inicia uma visita técnica",
+        "* visita status — mostra a visita em andamento",
+        "* fechar visita — finaliza a visita",
+        "* cancelar visita — cancela a visita em andamento",
+        "* localização visita — mostra os links de GPS da visita",
+        "* planilha visitas — envia a planilha com fazendas visitadas",
+        "* relatório visita — envia o PDF da visita",
+        "",
+        "📊 Relatórios",
+        "Lista as opções de relatórios disponíveis.",
+        "Comando:",
+        "",
+        "* relatórios",
+        "",
+        "Digite qualquer comando acima para começar.",
     ]
 )
-MENU_RDV_MESSAGE = "\n".join(
+REPORTS_MENU_MESSAGE = "\n".join(
     [
-        "RDV / Comprovantes:",
+        "Relatórios disponíveis:",
         "",
-        "1. Enviar comprovante",
-        "2. Resumo mensal",
-        "3. Resumo semanal",
-        "4. Planilha mensal",
-        "5. Planilha semanal",
-        "6. Voltar ao menu principal",
+        "📌 RDV",
+        "",
+        "* resumo — resumo mensal de despesas",
+        "* planilha — planilha mensal de despesas",
+        "* resumo semanal — resumo semanal de despesas",
+        "* planilha semanal — planilha semanal de despesas",
+        "",
+        "🌱 Visitas técnicas",
+        "",
+        "* planilha visitas — planilha com todas as visitas/fazendas registradas",
+        "* fazendas visitadas — atalho para a planilha de visitas",
+        "* relatório visita — PDF da visita técnica mais recente ou aberta",
+        "* localização visita — links de GPS da visita aberta/recente",
+        "",
+        "🚗 KM",
+        "Os lançamentos de KM aparecem nas planilhas do RDV.",
+        "Comandos:",
+        "",
+        "* km inicio 120350",
+        "* km termino 120500",
+        "* km cancelar",
     ]
 )
-MENU_KM_MESSAGE = "\n".join(
-    [
-        "KM / Viagens:",
-        "",
-        "1. Iniciar viagem",
-        "2. Ver status da viagem",
-        "3. Cancelar viagem",
-        "4. Voltar ao menu principal",
-    ]
-)
-MENU_VISITAS_MESSAGE = "\n".join(
-    [
-        "Visitas técnicas:",
-        "",
-        "1. Iniciar visita",
-        "2. Ver status da visita",
-        "3. Enviar localização",
-        "4. Fechar visita",
-        "5. Planilha de visitas",
-        "6. Relatório da visita",
-        "7. Voltar ao menu principal",
-    ]
-)
-MENU_RELATORIOS_MESSAGE = "\n".join(
-    [
-        "Relatórios:",
-        "",
-        "1. Resumo mensal RDV",
-        "2. Resumo semanal RDV",
-        "3. Planilha mensal RDV",
-        "4. Planilha semanal RDV",
-        "5. Planilha de visitas",
-        "6. Relatório da última visita",
-        "7. Voltar ao menu principal",
-    ]
-)
-MENU_HELP_MESSAGE = "\n".join(
-    [
-        "Ajuda rápida:",
-        "",
-        "* Envie comprovantes em foto, PDF ou imagem para registrar RDV.",
-        "* Use 'km' para registrar viagens.",
-        "* Use 'visita' para iniciar visita técnica.",
-        "* Use 'planilha' para receber relatórios.",
-        "* Use 'menu' para ver as opções novamente.",
-    ]
-)
-MENU_INVALID_MESSAGE = (
-    "Opção inválida. Digite o número desejado ou envie 'menu' para voltar ao início."
+MENU_NUMBER_MESSAGE = 'Digite "menu" para ver os comandos disponíveis.'
+VISITA_NUMBER_MESSAGE = (
+    'Digite uma observação, envie foto/localização ou use "fechar visita" ou "cancelar visita".'
 )
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km", "km cancelar"}
@@ -622,19 +617,11 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     if normalized in MENU_OPEN_COMMANDS:
         return _open_main_menu(sender_phone)
 
-    if normalized == "voltar" and _get_menu_state(sender_phone):
-        return _open_main_menu(sender_phone)
+    if normalized == "relatorios":
+        return REPORTS_MENU_MESSAGE
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
-
-    if pending is None and normalized.isdigit():
-        menu_handled, menu_reply = _handle_menu_text_message(
-            sender_phone,
-            normalized,
-        )
-        if menu_handled:
-            return menu_reply
 
     visita_handled, visita_reply = handle_visitas_text_message(
         sender_phone,
@@ -683,18 +670,13 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
                 ]
             )
 
-    if pending is None and _get_menu_state(sender_phone):
-        return MENU_INVALID_MESSAGE
-
     if pending is None:
-        if normalized == "3":
-            return _monthly_summary_message()
         if normalized in {"meu resumo", "meuresumo", "individual"}:
             return _monthly_summary_message(collaborator["id"])
         if normalized in {"rdv", "despesa"}:
             return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
         if _is_standalone_number(normalized):
-            return KM_HELP_MESSAGE
+            return MENU_NUMBER_MESSAGE
         if normalized.startswith("km "):
             return KM_HELP_MESSAGE
         return RDV_MENU
@@ -763,125 +745,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
 
 
 def _open_main_menu(sender_phone: str) -> str:
-    _set_menu_state(sender_phone, "menu_principal")
     return MAIN_MENU_MESSAGE
-
-
-def _set_menu_state(sender_phone: str, state: str) -> None:
-    whatsapp_menu_states[str(sender_phone or "")] = state
-
-
-def _get_menu_state(sender_phone: str) -> str:
-    return whatsapp_menu_states.get(str(sender_phone or ""), "")
-
-
-def _handle_menu_text_message(
-    sender_phone: str,
-    normalized_text: str,
-) -> tuple[bool, str | None]:
-    state = _get_menu_state(sender_phone)
-    if not state:
-        return False, None
-
-    if state == "menu_principal":
-        if normalized_text == "1":
-            _set_menu_state(sender_phone, "menu_rdv")
-            return True, MENU_RDV_MESSAGE
-        if normalized_text == "2":
-            _set_menu_state(sender_phone, "menu_km")
-            return True, MENU_KM_MESSAGE
-        if normalized_text == "3":
-            _set_menu_state(sender_phone, "menu_visitas")
-            return True, MENU_VISITAS_MESSAGE
-        if normalized_text == "4":
-            _set_menu_state(sender_phone, "menu_relatorios")
-            return True, MENU_RELATORIOS_MESSAGE
-        if normalized_text == "5":
-            return True, MENU_HELP_MESSAGE
-        return True, MENU_INVALID_MESSAGE
-
-    if state == "menu_rdv":
-        return True, _handle_menu_rdv_option(sender_phone, normalized_text)
-
-    if state == "menu_km":
-        return True, _handle_menu_km_option(sender_phone, normalized_text)
-
-    if state == "menu_visitas":
-        return True, _handle_menu_visitas_option(sender_phone, normalized_text)
-
-    if state == "menu_relatorios":
-        return True, _handle_menu_relatorios_option(sender_phone, normalized_text)
-
-    return False, None
-
-
-def _handle_menu_rdv_option(sender_phone: str, normalized_text: str) -> str | None:
-    if normalized_text == "1":
-        return "\n".join(
-            [
-                "Envie o comprovante em foto, imagem ou PDF por aqui.",
-                "Depois vou pedir apenas os dados que não forem detectados.",
-            ]
-        )
-    if normalized_text == "2":
-        return handle_rdv_text_message(sender_phone, "resumo")
-    if normalized_text == "3":
-        return handle_rdv_text_message(sender_phone, "resumo semanal")
-    if normalized_text == "4":
-        return handle_rdv_text_message(sender_phone, "planilha")
-    if normalized_text == "5":
-        return handle_rdv_text_message(sender_phone, "planilha semanal")
-    if normalized_text == "6":
-        return _open_main_menu(sender_phone)
-    return MENU_INVALID_MESSAGE
-
-
-def _handle_menu_km_option(sender_phone: str, normalized_text: str) -> str | None:
-    if normalized_text == "1":
-        return KM_HELP_MESSAGE
-    if normalized_text == "2":
-        return handle_rdv_text_message(sender_phone, "status km")
-    if normalized_text == "3":
-        return handle_rdv_text_message(sender_phone, "km cancelar")
-    if normalized_text == "4":
-        return _open_main_menu(sender_phone)
-    return MENU_INVALID_MESSAGE
-
-
-def _handle_menu_visitas_option(sender_phone: str, normalized_text: str) -> str | None:
-    if normalized_text == "1":
-        return handle_rdv_text_message(sender_phone, "visita")
-    if normalized_text == "2":
-        return handle_rdv_text_message(sender_phone, "visita status")
-    if normalized_text == "3":
-        return "Envie sua localização pelo WhatsApp para registrar na visita aberta."
-    if normalized_text == "4":
-        return handle_rdv_text_message(sender_phone, "fechar visita")
-    if normalized_text == "5":
-        return handle_rdv_text_message(sender_phone, "planilha visitas")
-    if normalized_text == "6":
-        return handle_rdv_text_message(sender_phone, "relatorio visita")
-    if normalized_text == "7":
-        return _open_main_menu(sender_phone)
-    return MENU_INVALID_MESSAGE
-
-
-def _handle_menu_relatorios_option(sender_phone: str, normalized_text: str) -> str | None:
-    if normalized_text == "1":
-        return handle_rdv_text_message(sender_phone, "resumo")
-    if normalized_text == "2":
-        return handle_rdv_text_message(sender_phone, "resumo semanal")
-    if normalized_text == "3":
-        return handle_rdv_text_message(sender_phone, "planilha")
-    if normalized_text == "4":
-        return handle_rdv_text_message(sender_phone, "planilha semanal")
-    if normalized_text == "5":
-        return handle_rdv_text_message(sender_phone, "planilha visitas")
-    if normalized_text == "6":
-        return handle_rdv_text_message(sender_phone, "relatorio visita")
-    if normalized_text == "7":
-        return _open_main_menu(sender_phone)
-    return MENU_INVALID_MESSAGE
 
 
 def handle_visitas_text_message(
@@ -972,6 +836,9 @@ def handle_visitas_text_message(
 
     if state != "visita_aberta":
         return True, "Continue preenchendo a visita técnica atual."
+
+    if normalized_text in {"1", "2", "3", "4", "5", "6", "7"}:
+        return True, VISITA_NUMBER_MESSAGE
 
     direct_reply = _handle_visita_direct_command(open_visit, text, normalized_text)
     if direct_reply is not None:
@@ -1167,6 +1034,8 @@ def _visita_localizacoes_message(visita_id: int) -> str:
 
 
 def _is_planilha_visitas_command(normalized_text: str) -> bool:
+    if normalized_text == "fazendas visitadas":
+        return True
     return re.fullmatch(r"planilha visitas(?:\s+.+)?", normalized_text) is not None
 
 
@@ -1215,6 +1084,8 @@ def _select_visita_for_pdf(sender_phone: str, normalized_text: str) -> dict | No
 
 
 def _parse_visitas_excel_reference(normalized_text: str) -> dict:
+    if normalized_text == "fazendas visitadas":
+        return {"mes": calculate_month_reference(date.today())}
     match = re.fullmatch(r"planilha visitas(?:\s+(.+))?", normalized_text)
     argument = str((match.group(1) if match else "") or "").strip()
     if argument == "hoje":

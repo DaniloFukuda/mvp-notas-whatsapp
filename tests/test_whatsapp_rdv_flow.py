@@ -28,7 +28,7 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
             assert service.get_open_km_launch_by_phone(sender) is None
 
             loose_number = api_whatsapp.handle_rdv_text_message(sender, "1200")
-            assert loose_number == api_whatsapp.KM_HELP_MESSAGE
+            assert loose_number == api_whatsapp.MENU_NUMBER_MESSAGE
             assert service.list_launches() == []
 
             empty_summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
@@ -166,7 +166,7 @@ def test_loose_number_outside_manual_value_state_does_not_create_launch():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "1200")
 
-            assert reply == api_whatsapp.KM_HELP_MESSAGE
+            assert reply == api_whatsapp.MENU_NUMBER_MESSAGE
             assert service.list_launches() == []
             summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
             assert "Lancamentos: 0" in summary
