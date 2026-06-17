@@ -52,3 +52,28 @@ def test_visita_fechar_marca_status_e_data():
         assert closed["estado_fluxo"] == "fechada"
         assert closed["fechado_em"]
         assert service.obter_visita_aberta("5500000000001") is None
+
+
+def test_obter_ultima_visita_ignora_cancelada():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001")
+
+        service.cancelar_visita(visita["id"])
+
+        assert service.obter_ultima_visita("5500000000001") is None
+
+
+def test_obter_ultima_visita_prefere_aberta_ou_fechada():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        cancelada = service.iniciar_visita("5500000000001")
+        service.cancelar_visita(cancelada["id"])
+        fechada = service.iniciar_visita("5500000000001")
+        service.atualizar_campo(fechada["id"], "fazenda", "Fazenda Valida")
+        service.fechar_visita(fechada["id"])
+
+        selected = service.obter_ultima_visita("5500000000001")
+
+        assert selected["id"] == fechada["id"]
+        assert selected["status"] == "fechada"

@@ -1,6 +1,9 @@
 import sys
 import tempfile
+from io import BytesIO
 from pathlib import Path
+
+from openpyxl import load_workbook
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -197,7 +200,145 @@ def test_relatorio_visita_sem_visita():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
 
-            assert reply == 'Nenhuma visita técnica encontrada. Envie "visita" para iniciar.'
+            assert reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_relatorio_visita_nao_gera_pdf_de_cancelada():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Cancelada")
+            visitas.cancelar_visita(visita["id"])
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "relatório visita")
+
+            assert reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert sent == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_relatorio_visita_id_cancelado_bloqueia():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Cancelada")
+            visitas.cancelar_visita(visita["id"])
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatório visita {visita['id']}",
+            )
+
+            assert reply == api_whatsapp.CANCELED_VISITA_REPORT_MESSAGE
+            assert sent == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_fazendas_visitadas_exclui_canceladas():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            cancelada = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(cancelada["id"], "data_visita", "2026-06-17")
+            visitas.atualizar_campo(cancelada["id"], "fazenda", "Fazenda Cancelada")
+            visitas.cancelar_visita(cancelada["id"])
+            fechada = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(fechada["id"], "data_visita", "2026-06-17")
+            visitas.atualizar_campo(fechada["id"], "fazenda", "Fazenda Valida")
+            visitas.fechar_visita(fechada["id"])
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "fazendas visitadas")
+
+            assert reply is None
+            workbook = load_workbook(BytesIO(sent[0][4]))
+            visitas_sheet = workbook["Visitas"]
+            fazendas = [
+                row[0]
+                for row in visitas_sheet.iter_rows(
+                    min_row=2,
+                    min_col=5,
+                    max_col=5,
+                    values_only=True,
+                )
+            ]
+            assert "Fazenda Valida" in fazendas
+            assert "Fazenda Cancelada" not in fazendas
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_localizacao_visita_ignora_cancelada():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            visitas.adicionar_localizacao(visita["id"], -15.0019124, -50.7714295)
+            visitas.cancelar_visita(visita["id"])
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "localização visita")
+
+            assert reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_status_apos_cancelar():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, _visitas, sender = _install_services(temp_dir)
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            cancel_reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar visita")
+
+            status_reply = api_whatsapp.handle_rdv_text_message(sender, "visita status")
+
+            assert cancel_reply == "Visita cancelada com sucesso."
+            assert status_reply == api_whatsapp.NO_OPEN_VISITA_MESSAGE
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas

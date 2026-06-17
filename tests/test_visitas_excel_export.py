@@ -60,3 +60,32 @@ def test_visita_planilha_exporta_abas_e_link_gps():
             "https://maps.google.com/?q="
         )
         assert workbook["Dados coletados"].cell(2, 4).value == "tanque"
+
+
+def test_planilha_visitas_exclui_canceladas():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        cancelada = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(cancelada["id"], "data_visita", "2026-06-17")
+        service.atualizar_campo(cancelada["id"], "fazenda", "Fazenda Cancelada")
+        service.cancelar_visita(cancelada["id"])
+        fechada = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(fechada["id"], "data_visita", "2026-06-17")
+        service.atualizar_campo(fechada["id"], "fazenda", "Fazenda Valida")
+        service.fechar_visita(fechada["id"])
+
+        content = build_visitas_workbook(service.listar_visitas(mes="2026-06"))
+        workbook = load_workbook(BytesIO(content))
+        visitas = workbook["Visitas"]
+
+        fazendas = [
+            row[0]
+            for row in visitas.iter_rows(
+                min_row=2,
+                min_col=5,
+                max_col=5,
+                values_only=True,
+            )
+        ]
+        assert "Fazenda Valida" in fazendas
+        assert "Fazenda Cancelada" not in fazendas

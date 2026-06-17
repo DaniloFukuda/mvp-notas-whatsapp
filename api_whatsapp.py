@@ -142,6 +142,18 @@ MENU_NUMBER_MESSAGE = 'Digite "menu" para ver os comandos disponíveis.'
 VISITA_NUMBER_MESSAGE = (
     'Digite uma observação, envie foto/localização ou use "fechar visita" ou "cancelar visita".'
 )
+NO_VALID_VISITA_MESSAGE = (
+    'Nenhuma visita técnica válida encontrada.\n'
+    'Envie "visita" para iniciar uma nova visita.'
+)
+CANCELED_VISITA_REPORT_MESSAGE = (
+    "Essa visita foi cancelada e não pode gerar relatório.\n"
+    'Envie "visita" para iniciar uma nova visita ou "planilha visitas" para ver visitas válidas.'
+)
+NO_OPEN_VISITA_MESSAGE = (
+    'Nenhuma visita técnica em andamento.\n'
+    'Envie "visita" para iniciar uma nova visita.'
+)
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km", "km cancelar"}
 KM_HELP_MESSAGE = "\n".join(
@@ -785,6 +797,10 @@ def handle_visitas_text_message(
     if _is_relatorio_visita_command(normalized_text):
         try:
             sent = _send_visita_pdf(sender_phone, normalized_text)
+        except ValueError as exc:
+            if str(exc) == "visita_cancelada":
+                return True, CANCELED_VISITA_REPORT_MESSAGE
+            raise
         except Exception as exc:
             logger.exception(
                 "Falha ao enviar PDF de visita pelo WhatsApp: to=%s erro=%s",
@@ -793,17 +809,22 @@ def handle_visitas_text_message(
             )
             return True, "Não consegui enviar o relatório da visita agora. Tente novamente mais tarde."
         if not sent:
-            return True, 'Nenhuma visita técnica encontrada. Envie "visita" para iniciar.'
+            return True, NO_VALID_VISITA_MESSAGE
         return True, None
 
-    if open_visit is None:
-        return False, None
-
     if normalized_text in {"visita status", "status visita"}:
+        if open_visit is None:
+            return True, NO_OPEN_VISITA_MESSAGE
         return True, _visita_status_message(open_visit)
 
     if normalized_text in {"localizacao visita", "localizacoes visita", "localizacao visitas"}:
-        return True, _visita_localizacoes_message(open_visit["id"])
+        selected = open_visit or visitas_service.obter_ultima_visita(sender_phone)
+        if selected is None:
+            return True, NO_VALID_VISITA_MESSAGE
+        return True, _visita_localizacoes_message(selected["id"])
+
+    if open_visit is None:
+        return False, None
 
     if normalized_text == "fechar visita":
         closed = visitas_service.fechar_visita(open_visit["id"])
@@ -1074,10 +1095,18 @@ def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
 def _select_visita_for_pdf(sender_phone: str, normalized_text: str) -> dict | None:
     match = re.fullmatch(r"relatorio visitas?(?:\s+(\d+))?", normalized_text)
     if match is not None and match.group(1):
-        visita = visitas_service.obter_visita_completa(int(match.group(1)))
+        visita_id = int(match.group(1))
+        raw_visita = visitas_service.obter_visita(visita_id)
+        if raw_visita is None:
+            return None
+        if str(raw_visita.get("telefone_origem") or "") != re.sub(r"\D+", "", sender_phone):
+            return None
+        if raw_visita.get("status") == "cancelada":
+            raise ValueError("visita_cancelada")
+        visita = visitas_service.obter_visita_completa(visita_id)
         if visita is None:
             return None
-        if str(visita.get("telefone_origem") or "") != re.sub(r"\D+", "", sender_phone):
+        if visita.get("status") not in {"aberta", "fechada"}:
             return None
         return visita
     return visitas_service.obter_ultima_visita(sender_phone)

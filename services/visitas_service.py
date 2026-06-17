@@ -29,6 +29,7 @@ VISITA_COLUMNS = (
     "atualizado_em",
     "fechado_em",
 )
+VALID_REPORT_STATUSES = ("aberta", "fechada")
 
 
 class VisitasTecnicasService:
@@ -364,8 +365,8 @@ class VisitasTecnicasService:
         mes: str | None = None,
     ) -> dict:
         self.ensure_schema()
-        clauses = []
-        values = []
+        clauses = ["status IN (?, ?)"]
+        values = list(VALID_REPORT_STATUSES)
         if data:
             clauses.append("data_visita = ?")
             values.append(str(data).strip())
@@ -458,12 +459,13 @@ class VisitasTecnicasService:
                 SELECT {", ".join(VISITA_COLUMNS)}
                 FROM visitas_tecnicas
                 WHERE telefone_origem = ?
+                  AND status IN (?, ?)
                 ORDER BY
                     CASE WHEN status = 'aberta' THEN 0 ELSE 1 END,
                     id DESC
                 LIMIT 1
                 """,
-                (phone,),
+                (phone, *VALID_REPORT_STATUSES),
             ).fetchone()
         if row is None:
             return None
