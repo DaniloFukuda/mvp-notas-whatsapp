@@ -1,7 +1,7 @@
 import tempfile
 import pytest
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -233,8 +233,9 @@ def test_future_receipt_date_is_rejected():
             analysis={"valor_detectado": 64, "origem_valor": "ocr"},
         )
 
+        future_date = (date.today() + timedelta(days=1)).strftime("%d/%m/%Y")
         with pytest.raises(ValueError):
-            service.save_launch_receipt_date(receipt["id"], "18/06/2026")
+            service.save_launch_receipt_date(receipt["id"], future_date)
 
 
 def test_weekly_report_ignores_cancelled_launches():

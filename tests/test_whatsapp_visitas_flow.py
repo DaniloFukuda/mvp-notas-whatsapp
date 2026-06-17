@@ -169,6 +169,9 @@ def test_rdv_nao_quebrou_comandos_principais():
             assert "Antes de finalizar" in api_whatsapp.handle_rdv_text_message(
                 sender, "km termino 1200"
             )
+            assert "Viagem cancelada com sucesso." in api_whatsapp.handle_rdv_text_message(
+                sender, "km cancelar"
+            )
             assert monthly
             assert weekly
     finally:

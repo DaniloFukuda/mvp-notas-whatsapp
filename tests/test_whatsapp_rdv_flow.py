@@ -1,5 +1,6 @@
 import tempfile
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -324,7 +325,8 @@ def test_manual_value_then_manual_date_and_category_completes_rdv():
             value_reply = api_whatsapp.handle_rdv_text_message(sender, "64,00")
             assert "data do comprovante" in value_reply
 
-            invalid_date = api_whatsapp.handle_rdv_text_message(sender, "18/06/2026")
+            future_date = (date.today() + timedelta(days=1)).strftime("%d/%m/%Y")
+            invalid_date = api_whatsapp.handle_rdv_text_message(sender, future_date)
             assert invalid_date == (
                 "Data invalida. Informe a data do comprovante no formato 11/06/2026."
             )
