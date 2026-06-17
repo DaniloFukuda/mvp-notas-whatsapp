@@ -36,7 +36,9 @@ def test_menu_abre_com_texto_explicativo():
             assert "Visitas técnicas" in reply
             assert "Relatórios" in reply
             assert "* visita — inicia uma visita técnica" in reply
-            assert "* relatório visita — envia o PDF da visita" in reply
+            assert "* visitas — lista visitas/fazendas registradas" in reply
+            assert "* relatório visita 12 — gera PDF pelo ID da visita" in reply
+            assert "* relatório fazenda Nome da Fazenda" in reply
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -74,6 +76,7 @@ def test_relatorios_retorna_opcoes_explicativas():
             assert "Relatórios disponíveis:" in sem_acento
             assert "* resumo — resumo mensal de despesas" in sem_acento
             assert "* planilha visitas — planilha com todas as visitas/fazendas registradas" in sem_acento
+            assert "* relatório visita 12 — gera PDF pelo ID da visita" in sem_acento
             assert "* km inicio 120350" in sem_acento
     finally:
         api_whatsapp.rdv_service = original_rdv

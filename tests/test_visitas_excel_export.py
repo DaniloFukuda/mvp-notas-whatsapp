@@ -89,3 +89,30 @@ def test_planilha_visitas_exclui_canceladas():
         ]
         assert "Fazenda Valida" in fazendas
         assert "Fazenda Cancelada" not in fazendas
+
+
+def test_planilha_visitas_global():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        primeira = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(primeira["id"], "data_visita", "2026-05-10")
+        service.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+        segunda = service.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+        service.atualizar_campo(segunda["id"], "data_visita", "2026-06-17")
+        service.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+
+        content = build_visitas_workbook(service.listar_visitas_validas())
+        workbook = load_workbook(BytesIO(content))
+        visitas = workbook["Visitas"]
+
+        fazendas = [
+            row[0]
+            for row in visitas.iter_rows(
+                min_row=2,
+                min_col=5,
+                max_col=5,
+                values_only=True,
+            )
+        ]
+        assert "Fazenda Imperial" in fazendas
+        assert "Fazenda Boi Dourado 3J" in fazendas

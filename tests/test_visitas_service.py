@@ -77,3 +77,22 @@ def test_obter_ultima_visita_prefere_aberta_ou_fechada():
 
         assert selected["id"] == fechada["id"]
         assert selected["status"] == "fechada"
+
+
+def test_listar_visitas_validas_global():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        primeira = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+        service.fechar_visita(primeira["id"])
+        segunda = service.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+        service.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+        cancelada = service.iniciar_visita("5500000000003", tecnico_nome="Henrique")
+        service.atualizar_campo(cancelada["id"], "fazenda", "Fazenda Cancelada")
+        service.cancelar_visita(cancelada["id"])
+
+        data = service.listar_visitas_validas()
+
+        ids = {item["id"] for item in data["visitas"]}
+        assert ids == {primeira["id"], segunda["id"]}
+        assert all(item["status"] in {"aberta", "fechada"} for item in data["visitas"])

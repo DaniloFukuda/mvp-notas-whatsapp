@@ -206,6 +206,134 @@ def test_relatorio_visita_sem_visita():
         api_whatsapp.visitas_service = original_visitas
 
 
+def test_relatorio_visita_por_id_de_outro_telefone():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv, visitas, sender = _install_services(temp_dir)
+            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                other,
+                f"relatorio visita {visita['id']}",
+            )
+
+            assert reply is None
+            assert len(sent) == 1
+            assert sent[0][0] == other
+            assert sent[0][1] == f"relatorio_visita_{visita['id']}.pdf"
+            assert sent[0][4].startswith(b"%PDF")
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_relatorio_visita_sem_id_com_multiplas_visitas_lista_opcoes():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv, visitas, sender = _install_services(temp_dir)
+            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
+            primeira = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+            segunda = visitas.iniciar_visita(other, tecnico_nome="Marcelo")
+            visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
+
+            assert "Escolha uma pelo ID" in reply
+            assert f"#{primeira['id']} - Fazenda Imperial" in reply
+            assert f"#{segunda['id']} - Fazenda Boi Dourado 3J" in reply
+            assert sent == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_relatorio_fazenda_um_resultado():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "relatorio fazenda Fazenda Imperial",
+            )
+
+            assert reply is None
+            assert len(sent) == 1
+            assert sent[0][1] == f"relatorio_visita_{visita['id']}.pdf"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_relatorio_fazenda_multiplos_resultados():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv, visitas, sender = _install_services(temp_dir)
+            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
+            primeira = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+            segunda = visitas.iniciar_visita(other, tecnico_nome="Marcelo")
+            visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Imperial Norte")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "relatorio fazenda Fazenda Imperial",
+            )
+
+            assert "Encontrei mais de uma visita" in reply
+            assert f"#{primeira['id']} - Fazenda Imperial" in reply
+            assert f"#{segunda['id']} - Fazenda Imperial Norte" in reply
+            assert sent == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
 def test_relatorio_visita_nao_gera_pdf_de_cancelada():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -301,6 +429,169 @@ def test_fazendas_visitadas_exclui_canceladas():
             ]
             assert "Fazenda Valida" in fazendas
             assert "Fazenda Cancelada" not in fazendas
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_planilha_visitas_global():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            primeira = visitas.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+            visitas.atualizar_campo(primeira["id"], "data_visita", "2026-05-10")
+            visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+            segunda = visitas.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+            visitas.atualizar_campo(segunda["id"], "data_visita", "2026-06-17")
+            visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "planilha visitas")
+
+            assert reply is None
+            workbook = load_workbook(BytesIO(sent[0][4]))
+            sheet = workbook["Visitas"]
+            fazendas = [
+                row[0]
+                for row in sheet.iter_rows(
+                    min_row=2,
+                    min_col=5,
+                    max_col=5,
+                    values_only=True,
+                )
+            ]
+            assert "Fazenda Imperial" in fazendas
+            assert "Fazenda Boi Dourado 3J" in fazendas
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_fazendas_visitadas_global():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            primeira = visitas.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+            visitas.atualizar_campo(primeira["id"], "data_visita", "2026-05-10")
+            visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
+            segunda = visitas.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+            visitas.atualizar_campo(segunda["id"], "data_visita", "2026-06-17")
+            visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "fazendas visitadas")
+
+            assert reply is None
+            workbook = load_workbook(BytesIO(sent[0][4]))
+            sheet = workbook["Visitas"]
+            fazendas = [
+                row[0]
+                for row in sheet.iter_rows(
+                    min_row=2,
+                    min_col=5,
+                    max_col=5,
+                    values_only=True,
+                )
+            ]
+            assert "Fazenda Imperial" in fazendas
+            assert "Fazenda Boi Dourado 3J" in fazendas
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_localizacao_visita_por_id():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv, visitas, _sender = _install_services(temp_dir)
+            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
+            visita = visitas.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.adicionar_localizacao(visita["id"], -15.0019124, -50.7714295)
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                other,
+                f"localizacao visita {visita['id']}",
+            )
+
+            assert "Fazenda Imperial" in reply
+            assert "https://maps.google.com/?q=-15.0019124,-50.7714295" in reply
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_status_continua_por_telefone():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv, visitas, sender = _install_services(temp_dir)
+            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            reply = api_whatsapp.handle_rdv_text_message(other, "visita status")
+
+            assert reply == api_whatsapp.NO_OPEN_VISITA_MESSAGE
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_canceladas_nao_aparecem():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            cancelada = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(cancelada["id"], "fazenda", "Fazenda Cancelada")
+            visitas.cancelar_visita(cancelada["id"])
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            list_reply = api_whatsapp.handle_rdv_text_message(sender, "visitas")
+            planilha_reply = api_whatsapp.handle_rdv_text_message(sender, "planilha visitas")
+            relatorio_reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
+            fazenda_reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "relatorio fazenda Fazenda Cancelada",
+            )
+
+            assert list_reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert planilha_reply is None
+            assert relatorio_reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert "Não encontrei visita técnica válida" in fazenda_reply
+            workbook = load_workbook(BytesIO(sent[0][4]))
+            assert workbook["Visitas"].max_row == 1
+            assert len(sent) == 1
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas

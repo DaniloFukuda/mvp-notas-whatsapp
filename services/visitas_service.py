@@ -363,10 +363,42 @@ class VisitasTecnicasService:
         periodo: str | None = None,
         data: str | None = None,
         mes: str | None = None,
+        fazenda: str | None = None,
+        status: str | None = None,
+        limite: int | None = None,
+    ) -> dict:
+        return self.listar_visitas_validas(
+            periodo=periodo,
+            data=data,
+            mes=mes,
+            fazenda=fazenda,
+            status=status,
+            limite=limite,
+        )
+
+    def listar_visitas_validas(
+        self,
+        periodo: str | None = None,
+        data: str | None = None,
+        mes: str | None = None,
+        fazenda: str | None = None,
+        status: str | None = None,
+        limite: int | None = None,
     ) -> dict:
         self.ensure_schema()
         clauses = ["status IN (?, ?)"]
         values = list(VALID_REPORT_STATUSES)
+        normalized_status = _clean(status).lower()
+        if normalized_status:
+            if normalized_status not in VALID_REPORT_STATUSES:
+                return {
+                    "visitas": [],
+                    "midias": [],
+                    "localizacoes": [],
+                    "dados_coletados": [],
+                }
+            clauses = ["status = ?"]
+            values = [normalized_status]
         if data:
             clauses.append("data_visita = ?")
             values.append(str(data).strip())
@@ -376,6 +408,14 @@ class VisitasTecnicasService:
         elif periodo == "hoje":
             clauses.append("data_visita = ?")
             values.append(date.today().isoformat())
+        if _clean(fazenda):
+            clauses.append("LOWER(fazenda) LIKE LOWER(?)")
+            values.append(f"%{_clean(fazenda)}%")
+        limit_sql = ""
+        if limite is not None:
+            parsed_limit = max(0, int(limite))
+            limit_sql = "LIMIT ?"
+            values.append(parsed_limit)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with closing(self._connect()) as connection:
             visitas = [
@@ -385,7 +425,8 @@ class VisitasTecnicasService:
                     SELECT {", ".join(VISITA_COLUMNS)}
                     FROM visitas_tecnicas
                     {where}
-                    ORDER BY data_visita DESC, id DESC
+                    ORDER BY data_visita DESC, criado_em DESC, id DESC
+                    {limit_sql}
                     """,
                     values,
                 ).fetchall()
@@ -411,6 +452,12 @@ class VisitasTecnicasService:
             "localizacoes": localizacoes,
             "dados_coletados": dados,
         }
+
+    def buscar_visitas_por_fazenda(self, nome_fazenda: str, limite: int | None = None) -> dict:
+        return self.listar_visitas_validas(fazenda=nome_fazenda, limite=limite)
+
+    def obter_visita_por_id(self, visita_id: int) -> dict | None:
+        return self.obter_visita(visita_id)
 
     def visita_resumo(self, visita_id: int) -> dict:
         data = self.listar_visitas()
@@ -448,24 +495,28 @@ class VisitasTecnicasService:
         }
         return visita
 
-    def obter_ultima_visita(self, telefone_origem: str) -> dict | None:
+    def obter_ultima_visita(self, telefone_origem: str | None = None) -> dict | None:
         self.ensure_schema()
         phone = normalize_phone(telefone_origem)
-        if not phone:
-            return None
+        clauses = ["status IN (?, ?)"]
+        values = list(VALID_REPORT_STATUSES)
+        if phone:
+            clauses.append("telefone_origem = ?")
+            values.append(phone)
         with closing(self._connect()) as connection:
             row = connection.execute(
                 f"""
                 SELECT {", ".join(VISITA_COLUMNS)}
                 FROM visitas_tecnicas
-                WHERE telefone_origem = ?
-                  AND status IN (?, ?)
+                WHERE {" AND ".join(clauses)}
                 ORDER BY
                     CASE WHEN status = 'aberta' THEN 0 ELSE 1 END,
+                    data_visita DESC,
+                    criado_em DESC,
                     id DESC
                 LIMIT 1
                 """,
-                (phone, *VALID_REPORT_STATUSES),
+                values,
             ).fetchone()
         if row is None:
             return None

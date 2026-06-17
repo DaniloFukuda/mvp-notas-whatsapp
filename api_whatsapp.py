@@ -95,12 +95,15 @@ MAIN_MENU_MESSAGE = "\n".join(
         "Comandos:",
         "",
         "* visita — inicia uma visita técnica",
-        "* visita status — mostra a visita em andamento",
+        "* visita status — mostra sua visita em andamento",
+        "* visitas — lista visitas/fazendas registradas",
+        "* visitas abertas — lista visitas abertas da equipe",
         "* fechar visita — finaliza a visita",
         "* cancelar visita — cancela a visita em andamento",
-        "* localização visita — mostra os links de GPS da visita",
+        "* localização visita 12 — mostra GPS de uma visita pelo ID",
         "* planilha visitas — envia a planilha com fazendas visitadas",
-        "* relatório visita — envia o PDF da visita",
+        "* relatório visita 12 — gera PDF pelo ID da visita",
+        "* relatório fazenda Nome da Fazenda — busca relatório pelo nome da fazenda",
         "",
         "📊 Relatórios",
         "Lista as opções de relatórios disponíveis.",
@@ -126,8 +129,11 @@ REPORTS_MENU_MESSAGE = "\n".join(
         "",
         "* planilha visitas — planilha com todas as visitas/fazendas registradas",
         "* fazendas visitadas — atalho para a planilha de visitas",
-        "* relatório visita — PDF da visita técnica mais recente ou aberta",
-        "* localização visita — links de GPS da visita aberta/recente",
+        "* visitas — lista visitas/fazendas registradas",
+        "* visitas abertas — lista visitas abertas da equipe",
+        "* relatório visita 12 — gera PDF pelo ID da visita",
+        "* relatório fazenda Nome da Fazenda — busca relatório pelo nome da fazenda",
+        "* localização visita 12 — mostra GPS de uma visita pelo ID",
         "",
         "🚗 KM",
         "Os lançamentos de KM aparecem nas planilhas do RDV.",
@@ -148,7 +154,7 @@ NO_VALID_VISITA_MESSAGE = (
 )
 CANCELED_VISITA_REPORT_MESSAGE = (
     "Essa visita foi cancelada e não pode gerar relatório.\n"
-    'Envie "visita" para iniciar uma nova visita ou "planilha visitas" para ver visitas válidas.'
+    'Envie "visitas" para listar visitas válidas.'
 )
 NO_OPEN_VISITA_MESSAGE = (
     'Nenhuma visita técnica em andamento.\n'
@@ -794,9 +800,12 @@ def handle_visitas_text_message(
             return True, "Não consegui enviar a planilha de visitas agora. Tente novamente mais tarde."
         return True, None
 
+    if _is_listar_visitas_command(normalized_text):
+        return True, _listar_visitas_message(normalized_text)
+
     if _is_relatorio_visita_command(normalized_text):
         try:
-            sent = _send_visita_pdf(sender_phone, normalized_text)
+            reply = _handle_relatorio_visita(sender_phone, text, normalized_text)
         except ValueError as exc:
             if str(exc) == "visita_cancelada":
                 return True, CANCELED_VISITA_REPORT_MESSAGE
@@ -808,20 +817,15 @@ def handle_visitas_text_message(
                 _safe_exception_summary(exc),
             )
             return True, "Não consegui enviar o relatório da visita agora. Tente novamente mais tarde."
-        if not sent:
-            return True, NO_VALID_VISITA_MESSAGE
-        return True, None
+        return True, reply
 
     if normalized_text in {"visita status", "status visita"}:
         if open_visit is None:
             return True, NO_OPEN_VISITA_MESSAGE
         return True, _visita_status_message(open_visit)
 
-    if normalized_text in {"localizacao visita", "localizacoes visita", "localizacao visitas"}:
-        selected = open_visit or visitas_service.obter_ultima_visita(sender_phone)
-        if selected is None:
-            return True, NO_VALID_VISITA_MESSAGE
-        return True, _visita_localizacoes_message(selected["id"])
+    if _is_localizacao_visita_command(normalized_text):
+        return True, _handle_localizacao_visita(normalized_text)
 
     if open_visit is None:
         return False, None
@@ -1054,6 +1058,64 @@ def _visita_localizacoes_message(visita_id: int) -> str:
     return "\n".join(lines).strip()
 
 
+def _is_listar_visitas_command(normalized_text: str) -> bool:
+    return normalized_text in {
+        "visitas",
+        "listar visitas",
+        "visitas hoje",
+        "visitas abertas",
+        "fazendas",
+    }
+
+
+def _listar_visitas_message(normalized_text: str) -> str:
+    filters = {"limite": 10}
+    if normalized_text == "visitas hoje":
+        filters["periodo"] = "hoje"
+    if normalized_text == "visitas abertas":
+        filters["status"] = "aberta"
+    data = visitas_service.listar_visitas_validas(**filters)
+    visitas = data.get("visitas") or []
+    if not visitas:
+        return NO_VALID_VISITA_MESSAGE
+
+    title = (
+        "Visitas abertas encontradas:"
+        if normalized_text == "visitas abertas"
+        else "Visitas técnicas encontradas:"
+    )
+    lines = [title, ""]
+    for visita in visitas:
+        lines.extend(_format_visita_list_item(visita, detailed=True))
+        lines.append("")
+    lines.extend(
+        [
+            "Para gerar relatório, envie:",
+            f"relatório visita {visitas[0]['id']}",
+            "",
+            "Para buscar por fazenda, envie:",
+            f"relatório fazenda {visitas[0].get('fazenda') or 'Nome da Fazenda'}",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def _format_visita_list_item(visita: dict, detailed: bool = False) -> list[str]:
+    date_text = _format_date_br(visita.get("data_visita"))
+    header = f"#{visita.get('id')} - {visita.get('fazenda') or '-'}"
+    if not detailed:
+        return [
+            f"{header} - {visita.get('status') or '-'} - {date_text}",
+        ]
+    return [
+        header,
+        f"Status: {visita.get('status') or '-'}",
+        f"Técnico: {visita.get('tecnico_nome') or '-'}",
+        f"Data: {date_text}",
+        f"Gerente: {visita.get('gerente') or '-'}",
+    ]
+
+
 def _is_planilha_visitas_command(normalized_text: str) -> bool:
     if normalized_text == "fazendas visitadas":
         return True
@@ -1061,7 +1123,17 @@ def _is_planilha_visitas_command(normalized_text: str) -> bool:
 
 
 def _is_relatorio_visita_command(normalized_text: str) -> bool:
-    return re.fullmatch(r"relatorio visitas?(?:\s+\d+)?", normalized_text) is not None
+    return (
+        re.fullmatch(r"relatorio visitas?(?:\s+\d+)?", normalized_text) is not None
+        or re.fullmatch(r"relatorio fazenda\s+.+", normalized_text) is not None
+    )
+
+
+def _is_localizacao_visita_command(normalized_text: str) -> bool:
+    return re.fullmatch(
+        r"localizac(?:ao|oes) visitas?(?:\s+\d+)?",
+        normalized_text,
+    ) is not None
 
 
 def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
@@ -1078,9 +1150,14 @@ def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
 
 
 def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
-    visita = _select_visita_for_pdf(sender_phone, normalized_text)
+    visita = _select_visita_for_pdf(normalized_text)
     if visita is None:
         return False
+    _send_visita_pdf_data(sender_phone, visita)
+    return True
+
+
+def _send_visita_pdf_data(sender_phone: str, visita: dict) -> None:
     content = build_visita_pdf(visita)
     send_whatsapp_document(
         sender_phone,
@@ -1089,17 +1166,57 @@ def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
         caption=VISITA_PDF_CAPTION,
         mime_type=VISITA_PDF_MIME_TYPE,
     )
-    return True
 
 
-def _select_visita_for_pdf(sender_phone: str, normalized_text: str) -> dict | None:
+def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str) -> str | None:
+    fazenda_match = re.fullmatch(r"relatorio fazenda\s+(.+)", normalized_text)
+    if fazenda_match is not None:
+        query = _extract_relatorio_fazenda_query(text)
+        data = visitas_service.buscar_visitas_por_fazenda(query)
+        visitas = data.get("visitas") or []
+        if not visitas:
+            return (
+                f'Não encontrei visita técnica válida para "{query}".\n'
+                'Envie "visitas" para listar visitas válidas.'
+            )
+        if len(visitas) > 1:
+            return _multiple_fazenda_visitas_message(query, visitas)
+        visita = visitas_service.obter_visita_completa(visitas[0]["id"])
+        if visita is None:
+            return NO_VALID_VISITA_MESSAGE
+        _send_visita_pdf_data(sender_phone, visita)
+        return None
+
+    id_match = re.fullmatch(r"relatorio visitas?\s+(\d+)", normalized_text)
+    if id_match is not None:
+        visita = _select_visita_for_pdf(normalized_text)
+        if visita is None:
+            return (
+                "Não encontrei essa visita técnica.\n"
+                'Envie "visitas" para listar visitas válidas.'
+            )
+        _send_visita_pdf_data(sender_phone, visita)
+        return None
+
+    data = visitas_service.listar_visitas_validas(limite=10)
+    visitas = data.get("visitas") or []
+    if not visitas:
+        return NO_VALID_VISITA_MESSAGE
+    if len(visitas) == 1:
+        visita = visitas_service.obter_visita_completa(visitas[0]["id"])
+        if visita is None:
+            return NO_VALID_VISITA_MESSAGE
+        _send_visita_pdf_data(sender_phone, visita)
+        return None
+    return _multiple_visitas_report_message(visitas)
+
+
+def _select_visita_for_pdf(normalized_text: str) -> dict | None:
     match = re.fullmatch(r"relatorio visitas?(?:\s+(\d+))?", normalized_text)
     if match is not None and match.group(1):
         visita_id = int(match.group(1))
-        raw_visita = visitas_service.obter_visita(visita_id)
+        raw_visita = visitas_service.obter_visita_por_id(visita_id)
         if raw_visita is None:
-            return None
-        if str(raw_visita.get("telefone_origem") or "") != re.sub(r"\D+", "", sender_phone):
             return None
         if raw_visita.get("status") == "cancelada":
             raise ValueError("visita_cancelada")
@@ -1109,12 +1226,79 @@ def _select_visita_for_pdf(sender_phone: str, normalized_text: str) -> dict | No
         if visita.get("status") not in {"aberta", "fechada"}:
             return None
         return visita
-    return visitas_service.obter_ultima_visita(sender_phone)
+    return visitas_service.obter_ultima_visita()
+
+
+def _extract_relatorio_fazenda_query(text: str) -> str:
+    match = re.match(r"(?is)\s*relat[oó]rio\s+fazenda\s+(.+?)\s*$", str(text or ""))
+    if match is not None:
+        return match.group(1).strip()
+    return re.sub(r"(?i)^relatorio\s+fazenda\s+", "", _normalize_caption(text)).strip()
+
+
+def _multiple_fazenda_visitas_message(query: str, visitas: list[dict]) -> str:
+    lines = [f'Encontrei mais de uma visita para "{query}":', ""]
+    for visita in visitas[:10]:
+        lines.append(
+            f"#{visita.get('id')} - {visita.get('fazenda') or '-'} - "
+            f"{_format_date_br(visita.get('data_visita'))} - {visita.get('status') or '-'}"
+        )
+    lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
+    return "\n".join(lines)
+
+
+def _multiple_visitas_report_message(visitas: list[dict]) -> str:
+    lines = [
+        "Existem várias visitas técnicas registradas.",
+        "Escolha uma pelo ID:",
+        "",
+    ]
+    for visita in visitas[:10]:
+        lines.extend(_format_visita_list_item(visita))
+    lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
+    return "\n".join(lines)
+
+
+def _handle_localizacao_visita(normalized_text: str) -> str:
+    match = re.fullmatch(r"localizac(?:ao|oes) visitas?\s+(\d+)", normalized_text)
+    if match is not None:
+        visita_id = int(match.group(1))
+        visita = visitas_service.obter_visita_por_id(visita_id)
+        if visita is None:
+            return (
+                "Não encontrei essa visita técnica.\n"
+                'Envie "visitas" para listar visitas válidas.'
+            )
+        if visita.get("status") == "cancelada":
+            return (
+                "Essa visita foi cancelada e não pode mostrar localização.\n"
+                'Envie "visitas" para listar visitas válidas.'
+            )
+        return _visita_localizacoes_message(visita_id)
+
+    data = visitas_service.listar_visitas_validas(limite=10)
+    visitas = data.get("visitas") or []
+    if not visitas:
+        return NO_VALID_VISITA_MESSAGE
+    abertas = [visita for visita in visitas if visita.get("status") == "aberta"]
+    if len(abertas) == 1:
+        return _visita_localizacoes_message(abertas[0]["id"])
+    if len(visitas) == 1:
+        return _visita_localizacoes_message(visitas[0]["id"])
+    lines = [
+        "Existem várias visitas técnicas registradas.",
+        "Escolha uma pelo ID:",
+        "",
+    ]
+    for visita in visitas[:10]:
+        lines.extend(_format_visita_list_item(visita))
+    lines.extend(["", "Envie:", f"localização visita {visitas[0]['id']}"])
+    return "\n".join(lines)
 
 
 def _parse_visitas_excel_reference(normalized_text: str) -> dict:
     if normalized_text == "fazendas visitadas":
-        return {"mes": calculate_month_reference(date.today())}
+        return {}
     match = re.fullmatch(r"planilha visitas(?:\s+(.+))?", normalized_text)
     argument = str((match.group(1) if match else "") or "").strip()
     if argument == "hoje":
@@ -1123,7 +1307,7 @@ def _parse_visitas_excel_reference(normalized_text: str) -> dict:
         return {"data": argument}
     if re.fullmatch(r"\d{4}-\d{2}", argument):
         return {"mes": argument}
-    return {"mes": calculate_month_reference(date.today())}
+    return {}
 
 
 def _format_optional_number(value: object) -> str:
