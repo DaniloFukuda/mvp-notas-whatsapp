@@ -40,11 +40,14 @@ def test_visita_planilha_exporta_abas_e_link_gps():
         assert tuple(workbook.sheetnames) == (
             "Visitas",
             "Fotos",
-            "Localizacoes",
+            "Localizações",
             "Dados coletados",
         )
         visitas = workbook["Visitas"]
         assert visitas.cell(1, 15).value == "Link GPS principal"
+        assert visitas.cell(1, 3).value == "Técnico"
+        assert visitas.cell(1, 6).value == "Proprietário"
+        assert visitas.cell(1, 8).value == "Área ha"
         assert visitas.cell(2, 5).value == "Fazenda Imperial"
         assert visitas.cell(2, 13).value == 1
         assert visitas.cell(2, 14).value == 1
@@ -52,7 +55,8 @@ def test_visita_planilha_exporta_abas_e_link_gps():
             "https://maps.google.com/?q=-15.0019124,-50.7714295"
         )
         assert workbook["Fotos"].cell(2, 9).value == "foto.jpg"
-        assert workbook["Localizacoes"].cell(2, 7).value.startswith(
+        assert workbook["Localizações"].cell(1, 4).value == "Descrição"
+        assert workbook["Localizações"].cell(2, 7).value.startswith(
             "https://maps.google.com/?q="
         )
         assert workbook["Dados coletados"].cell(2, 4).value == "tanque"

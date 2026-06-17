@@ -40,20 +40,20 @@ def _build_visitas_sheet(workbook: Workbook, visitas: list[dict]) -> None:
         (
             "ID",
             "Data",
-            "Tecnico",
+            "Técnico",
             "Telefone",
             "Fazenda",
-            "Proprietario",
+            "Proprietário",
             "Gerente",
-            "Area ha",
-            "Area alqueires",
+            "Área ha",
+            "Área alqueires",
             "Safra",
             "Tipo de visita",
             "Status",
             "Qtd fotos",
-            "Qtd localizacoes",
+            "Qtd localizações",
             "Link GPS principal",
-            "Observacoes",
+            "Observações",
         )
     )
     for visita in visitas:
@@ -87,13 +87,13 @@ def _build_localizacoes_sheet(
     rows: list[dict],
     by_visit: dict[int, dict],
 ) -> None:
-    sheet = workbook.create_sheet("Localizacoes")
+    sheet = workbook.create_sheet("Localizações")
     sheet.append(
         (
             "ID visita",
             "Fazenda",
             "Data/hora",
-            "Descricao",
+            "Descrição",
             "Latitude",
             "Longitude",
             "Link GPS",
@@ -169,7 +169,7 @@ def _build_dados_sheet(
             "Data/hora",
             "Chave",
             "Valor",
-            "Observacao",
+            "Observação",
         )
     )
     for row in rows:

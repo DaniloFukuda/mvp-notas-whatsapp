@@ -25,11 +25,11 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         leftMargin=1.5 * cm,
         topMargin=1.4 * cm,
         bottomMargin=1.4 * cm,
-        title="Relatorio de Visita Tecnica",
+        title="Relatório de Visita Técnica",
     )
     styles = _styles()
     story = [
-        Paragraph("Relatorio de Visita Tecnica", styles["Title"]),
+        Paragraph("Relatório de Visita Técnica", styles["Title"]),
         Paragraph("Ciclus Agro", styles["Subtitle"]),
         Spacer(1, 0.35 * cm),
     ]
@@ -40,17 +40,17 @@ def build_visita_pdf(visita_data: dict) -> bytes:
     maps_url = _text(visita_data.get("maps_url_principal"))
     if maps_url:
         gps_lines = [
-            ["Localizacao principal", maps_url],
+            ["Localização principal", maps_url],
             ["Latitude", _number(visita_data.get("latitude_principal"))],
             ["Longitude", _number(visita_data.get("longitude_principal"))],
         ]
-        story.extend(_section("Localizacao principal", styles))
+        story.extend(_section("Localização principal", styles))
         story.append(_key_value_table(gps_lines, styles))
         story.append(Spacer(1, 0.25 * cm))
 
     observations = _text(visita_data.get("observacoes"))
     if observations:
-        story.extend(_section("Observacoes", styles))
+        story.extend(_section("Observações", styles))
         story.append(Paragraph(_escape_lines(observations), styles["Body"]))
         story.append(Spacer(1, 0.25 * cm))
 
@@ -71,8 +71,8 @@ def build_visita_pdf(visita_data: dict) -> bytes:
 
     localizacoes = visita_data.get("localizacoes") or []
     if localizacoes:
-        story.extend(_section("Localizacoes", styles))
-        rows = [["Descricao", "Latitude", "Longitude", "Link GPS"]]
+        story.extend(_section("Localizações", styles))
+        rows = [["Descrição", "Latitude", "Longitude", "Link GPS"]]
         rows.extend(
             [
                 _paragraph(row.get("descricao") or "Ponto", styles),
@@ -98,15 +98,15 @@ def build_visita_pdf(visita_data: dict) -> bytes:
 def _info_table(visita: dict, styles: dict) -> Table:
     rows = [
         ["Data da visita", _format_date(visita.get("data_visita"))],
-        ["Tecnico", _text(visita.get("tecnico_nome"))],
+        ["Técnico", _text(visita.get("tecnico_nome"))],
         ["Telefone", _text(visita.get("telefone_origem"))],
         ["Fazenda", _text(visita.get("fazenda"))],
-        ["Proprietario", _text(visita.get("proprietario"))],
-        ["Gerente/responsavel", _text(visita.get("gerente"))],
+        ["Proprietário", _text(visita.get("proprietario"))],
+        ["Gerente/responsável", _text(visita.get("gerente"))],
         ["Safra", _text(visita.get("safra"))],
         ["Tipo de visita", _text(visita.get("tipo_visita"))],
-        ["Area em hectares", _number(visita.get("area_hectares"))],
-        ["Area em alqueires", _number(visita.get("area_alqueires"))],
+        ["Área em hectares", _number(visita.get("area_hectares"))],
+        ["Área em alqueires", _number(visita.get("area_alqueires"))],
         ["Status", _text(visita.get("status"))],
     ]
     return _key_value_table(rows, styles)

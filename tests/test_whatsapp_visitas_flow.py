@@ -29,7 +29,7 @@ def test_visita_iniciar_fluxo():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "visita")
 
-            assert "Vamos iniciar uma visita tecnica." in reply
+            assert "Vamos iniciar uma visita técnica." in reply
             assert "Qual o nome da fazenda?" in reply
             assert visitas.obter_visita_aberta(sender)["estado_fluxo"] == "aguardando_fazenda"
     finally:
@@ -45,7 +45,7 @@ def test_visita_preencher_campos():
             _, visitas, sender = _install_services(temp_dir)
 
             api_whatsapp.handle_rdv_text_message(sender, "visita")
-            assert "proprietario" in api_whatsapp.handle_rdv_text_message(
+            assert "proprietário" in api_whatsapp.handle_rdv_text_message(
                 sender, "Fazenda Imperial"
             ).lower()
             api_whatsapp.handle_rdv_text_message(sender, "Alexander Duarte Paniago")
@@ -110,7 +110,7 @@ def test_visita_salvar_localizacao():
             )
 
             saved = visitas.obter_visita_aberta(sender)
-            assert "Localizacao salva." in reply
+            assert "📍 Localização salva." in reply
             assert "https://maps.google.com/?q=-15.0019124,-50.7714295" in reply
             assert saved["maps_url_principal"] == (
                 "https://maps.google.com/?q=-15.0019124,-50.7714295"
@@ -133,6 +133,11 @@ def test_visita_fechar():
 
             closed = visitas.obter_visita(visita["id"])
             assert "Visita fechada com sucesso." in reply
+            assert "Área: - ha" in reply
+            assert "Localizações: 0" in reply
+            assert "Comandos disponíveis:" in reply
+            assert "relatório visita" in reply
+            assert "localização visita" in reply
             assert closed["status"] == "fechada"
             assert closed["fechado_em"]
     finally:
@@ -192,10 +197,43 @@ def test_relatorio_visita_sem_visita():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
 
-            assert reply == 'Nenhuma visita tecnica encontrada. Envie "visita" para iniciar.'
+            assert reply == 'Nenhuma visita técnica encontrada. Envie "visita" para iniciar.'
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+
+
+def test_comandos_visita_aceitam_acentos_e_sem_acentos():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            visitas.adicionar_localizacao(visita["id"], -15.0019124, -50.7714295)
+            sent = []
+
+            def fake_send(to, content, filename, caption, mime_type):
+                sent.append((to, filename, caption, mime_type, content))
+
+            api_whatsapp.send_whatsapp_document = fake_send
+
+            assert api_whatsapp.handle_rdv_text_message(
+                sender, "localizacao visita"
+            ).startswith("Fazenda Imperial")
+            assert api_whatsapp.handle_rdv_text_message(
+                sender, "localização visita"
+            ).startswith("Fazenda Imperial")
+            assert api_whatsapp.handle_rdv_text_message(sender, "relatorio visita") is None
+            assert api_whatsapp.handle_rdv_text_message(sender, "relatório visita") is None
+            assert len(sent) == 2
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
 
 
 def test_rdv_nao_quebrou_comandos_principais():

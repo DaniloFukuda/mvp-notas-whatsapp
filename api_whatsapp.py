@@ -53,14 +53,14 @@ RDV_EXCEL_MIME_TYPE = (
 RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
 RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
-VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas tecnicas da Ciclus Agro."
+VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas técnicas da Ciclus Agro."
 VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
 VISITA_PDF_MIME_TYPE = "application/pdf"
 VISITA_START_COMMANDS = {"visita", "nova visita", "iniciar visita"}
 VISITA_FLOW_STEPS = {
-    "aguardando_fazenda": ("fazenda", "Qual o nome do proprietario?"),
-    "aguardando_proprietario": ("proprietario", "Qual o gerente/responsavel?"),
-    "aguardando_gerente": ("gerente", "Qual a area da fazenda?"),
+    "aguardando_fazenda": ("fazenda", "Qual o nome do proprietário?"),
+    "aguardando_proprietario": ("proprietario", "Qual o gerente/responsável?"),
+    "aguardando_gerente": ("gerente", "Qual a área da fazenda?"),
     "aguardando_area": ("area_hectares", "Qual a safra?"),
     "aguardando_safra": ("safra", "Qual o tipo de visita?"),
     "aguardando_tipo_visita": ("tipo_visita", ""),
@@ -679,7 +679,7 @@ def handle_visitas_text_message(
         )
         return True, "\n".join(
             [
-                "Vamos iniciar uma visita tecnica.",
+                "Vamos iniciar uma visita técnica.",
                 "Qual o nome da fazenda?",
             ]
         )
@@ -693,7 +693,7 @@ def handle_visitas_text_message(
                 _mask_phone(sender_phone),
                 _safe_exception_summary(exc),
             )
-            return True, "Nao consegui enviar a planilha de visitas agora. Tente novamente mais tarde."
+            return True, "Não consegui enviar a planilha de visitas agora. Tente novamente mais tarde."
         return True, None
 
     if _is_relatorio_visita_command(normalized_text):
@@ -705,9 +705,9 @@ def handle_visitas_text_message(
                 _mask_phone(sender_phone),
                 _safe_exception_summary(exc),
             )
-            return True, "Nao consegui enviar o relatorio da visita agora. Tente novamente mais tarde."
+            return True, "Não consegui enviar o relatório da visita agora. Tente novamente mais tarde."
         if not sent:
-            return True, 'Nenhuma visita tecnica encontrada. Envie "visita" para iniciar.'
+            return True, 'Nenhuma visita técnica encontrada. Envie "visita" para iniciar.'
         return True, None
 
     if open_visit is None:
@@ -743,20 +743,20 @@ def handle_visitas_text_message(
             return True, "\n".join(
                 [
                     "Visita aberta.",
-                    "Envie foto, observacao, localizacao ou \"fechar visita\".",
+                    "Envie foto, observação, localização ou \"fechar visita\".",
                 ]
             )
         return True, next_question
 
     if state != "visita_aberta":
-        return True, "Continue preenchendo a visita tecnica atual."
+        return True, "Continue preenchendo a visita técnica atual."
 
     direct_reply = _handle_visita_direct_command(open_visit, text, normalized_text)
     if direct_reply is not None:
         return True, direct_reply
 
     return True, (
-        "Visita em andamento. Envie foto, observacao, localizacao, dado coletado "
+        "Visita em andamento. Envie foto, observação, localização, dado coletado "
         "ou \"fechar visita\"."
     )
 
@@ -768,7 +768,7 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
     latitude = location.get("latitude")
     longitude = location.get("longitude")
     if latitude is None or longitude is None:
-        return "Nao consegui ler a localizacao enviada. Tente enviar o ponto novamente."
+        return "Não consegui ler a localização enviada. Tente enviar o ponto novamente."
     description = location.get("name") or location.get("address") or ""
     saved = visitas_service.adicionar_localizacao(
         open_visit["id"],
@@ -778,7 +778,7 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
     )
     return "\n".join(
         [
-            "Localizacao salva.",
+            "📍 Localização salva.",
             "Abrir no GPS:",
             saved["maps_url"],
         ]
@@ -806,7 +806,7 @@ def handle_visitas_media_message(
     return "\n".join(
         [
             f"Foto salva na visita {fazenda}.",
-            "Envie outra foto, observacao, localizacao ou \"fechar visita\".",
+            "Envie outra foto, observação, localização ou \"fechar visita\".",
         ]
     )
 
@@ -911,14 +911,14 @@ def _visita_fechada_message(visita: dict) -> str:
             "Visita fechada com sucesso.",
             f"Fazenda: {visita.get('fazenda') or '-'}",
             f"Gerente: {visita.get('gerente') or '-'}",
-            f"Area: {area} ha",
+            f"Área: {area} ha",
             f"Fotos: {fotos}",
-            f"Localizacoes: {localizacoes}",
+            f"Localizações: {localizacoes}",
             "",
-            "Comandos disponiveis:",
-            "relatorio visita",
+            "Comandos disponíveis:",
+            "relatório visita",
             "planilha visitas",
-            "localizacao visita",
+            "localização visita",
         ]
     )
 
@@ -927,7 +927,7 @@ def _visita_localizacoes_message(visita_id: int) -> str:
     resumo = visitas_service.visita_resumo(visita_id)
     locations = resumo.get("localizacoes") or []
     if not locations:
-        return "Nenhuma localizacao foi salva nesta visita."
+        return "Nenhuma localização foi salva nesta visita."
     fazenda = resumo.get("fazenda") or "visita em andamento"
     lines = []
     for index, location in enumerate(locations):
