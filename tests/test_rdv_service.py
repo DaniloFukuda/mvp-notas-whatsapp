@@ -234,7 +234,7 @@ def test_future_receipt_date_is_rejected():
         )
 
         with pytest.raises(ValueError):
-            service.save_launch_receipt_date(receipt["id"], "17/06/2026")
+            service.save_launch_receipt_date(receipt["id"], "18/06/2026")
 
 
 def test_weekly_report_ignores_cancelled_launches():

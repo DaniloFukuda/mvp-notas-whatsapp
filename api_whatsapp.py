@@ -26,6 +26,8 @@ from services.rdv_excel_service import (
     build_weekly_rdv_workbook,
 )
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
+from services.visitas_excel_service import build_visitas_workbook
+from services.visitas_service import VisitasTecnicasService
 
 
 try:
@@ -49,6 +51,17 @@ RDV_EXCEL_MIME_TYPE = (
 )
 RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
 RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
+VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
+VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas tecnicas da Ciclus Agro."
+VISITA_START_COMMANDS = {"visita", "nova visita", "iniciar visita"}
+VISITA_FLOW_STEPS = {
+    "aguardando_fazenda": ("fazenda", "Qual o nome do proprietario?"),
+    "aguardando_proprietario": ("proprietario", "Qual o gerente/responsavel?"),
+    "aguardando_gerente": ("gerente", "Qual a area da fazenda?"),
+    "aguardando_area": ("area_hectares", "Qual a safra?"),
+    "aguardando_safra": ("safra", "Qual o tipo de visita?"),
+    "aguardando_tipo_visita": ("tipo_visita", ""),
+}
 KM_STATUS_COMMANDS = {"status km"}
 KM_CANCEL_COMMANDS = {"cancelar km", "km cancelar"}
 KM_HELP_MESSAGE = "\n".join(
@@ -90,6 +103,7 @@ RDV_MENU = "\n".join(
 )
 rdv_service = RDVService()
 rdv_receipt_analysis_service = RDVReceiptAnalysisService()
+visitas_service = VisitasTecnicasService()
 
 
 @router.get("/webhook/whatsapp")
@@ -374,11 +388,45 @@ def _handle_whatsapp_message(message: dict) -> None:
             _safe_send_text(sender_phone, reply)
         return
 
+    if message_type == "location":
+        reply = handle_visitas_location_message(sender_phone, message.get("location") or {})
+        if reply:
+            _safe_send_text(sender_phone, reply)
+            return
+
     if message_type not in ("image", "document") or not media_id:
         _safe_send_text(
             sender_phone,
             "Recebi sua mensagem, mas por enquanto consigo processar apenas imagem ou documento.",
         )
+        return
+
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    if open_visit is not None and open_visit.get("estado_fluxo") == "visita_aberta":
+        destination = _build_media_destination(
+            sender_phone=sender_phone,
+            media_id=media_id,
+            mime_type=mime_type,
+        )
+        try:
+            downloaded_path = download_media(media_id, destination)
+        except Exception as exc:
+            logger.exception(
+                "Falha ao baixar foto da visita tecnica: media_id=%s status_code=%s erro=%s",
+                _mask_media_id(media_id),
+                _http_status_from_exception(exc) or "-",
+                _safe_exception_summary(exc),
+            )
+            _safe_send_text(sender_phone, "Nao consegui salvar a foto da visita. Tente novamente.")
+            return
+        reply = handle_visitas_media_message(
+            sender_phone=sender_phone,
+            message_type=message_type,
+            media_id=media_id,
+            file_path=str(downloaded_path),
+            caption=caption,
+        )
+        _safe_send_text(sender_phone, reply)
         return
 
     if (
@@ -484,6 +532,15 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     )
     if global_command_handled:
         return global_reply
+
+    visita_handled, visita_reply = handle_visitas_text_message(
+        sender_phone,
+        text,
+        collaborator,
+        normalized,
+    )
+    if visita_handled:
+        return visita_reply
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
@@ -600,6 +657,318 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         return "\n".join(lines)
 
     return RDV_MENU
+
+
+def handle_visitas_text_message(
+    sender_phone: str,
+    text: str,
+    collaborator: dict | None = None,
+    normalized: str | None = None,
+) -> tuple[bool, str | None]:
+    normalized_text = normalized if normalized is not None else _normalize_caption(text)
+    collaborator = collaborator or rdv_service.get_collaborator_by_phone(sender_phone)
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+
+    if normalized_text in VISITA_START_COMMANDS:
+        visit = visitas_service.iniciar_visita(
+            sender_phone,
+            tecnico_nome=(collaborator or {}).get("nome"),
+        )
+        return True, "\n".join(
+            [
+                "Vamos iniciar uma visita tecnica.",
+                "Qual o nome da fazenda?",
+            ]
+        )
+
+    if _is_planilha_visitas_command(normalized_text):
+        try:
+            _send_visitas_excel(sender_phone, normalized_text)
+        except Exception as exc:
+            logger.exception(
+                "Falha ao enviar Excel de visitas pelo WhatsApp: to=%s erro=%s",
+                _mask_phone(sender_phone),
+                _safe_exception_summary(exc),
+            )
+            return True, "Nao consegui enviar a planilha de visitas agora. Tente novamente mais tarde."
+        return True, None
+
+    if normalized_text in {"relatorio visita", "relatorio visitas"}:
+        return True, (
+            "O relatorio PDF sera implementado na proxima etapa. "
+            "Por enquanto, use \"planilha visitas\"."
+        )
+
+    if open_visit is None:
+        return False, None
+
+    if normalized_text in {"visita status", "status visita"}:
+        return True, _visita_status_message(open_visit)
+
+    if normalized_text in {"localizacao visita", "localizacoes visita", "localizacao visitas"}:
+        return True, _visita_localizacoes_message(open_visit["id"])
+
+    if normalized_text == "fechar visita":
+        closed = visitas_service.fechar_visita(open_visit["id"])
+        return True, _visita_fechada_message(closed)
+
+    if normalized_text == "cancelar visita":
+        visitas_service.cancelar_visita(open_visit["id"])
+        return True, "Visita cancelada com sucesso."
+
+    state = str(open_visit.get("estado_fluxo") or "")
+    if state in VISITA_FLOW_STEPS:
+        field, next_question = VISITA_FLOW_STEPS[state]
+        value = _parse_visita_area(text) if field == "area_hectares" else text
+        updates = {field: value}
+        if field == "area_hectares" and _mentions_alqueires(text):
+            updates = {"area_alqueires": value}
+        next_state = _next_visita_state(state)
+        updates["estado_fluxo"] = next_state
+        saved = open_visit
+        for update_field, update_value in updates.items():
+            saved = visitas_service.atualizar_campo(saved["id"], update_field, update_value)
+        if next_state == "visita_aberta":
+            return True, "\n".join(
+                [
+                    "Visita aberta.",
+                    "Envie foto, observacao, localizacao ou \"fechar visita\".",
+                ]
+            )
+        return True, next_question
+
+    if state != "visita_aberta":
+        return True, "Continue preenchendo a visita tecnica atual."
+
+    direct_reply = _handle_visita_direct_command(open_visit, text, normalized_text)
+    if direct_reply is not None:
+        return True, direct_reply
+
+    return True, (
+        "Visita em andamento. Envie foto, observacao, localizacao, dado coletado "
+        "ou \"fechar visita\"."
+    )
+
+
+def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    if open_visit is None or open_visit.get("estado_fluxo") != "visita_aberta":
+        return None
+    latitude = location.get("latitude")
+    longitude = location.get("longitude")
+    if latitude is None or longitude is None:
+        return "Nao consegui ler a localizacao enviada. Tente enviar o ponto novamente."
+    description = location.get("name") or location.get("address") or ""
+    saved = visitas_service.adicionar_localizacao(
+        open_visit["id"],
+        float(latitude),
+        float(longitude),
+        descricao=description,
+    )
+    return "\n".join(
+        [
+            "Localizacao salva.",
+            "Abrir no GPS:",
+            saved["maps_url"],
+        ]
+    )
+
+
+def handle_visitas_media_message(
+    sender_phone: str,
+    message_type: str,
+    media_id: str,
+    file_path: str,
+    caption: str = "",
+) -> str:
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    if open_visit is None:
+        return "Nenhuma visita em andamento encontrada."
+    visitas_service.adicionar_midia(
+        open_visit["id"],
+        tipo="foto" if message_type == "image" else message_type,
+        media_id_whatsapp=media_id,
+        caminho_arquivo=file_path,
+        legenda=caption,
+    )
+    fazenda = open_visit.get("fazenda") or "visita em andamento"
+    return "\n".join(
+        [
+            f"Foto salva na visita {fazenda}.",
+            "Envie outra foto, observacao, localizacao ou \"fechar visita\".",
+        ]
+    )
+
+
+def _handle_visita_direct_command(
+    open_visit: dict,
+    text: str,
+    normalized_text: str,
+) -> str | None:
+    direct_patterns = (
+        ("fazenda", "fazenda"),
+        ("proprietario", "proprietario"),
+        ("proprietario", "proprietario"),
+        ("gerente", "gerente"),
+        ("safra", "safra"),
+        ("tipo_visita", "tipo"),
+        ("area_hectares", "hectares"),
+        ("area_alqueires", "alqueires"),
+        ("area_hectares", "area"),
+    )
+    for field, prefix in direct_patterns:
+        if normalized_text == prefix or normalized_text.startswith(prefix + " "):
+            value = text[len(text.split(maxsplit=1)[0]):].strip()
+            if not value:
+                return "Informe o valor junto com o comando."
+            if field in {"area_hectares", "area_alqueires"}:
+                value = _parse_visita_area(value)
+            visitas_service.atualizar_campo(open_visit["id"], field, value)
+            return "Campo salvo na visita."
+
+    for prefix in ("obs ", "observacao "):
+        if normalized_text.startswith(prefix):
+            observation = text[len(text.split(maxsplit=1)[0]):].strip()
+            visitas_service.adicionar_observacao(open_visit["id"], observation)
+            return "Observacao salva na visita."
+
+    if normalized_text.startswith("dado "):
+        payload = text.split(maxsplit=2)
+        if len(payload) < 3:
+            return "Informe o dado no formato: dado chave valor"
+        visitas_service.adicionar_dado_coletado(
+            open_visit["id"],
+            payload[1],
+            payload[2],
+        )
+        return "Dado coletado salvo na visita."
+
+    return None
+
+
+def _next_visita_state(state: str) -> str:
+    order = (
+        "aguardando_fazenda",
+        "aguardando_proprietario",
+        "aguardando_gerente",
+        "aguardando_area",
+        "aguardando_safra",
+        "aguardando_tipo_visita",
+    )
+    try:
+        index = order.index(state)
+    except ValueError:
+        return "visita_aberta"
+    if index + 1 >= len(order):
+        return "visita_aberta"
+    return order[index + 1]
+
+
+def _parse_visita_area(text: str) -> float | None:
+    match = re.search(r"[-+]?\d[\d.,]*", str(text or ""))
+    if match is None:
+        return None
+    normalized = match.group(0)
+    if "," in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
+    return float(normalized)
+
+
+def _mentions_alqueires(text: str) -> bool:
+    return "alqueir" in _normalize_caption(text)
+
+
+def _visita_status_message(visita: dict) -> str:
+    return "\n".join(
+        [
+            "Visita em andamento.",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Gerente: {visita.get('gerente') or '-'}",
+            f"Safra: {visita.get('safra') or '-'}",
+            f"Tipo: {visita.get('tipo_visita') or '-'}",
+        ]
+    )
+
+
+def _visita_fechada_message(visita: dict) -> str:
+    resumo = visitas_service.visita_resumo(visita["id"])
+    fotos = len(resumo.get("midias") or [])
+    localizacoes = len(resumo.get("localizacoes") or [])
+    area = _format_optional_number(visita.get("area_hectares"))
+    return "\n".join(
+        [
+            "Visita fechada com sucesso.",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Gerente: {visita.get('gerente') or '-'}",
+            f"Area: {area} ha",
+            f"Fotos: {fotos}",
+            f"Localizacoes: {localizacoes}",
+            "",
+            "Comandos disponiveis:",
+            "relatorio visita",
+            "planilha visitas",
+            "localizacao visita",
+        ]
+    )
+
+
+def _visita_localizacoes_message(visita_id: int) -> str:
+    resumo = visitas_service.visita_resumo(visita_id)
+    locations = resumo.get("localizacoes") or []
+    if not locations:
+        return "Nenhuma localizacao foi salva nesta visita."
+    fazenda = resumo.get("fazenda") or "visita em andamento"
+    lines = []
+    for index, location in enumerate(locations):
+        description = location.get("descricao") or (
+            "ponto principal" if index == 0 else f"ponto {index + 1}"
+        )
+        lines.extend(
+            [
+                f"{fazenda} - {description}",
+                location.get("maps_url") or "",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _is_planilha_visitas_command(normalized_text: str) -> bool:
+    return re.fullmatch(r"planilha visitas(?:\s+.+)?", normalized_text) is not None
+
+
+def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
+    selected = _parse_visitas_excel_reference(normalized_text)
+    data = visitas_service.listar_visitas(**selected)
+    content = build_visitas_workbook(data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=VISITAS_EXCEL_FILENAME,
+        caption=VISITAS_EXCEL_CAPTION,
+        mime_type=RDV_EXCEL_MIME_TYPE,
+    )
+
+
+def _parse_visitas_excel_reference(normalized_text: str) -> dict:
+    match = re.fullmatch(r"planilha visitas(?:\s+(.+))?", normalized_text)
+    argument = str((match.group(1) if match else "") or "").strip()
+    if argument == "hoje":
+        return {"periodo": "hoje"}
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", argument):
+        return {"data": argument}
+    if re.fullmatch(r"\d{4}-\d{2}", argument):
+        return {"mes": argument}
+    return {"mes": calculate_month_reference(date.today())}
+
+
+def _format_optional_number(value: object) -> str:
+    if value in (None, ""):
+        return "-"
+    parsed = float(value)
+    if parsed.is_integer():
+        return str(int(parsed))
+    return f"{parsed:.2f}".rstrip("0").rstrip(".").replace(".", ",")
 
 
 def clear_rdv_sessions() -> None:

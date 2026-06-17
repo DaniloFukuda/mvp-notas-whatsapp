@@ -77,7 +77,7 @@ def test_qr_value_wins_over_ocr_but_ocr_fills_missing_date():
 
 def test_rejects_future_date_from_ocr_text():
     result = RDVReceiptAnalysisService().analyze_text(
-        "Comprovante de Pix\n17/06/2026\nR$ 80\nMercado Pago"
+        "Comprovante de Pix\n18/06/2026\nR$ 80\nMercado Pago"
     )
 
     assert result.valor_detectado == 80.0

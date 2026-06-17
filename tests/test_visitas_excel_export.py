@@ -1,0 +1,58 @@
+import sys
+import tempfile
+from io import BytesIO
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from services.visitas_excel_service import build_visitas_workbook
+from services.visitas_service import VisitasTecnicasService
+
+
+def test_visita_planilha_exporta_abas_e_link_gps():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(visita["id"], "data_visita", "2026-06-17")
+        service.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+        service.atualizar_campo(visita["id"], "area_hectares", 2299)
+        service.adicionar_localizacao(visita["id"], -15.0019124, -50.7714295)
+        service.adicionar_midia(
+            visita["id"],
+            "foto",
+            media_id_whatsapp="wamid.foto",
+            caminho_arquivo="data/documentos/uploads/whatsapp/foto.jpg",
+            legenda="Tanque",
+        )
+        service.adicionar_dado_coletado(
+            visita["id"],
+            "tanque",
+            "capacidade 10000 L",
+        )
+
+        content = build_visitas_workbook(service.listar_visitas(mes="2026-06"))
+        workbook = load_workbook(BytesIO(content))
+
+        assert tuple(workbook.sheetnames) == (
+            "Visitas",
+            "Fotos",
+            "Localizacoes",
+            "Dados coletados",
+        )
+        visitas = workbook["Visitas"]
+        assert visitas.cell(1, 15).value == "Link GPS principal"
+        assert visitas.cell(2, 5).value == "Fazenda Imperial"
+        assert visitas.cell(2, 13).value == 1
+        assert visitas.cell(2, 14).value == 1
+        assert visitas.cell(2, 15).value == (
+            "https://maps.google.com/?q=-15.0019124,-50.7714295"
+        )
+        assert workbook["Fotos"].cell(2, 9).value == "foto.jpg"
+        assert workbook["Localizacoes"].cell(2, 7).value.startswith(
+            "https://maps.google.com/?q="
+        )
+        assert workbook["Dados coletados"].cell(2, 4).value == "tanque"
