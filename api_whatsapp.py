@@ -27,6 +27,7 @@ from services.rdv_excel_service import (
 )
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 from services.visitas_excel_service import build_visitas_workbook
+from services.visitas_pdf_service import build_visita_pdf
 from services.visitas_service import VisitasTecnicasService
 
 
@@ -53,6 +54,8 @@ RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
 RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
 VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
 VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas tecnicas da Ciclus Agro."
+VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
+VISITA_PDF_MIME_TYPE = "application/pdf"
 VISITA_START_COMMANDS = {"visita", "nova visita", "iniciar visita"}
 VISITA_FLOW_STEPS = {
     "aguardando_fazenda": ("fazenda", "Qual o nome do proprietario?"),
@@ -693,11 +696,19 @@ def handle_visitas_text_message(
             return True, "Nao consegui enviar a planilha de visitas agora. Tente novamente mais tarde."
         return True, None
 
-    if normalized_text in {"relatorio visita", "relatorio visitas"}:
-        return True, (
-            "O relatorio PDF sera implementado na proxima etapa. "
-            "Por enquanto, use \"planilha visitas\"."
-        )
+    if _is_relatorio_visita_command(normalized_text):
+        try:
+            sent = _send_visita_pdf(sender_phone, normalized_text)
+        except Exception as exc:
+            logger.exception(
+                "Falha ao enviar PDF de visita pelo WhatsApp: to=%s erro=%s",
+                _mask_phone(sender_phone),
+                _safe_exception_summary(exc),
+            )
+            return True, "Nao consegui enviar o relatorio da visita agora. Tente novamente mais tarde."
+        if not sent:
+            return True, 'Nenhuma visita tecnica encontrada. Envie "visita" para iniciar.'
+        return True, None
 
     if open_visit is None:
         return False, None
@@ -937,6 +948,10 @@ def _is_planilha_visitas_command(normalized_text: str) -> bool:
     return re.fullmatch(r"planilha visitas(?:\s+.+)?", normalized_text) is not None
 
 
+def _is_relatorio_visita_command(normalized_text: str) -> bool:
+    return re.fullmatch(r"relatorio visitas?(?:\s+\d+)?", normalized_text) is not None
+
+
 def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
     selected = _parse_visitas_excel_reference(normalized_text)
     data = visitas_service.listar_visitas(**selected)
@@ -948,6 +963,33 @@ def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
         caption=VISITAS_EXCEL_CAPTION,
         mime_type=RDV_EXCEL_MIME_TYPE,
     )
+
+
+def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
+    visita = _select_visita_for_pdf(sender_phone, normalized_text)
+    if visita is None:
+        return False
+    content = build_visita_pdf(visita)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=f"relatorio_visita_{visita['id']}.pdf",
+        caption=VISITA_PDF_CAPTION,
+        mime_type=VISITA_PDF_MIME_TYPE,
+    )
+    return True
+
+
+def _select_visita_for_pdf(sender_phone: str, normalized_text: str) -> dict | None:
+    match = re.fullmatch(r"relatorio visitas?(?:\s+(\d+))?", normalized_text)
+    if match is not None and match.group(1):
+        visita = visitas_service.obter_visita_completa(int(match.group(1)))
+        if visita is None:
+            return None
+        if str(visita.get("telefone_origem") or "") != re.sub(r"\D+", "", sender_phone):
+            return None
+        return visita
+    return visitas_service.obter_ultima_visita(sender_phone)
 
 
 def _parse_visitas_excel_reference(normalized_text: str) -> dict:

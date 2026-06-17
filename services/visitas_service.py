@@ -418,6 +418,57 @@ class VisitasTecnicasService:
                 return visita
         return {}
 
+    def obter_visita_completa(self, visita_id: int) -> dict | None:
+        visita = self.obter_visita(visita_id)
+        if visita is None:
+            return None
+
+        with closing(self._connect()) as connection:
+            midias = self._select_related(connection, "visita_midias", [int(visita_id)])
+            localizacoes = self._select_related(
+                connection,
+                "visita_localizacoes",
+                [int(visita_id)],
+            )
+            dados = self._select_related(
+                connection,
+                "visita_dados_coletados",
+                [int(visita_id)],
+            )
+
+        visita["midias"] = midias
+        visita["localizacoes"] = localizacoes
+        visita["dados_coletados"] = dados
+        visita["contadores"] = {
+            "midias": len(midias),
+            "fotos": len(midias),
+            "localizacoes": len(localizacoes),
+            "dados_coletados": len(dados),
+        }
+        return visita
+
+    def obter_ultima_visita(self, telefone_origem: str) -> dict | None:
+        self.ensure_schema()
+        phone = normalize_phone(telefone_origem)
+        if not phone:
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"""
+                SELECT {", ".join(VISITA_COLUMNS)}
+                FROM visitas_tecnicas
+                WHERE telefone_origem = ?
+                ORDER BY
+                    CASE WHEN status = 'aberta' THEN 0 ELSE 1 END,
+                    id DESC
+                LIMIT 1
+                """,
+                (phone,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.obter_visita_completa(int(row["id"]))
+
     @staticmethod
     def gerar_maps_url(latitude: float, longitude: float) -> str:
         return f"https://maps.google.com/?q={latitude},{longitude}"

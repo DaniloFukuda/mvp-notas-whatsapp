@@ -140,6 +140,64 @@ def test_visita_fechar():
         api_whatsapp.visitas_service = original_visitas
 
 
+def test_relatorio_visita_envia_pdf():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.atualizar_campo(visita["id"], "gerente", "Paulo Silva")
+            visitas.adicionar_observacao(visita["id"], "Pedido de 300T")
+            sent = []
+
+            def fake_send(to, content, filename, caption, mime_type):
+                sent.append(
+                    {
+                        "to": to,
+                        "content": content,
+                        "filename": filename,
+                        "caption": caption,
+                        "mime_type": mime_type,
+                    }
+                )
+
+            api_whatsapp.send_whatsapp_document = fake_send
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
+
+            assert reply is None
+            assert len(sent) == 1
+            assert sent[0]["to"] == sender
+            assert sent[0]["content"].startswith(b"%PDF")
+            assert sent[0]["filename"] == f"relatorio_visita_{visita['id']}.pdf"
+            assert sent[0]["caption"] == (
+                "Segue o relatório da visita técnica da Ciclus Agro."
+            )
+            assert sent[0]["mime_type"] == "application/pdf"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_relatorio_visita_sem_visita():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, _, sender = _install_services(temp_dir)
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
+
+            assert reply == 'Nenhuma visita tecnica encontrada. Envie "visita" para iniciar.'
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
 def test_rdv_nao_quebrou_comandos_principais():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
