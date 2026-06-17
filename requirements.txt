@@ -9,3 +9,4 @@ python-multipart
 requests
 python-dotenv
 openpyxl==3.1.5
+reportlab
