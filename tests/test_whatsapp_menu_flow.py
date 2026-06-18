@@ -17,6 +17,9 @@ def _install_services(temp_dir):
     api_whatsapp.rdv_service = rdv
     api_whatsapp.visitas_service = visitas
     api_whatsapp.whatsapp_menu_states.clear()
+    api_whatsapp.visita_edit_states.clear()
+    api_whatsapp.visita_active_states.clear()
+    api_whatsapp.visita_new_visit_states.clear()
     collaborator = rdv.get_collaborator_by_phone("5500000000001")
     return rdv, visitas, collaborator["telefone_whatsapp"]
 

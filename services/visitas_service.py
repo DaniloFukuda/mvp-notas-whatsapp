@@ -142,16 +142,34 @@ class VisitasTecnicasService:
         if open_visit is not None:
             return open_visit
 
+        return self.criar_visita(telefone_origem, tecnico_nome=tecnico_nome)
+
+    def criar_visita(
+        self,
+        telefone_origem: str,
+        tecnico_nome: str | None = None,
+        fazenda: str | None = None,
+        estado_fluxo: str = "aguardando_fazenda",
+    ) -> dict:
+        self.ensure_schema()
         now = _now()
         with closing(self._connect()) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO visitas_tecnicas (
-                    telefone_origem, tecnico_nome, status, estado_fluxo,
+                    telefone_origem, tecnico_nome, fazenda, status, estado_fluxo,
                     data_visita, criado_em, atualizado_em
-                ) VALUES (?, ?, 'aberta', 'aguardando_fazenda', ?, ?, ?)
+                ) VALUES (?, ?, ?, 'aberta', ?, ?, ?, ?)
                 """,
-                (normalize_phone(telefone_origem), _clean(tecnico_nome), date.today().isoformat(), now, now),
+                (
+                    normalize_phone(telefone_origem),
+                    _clean(tecnico_nome),
+                    _clean(fazenda),
+                    _clean(estado_fluxo),
+                    date.today().isoformat(),
+                    now,
+                    now,
+                ),
             )
             connection.commit()
             visita_id = cursor.lastrowid

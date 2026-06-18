@@ -20,6 +20,8 @@ def _install_services(temp_dir):
     api_whatsapp.rdv_service = rdv
     api_whatsapp.visitas_service = visitas
     api_whatsapp.visita_edit_states.clear()
+    api_whatsapp.visita_active_states.clear()
+    api_whatsapp.visita_new_visit_states.clear()
     collaborator = rdv.get_collaborator_by_phone("5500000000001")
     return rdv, visitas, collaborator["telefone_whatsapp"]
 
@@ -147,6 +149,176 @@ def test_visita_fechar():
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+
+
+def test_nova_visita_nao_usa_visita_aberta_antiga():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            antiga = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(antiga["id"], "fazenda", "FAZENDA NOVA FRONTEIRA")
+            visitas.atualizar_campo(antiga["id"], "estado_fluxo", "visita_aberta")
+
+            start = api_whatsapp.handle_rdv_text_message(sender, "nova visita")
+            created = api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
+            reply = api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-1",
+                "foto-itapua.jpg",
+                caption="Talhao novo",
+            )
+
+            data = visitas.listar_visitas_validas()
+            nova = next(item for item in data["visitas"] if item["fazenda"] == "Itapuã Prestes")
+            antiga_completa = visitas.obter_visita_completa(antiga["id"])
+            nova_completa = visitas.obter_visita_completa(nova["id"])
+            assert "Vamos iniciar uma nova visita técnica." in start
+            assert "Visita criada para ITAPUÃ PRESTES." in created
+            assert "Foto salva na visita Itapuã Prestes." in reply
+            assert antiga_completa["midias"] == []
+            assert len(nova_completa["midias"]) == 1
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+        api_whatsapp.visita_new_visit_states.clear()
+
+
+def test_visita_com_aberta_existente_pede_escolha():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "FAZENDA NOVA FRONTEIRA")
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "visita")
+
+            assert "Você já possui uma visita aberta:" in reply
+            assert f"continuar visita {visita['id']}" in reply
+            assert "nova visita" in reply
+            assert "fechar visita" in reply
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+        api_whatsapp.visita_new_visit_states.clear()
+
+
+def test_continuar_visita_define_visita_ativa():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            start = api_whatsapp.handle_rdv_text_message(sender, f"continuar visita {visita['id']}")
+            reply = api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-2",
+                "foto-imperial.jpg",
+            )
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            assert "Você voltou para a visita" in start
+            assert "Foto salva na visita Fazenda Imperial." in reply
+            assert len(saved["midias"]) == 1
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_fechar_visita_limpa_estado_ativo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            api_whatsapp.handle_rdv_text_message(sender, "nova visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
+            visita_id = api_whatsapp.visita_active_states[sender]
+
+            close_reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            media_reply = api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-3",
+                "foto-fechada.jpg",
+            )
+
+            saved = visitas.obter_visita_completa(visita_id)
+            assert "Visita fechada com sucesso." in close_reply
+            assert media_reply == "Nenhuma visita em andamento encontrada."
+            assert saved["midias"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+        api_whatsapp.visita_new_visit_states.clear()
+
+
+def test_cancelar_visita_limpa_estado_ativo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            api_whatsapp.handle_rdv_text_message(sender, "nova visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
+            visita_id = api_whatsapp.visita_active_states[sender]
+
+            cancel_reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar visita")
+            media_reply = api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-4",
+                "foto-cancelada.jpg",
+            )
+
+            saved = visitas.obter_visita_completa(visita_id)
+            assert cancel_reply == "Visita cancelada com sucesso."
+            assert media_reply == "Nenhuma visita em andamento encontrada."
+            assert saved["midias"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+        api_whatsapp.visita_new_visit_states.clear()
+
+
+def test_fluxo_edicao_nao_interfere_com_visita_ativa():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            api_whatsapp.handle_rdv_text_message(sender, "nova visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
+            visita_id = api_whatsapp.visita_active_states[sender]
+            visitas.atualizar_campo(visita_id, "gerente", "Marcos")
+
+            api_whatsapp.handle_rdv_text_message(sender, f"editar visita {visita_id}")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "gerente = X")
+
+            saved = visitas.obter_visita_completa(visita_id)
+            assert "Campo atualizado:" in reply
+            assert saved["gerente"] == "X"
+            assert saved["dados_coletados"] == []
+            assert saved["observacoes"] in (None, "")
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_edit_states.clear()
+        api_whatsapp.visita_active_states.clear()
 
 
 def test_ver_visita_por_id():

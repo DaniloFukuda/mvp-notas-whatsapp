@@ -56,7 +56,8 @@ VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
 VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas técnicas da Ciclus Agro."
 VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
 VISITA_PDF_MIME_TYPE = "application/pdf"
-VISITA_START_COMMANDS = {"visita", "nova visita", "iniciar visita"}
+VISITA_START_COMMANDS = {"visita", "iniciar visita"}
+VISITA_NEW_COMMANDS = {"nova visita", "iniciar nova visita", "outra visita"}
 VISITA_EDITABLE_FIELDS = {
     "fazenda": "Fazenda",
     "proprietario": "Proprietário",
@@ -222,6 +223,8 @@ rdv_receipt_analysis_service = RDVReceiptAnalysisService()
 visitas_service = VisitasTecnicasService()
 whatsapp_menu_states: dict[str, str] = {}
 visita_edit_states: dict[str, int] = {}
+visita_active_states: dict[str, int] = {}
+visita_new_visit_states: set[str] = set()
 
 
 @router.get("/webhook/whatsapp")
@@ -519,8 +522,8 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    open_visit = visitas_service.obter_visita_aberta(sender_phone)
-    if open_visit is not None and open_visit.get("estado_fluxo") == "visita_aberta":
+    active_visit = _get_active_visita_for_phone(sender_phone)
+    if active_visit is not None and active_visit.get("estado_fluxo") == "visita_aberta":
         destination = _build_media_destination(
             sender_phone=sender_phone,
             media_id=media_id,
@@ -793,7 +796,8 @@ def handle_visitas_text_message(
 ) -> tuple[bool, str | None]:
     normalized_text = normalized if normalized is not None else _normalize_caption(text)
     collaborator = collaborator or rdv_service.get_collaborator_by_phone(sender_phone)
-    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    open_visit = _get_active_visita_for_phone(sender_phone)
+    phone = normalize_phone(sender_phone)
 
     if normalized_text in {"fechar edicao", "finalizar edicao"}:
         return True, _close_visita_edit(sender_phone)
@@ -807,11 +811,24 @@ def handle_visitas_text_message(
     if _is_editar_visita_command(normalized_text):
         return True, _start_visita_edit(sender_phone, normalized_text)
 
+    if _is_continuar_visita_command(normalized_text):
+        return True, _continue_visita(sender_phone, normalized_text)
+
+    if normalized_text in VISITA_NEW_COMMANDS:
+        return True, _start_new_visita_flow(sender_phone)
+
+    if phone in visita_new_visit_states:
+        return True, _create_new_visita_from_farm(sender_phone, text, collaborator)
+
     if normalized_text in VISITA_START_COMMANDS:
+        existing_visit = visitas_service.obter_visita_aberta(sender_phone)
+        if existing_visit is not None:
+            return True, _existing_open_visita_choice_message(existing_visit)
         visit = visitas_service.iniciar_visita(
             sender_phone,
             tecnico_nome=(collaborator or {}).get("nome"),
         )
+        visita_active_states[phone] = int(visit["id"])
         return True, "\n".join(
             [
                 "Vamos iniciar uma visita técnica.",
@@ -858,19 +875,25 @@ def handle_visitas_text_message(
     if _is_localizacao_visita_command(normalized_text):
         return True, _handle_localizacao_visita(normalized_text)
 
-    if normalize_phone(sender_phone) in visita_edit_states:
+    if phone in visita_edit_states:
         return True, _handle_visita_edit_message(sender_phone, text)
 
-    if open_visit is None:
-        return False, None
-
     if normalized_text == "fechar visita":
+        if open_visit is None:
+            return True, NO_OPEN_VISITA_MESSAGE
         closed = visitas_service.fechar_visita(open_visit["id"])
+        _clear_active_visita(sender_phone, open_visit["id"])
         return True, _visita_fechada_message(closed)
 
     if normalized_text == "cancelar visita":
+        if open_visit is None:
+            return True, NO_OPEN_VISITA_MESSAGE
         visitas_service.cancelar_visita(open_visit["id"])
+        _clear_active_visita(sender_phone, open_visit["id"])
         return True, "Visita cancelada com sucesso."
+
+    if open_visit is None:
+        return False, None
 
     state = str(open_visit.get("estado_fluxo") or "")
     if state in VISITA_FLOW_STEPS:
@@ -884,6 +907,7 @@ def handle_visitas_text_message(
         saved = open_visit
         for update_field, update_value in updates.items():
             saved = visitas_service.atualizar_campo(saved["id"], update_field, update_value)
+        visita_active_states[phone] = int(saved["id"])
         if next_state == "visita_aberta":
             return True, "\n".join(
                 [
@@ -910,7 +934,7 @@ def handle_visitas_text_message(
 
 
 def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
-    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None or open_visit.get("estado_fluxo") != "visita_aberta":
         return None
     latitude = location.get("latitude")
@@ -940,7 +964,7 @@ def handle_visitas_media_message(
     file_path: str,
     caption: str = "",
 ) -> str:
-    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
         return "Nenhuma visita em andamento encontrada."
     visitas_service.adicionar_midia(
@@ -1035,6 +1059,112 @@ def _parse_visita_area(text: str) -> float | None:
 
 def _mentions_alqueires(text: str) -> bool:
     return "alqueir" in _normalize_caption(text)
+
+
+def _get_active_visita_for_phone(sender_phone: str) -> dict | None:
+    phone = normalize_phone(sender_phone)
+    visita_id = visita_active_states.get(phone)
+    if visita_id is not None:
+        visita = visitas_service.obter_visita_por_id(visita_id)
+        if visita is not None and visita.get("status") == "aberta":
+            return visita
+        visita_active_states.pop(phone, None)
+    visita = visitas_service.obter_visita_aberta(sender_phone)
+    if visita is not None and visita.get("status") == "aberta":
+        visita_active_states[phone] = int(visita["id"])
+        return visita
+    return None
+
+
+def _clear_active_visita(sender_phone: str, visita_id: int | None = None) -> None:
+    phone = normalize_phone(sender_phone)
+    current = visita_active_states.get(phone)
+    if visita_id is None or current == int(visita_id):
+        visita_active_states.pop(phone, None)
+    visita_new_visit_states.discard(phone)
+
+
+def _existing_open_visita_choice_message(visita: dict) -> str:
+    return "\n".join(
+        [
+            "Você já possui uma visita aberta:",
+            "",
+            f"#{visita.get('id')} - {visita.get('fazenda') or '-'}",
+            f"Status: {visita.get('status') or '-'}",
+            "",
+            "Para continuar nela, envie:",
+            f"continuar visita {visita.get('id')}",
+            "",
+            "Para iniciar uma nova visita, envie:",
+            "nova visita",
+            "",
+            "Para fechar a atual, envie:",
+            "fechar visita",
+        ]
+    )
+
+
+def _start_new_visita_flow(sender_phone: str) -> str:
+    phone = normalize_phone(sender_phone)
+    visita_active_states.pop(phone, None)
+    visita_new_visit_states.add(phone)
+    return "\n".join(
+        [
+            "Vamos iniciar uma nova visita técnica.",
+            "Qual o nome da fazenda?",
+        ]
+    )
+
+
+def _create_new_visita_from_farm(
+    sender_phone: str,
+    text: str,
+    collaborator: dict | None,
+) -> str:
+    farm = str(text or "").strip()
+    if not farm:
+        return "Informe o nome da fazenda para iniciar a nova visita."
+    phone = normalize_phone(sender_phone)
+    visita = visitas_service.criar_visita(
+        sender_phone,
+        tecnico_nome=(collaborator or {}).get("nome"),
+        fazenda=farm,
+        estado_fluxo="visita_aberta",
+    )
+    visita_active_states[phone] = int(visita["id"])
+    visita_new_visit_states.discard(phone)
+    return "\n".join(
+        [
+            f"Visita criada para {farm.upper()}.",
+            'Envie foto, observação, localização, dado coletado ou "fechar visita".',
+        ]
+    )
+
+
+def _is_continuar_visita_command(normalized_text: str) -> bool:
+    return re.fullmatch(r"continuar visitas?\s+\d+", normalized_text) is not None
+
+
+def _continue_visita(sender_phone: str, normalized_text: str) -> str:
+    match = re.fullmatch(r"continuar visitas?\s+(\d+)", normalized_text)
+    visita_id = int(match.group(1)) if match else 0
+    visita = visitas_service.obter_visita_por_id(visita_id)
+    if visita is None:
+        return (
+            "Não encontrei essa visita técnica.\n"
+            'Envie "visitas" para listar visitas válidas.'
+        )
+    if visita.get("status") != "aberta":
+        return "Essa visita não está aberta e não pode ser continuada."
+    phone = normalize_phone(sender_phone)
+    visita_active_states[phone] = visita_id
+    visita_new_visit_states.discard(phone)
+    return "\n".join(
+        [
+            f"Você voltou para a visita #{visita_id} - {visita.get('fazenda') or '-'}.",
+            'Envie foto, observação, localização, dado coletado ou "fechar visita".',
+        ]
+    )
 
 
 def _is_ver_visita_command(normalized_text: str) -> bool:
@@ -1603,6 +1733,8 @@ def clear_rdv_sessions() -> None:
     """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
     whatsapp_menu_states.clear()
     visita_edit_states.clear()
+    visita_active_states.clear()
+    visita_new_visit_states.clear()
 
 
 def _no_open_trip_message() -> str:
