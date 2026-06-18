@@ -191,6 +191,19 @@ FISCAL_CNPJ=
 5. Exportar a chave no Excel semanal.
 6. So depois conectar o servico Node.js/NFeWizard.
 
+### Status em 2026-06-18
+
+O item 2 foi implementado no modulo `services/fiscal_access_key.py`, com testes em `tests/test_fiscal_access_key.py`.
+
+O parser atual:
+
+- aceita NF-e modelo 55 e NFC-e modelo 65 por padrao;
+- valida codigo da UF, mes, CNPJ do emitente e digito verificador modulo 11;
+- extrai chaves de textos, QR Codes, URLs e OCR com separadores;
+- retorna string vazia quando a chave e invalida, evitando gravar lixo fiscal como chave.
+
+O proximo passo e usar esse parser no fluxo RDV para normalizar `analysis["chave_acesso"]` antes de salvar no banco.
+
 ## Criterios de aceite da fase 1
 
 - Um comprovante com chave de acesso detectavel deve gravar a chave no banco.
