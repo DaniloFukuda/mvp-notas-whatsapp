@@ -83,6 +83,7 @@ def test_receipt_with_detected_value_and_valid_date_waits_for_category():
         assert receipt["data_despesa"] == "2026-06-11"
         assert receipt["data_detectada"] == "2026-06-11"
         assert receipt["semana_referencia"] == calculate_week_reference("2026-06-11")
+        assert receipt["fiscal_status"] == "sem_chave"
 
 
 def test_receipt_saves_valid_fiscal_access_key_normalized():
@@ -106,6 +107,7 @@ def test_receipt_saves_valid_fiscal_access_key_normalized():
         )
 
         assert receipt["chave_acesso"] == VALID_ACCESS_KEY
+        assert receipt["fiscal_status"] == "chave_valida"
 
 
 def test_receipt_saves_formatted_fiscal_access_key_normalized():
@@ -129,6 +131,7 @@ def test_receipt_saves_formatted_fiscal_access_key_normalized():
         )
 
         assert receipt["chave_acesso"] == VALID_ACCESS_KEY
+        assert receipt["fiscal_status"] == "chave_valida"
 
 
 def test_random_44_digit_fiscal_access_key_is_not_saved():
@@ -149,6 +152,7 @@ def test_random_44_digit_fiscal_access_key_is_not_saved():
         )
 
         assert receipt["chave_acesso"] is None
+        assert receipt["fiscal_status"] == "chave_invalida"
 
 
 def test_flow_without_fiscal_access_key_continues_normally():
@@ -172,6 +176,7 @@ def test_flow_without_fiscal_access_key_continues_normally():
 
         assert receipt["status_fluxo"] == "aguardando_categoria"
         assert receipt["chave_acesso"] is None
+        assert receipt["fiscal_status"] == "sem_chave"
 
 
 def test_retry_receipt_saves_valid_fiscal_access_key_normalized():
@@ -202,6 +207,24 @@ def test_retry_receipt_saves_valid_fiscal_access_key_normalized():
 
         assert retried["status_fluxo"] == "aguardando_categoria"
         assert retried["chave_acesso"] == VALID_ACCESS_KEY
+        assert retried["fiscal_status"] == "chave_valida"
+
+
+def test_manual_expense_without_fiscal_key_keeps_local_fiscal_status_empty():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+
+        expense = service.register_manual_expense(
+            colaborador="Danilo",
+            data_despesa="2026-06-11",
+            categoria="alimentacao",
+            valor=42,
+        )
+
+        assert expense["valor"] == 42
+        assert expense["status_fluxo"] == "completo"
+        assert expense["chave_acesso"] is None
+        assert expense["fiscal_status"] == "sem_chave"
 
 
 def test_ocr_receipt_uses_document_date_week_instead_of_received_date():

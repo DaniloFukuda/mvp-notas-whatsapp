@@ -208,6 +208,16 @@ ausentes, aleatorias ou com digito verificador incorreto sao gravadas como
 `NULL`, mantendo o fluxo atual de RDV sem consulta SEFAZ, certificado digital,
 XML real ou emissao fiscal.
 
+O `RDVService` tambem passou a gravar `fiscal_status` local no lancamento:
+
+- `sem_chave` quando nao houve chave fiscal informada;
+- `chave_valida` quando a chave foi validada e salva normalizada;
+- `chave_invalida` quando houve tentativa de chave invalida e `chave_acesso`
+  foi descartada como `NULL`.
+
+Esse status ainda e local e defensivo. Ele nao representa consulta na SEFAZ,
+XML oficial, autorizacao fiscal ou emissao de documento.
+
 ## Criterios de aceite da fase 1
 
 - Um comprovante com chave de acesso detectavel deve gravar a chave no banco.
