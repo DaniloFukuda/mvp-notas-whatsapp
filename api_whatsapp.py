@@ -28,7 +28,7 @@ from services.rdv_excel_service import (
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
-from services.visitas_service import VisitasTecnicasService
+from services.visitas_service import VisitasTecnicasService, normalize_phone
 
 
 try:
@@ -57,6 +57,18 @@ VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas técnicas da Ciclus Agro."
 VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
 VISITA_PDF_MIME_TYPE = "application/pdf"
 VISITA_START_COMMANDS = {"visita", "nova visita", "iniciar visita"}
+VISITA_EDITABLE_FIELDS = {
+    "fazenda": "Fazenda",
+    "proprietario": "Proprietário",
+    "gerente": "Gerente/responsável",
+    "area_hectares": "Área em hectares",
+    "area_alqueires": "Área em alqueires",
+    "safra": "Safra",
+    "tipo_visita": "Tipo de visita",
+    "objetivo": "Objetivo",
+    "observacoes": "Observações",
+    "data_visita": "Data da visita",
+}
 VISITA_FLOW_STEPS = {
     "aguardando_fazenda": ("fazenda", "Qual o nome do proprietário?"),
     "aguardando_proprietario": ("proprietario", "Qual o gerente/responsável?"),
@@ -96,6 +108,10 @@ MAIN_MENU_MESSAGE = "\n".join(
         "",
         "* visita — inicia uma visita técnica",
         "* visita status — mostra sua visita em andamento",
+        "* ver visita 12 — mostra dados da visita",
+        "* editar visita 12 — corrige dados da visita",
+        "* fechar edição — encerra modo edição",
+        "* cancelar edição — sai do modo edição",
         "* visitas — lista visitas/fazendas registradas",
         "* visitas abertas — lista visitas abertas da equipe",
         "* fechar visita — finaliza a visita",
@@ -131,6 +147,8 @@ REPORTS_MENU_MESSAGE = "\n".join(
         "* fazendas visitadas — atalho para a planilha de visitas",
         "* visitas — lista visitas/fazendas registradas",
         "* visitas abertas — lista visitas abertas da equipe",
+        "* ver visita 12 — mostra dados da visita",
+        "* editar visita 12 — corrige dados da visita",
         "* relatório visita 12 — gera PDF pelo ID da visita",
         "* relatório fazenda Nome da Fazenda — busca relatório pelo nome da fazenda",
         "* localização visita 12 — mostra GPS de uma visita pelo ID",
@@ -203,6 +221,7 @@ rdv_service = RDVService()
 rdv_receipt_analysis_service = RDVReceiptAnalysisService()
 visitas_service = VisitasTecnicasService()
 whatsapp_menu_states: dict[str, str] = {}
+visita_edit_states: dict[str, int] = {}
 
 
 @router.get("/webhook/whatsapp")
@@ -776,6 +795,18 @@ def handle_visitas_text_message(
     collaborator = collaborator or rdv_service.get_collaborator_by_phone(sender_phone)
     open_visit = visitas_service.obter_visita_aberta(sender_phone)
 
+    if normalized_text in {"fechar edicao", "finalizar edicao"}:
+        return True, _close_visita_edit(sender_phone)
+
+    if normalized_text in {"cancelar edicao", "sair edicao"}:
+        return True, _cancel_visita_edit(sender_phone)
+
+    if _is_ver_visita_command(normalized_text):
+        return True, _handle_ver_visita(normalized_text)
+
+    if _is_editar_visita_command(normalized_text):
+        return True, _start_visita_edit(sender_phone, normalized_text)
+
     if normalized_text in VISITA_START_COMMANDS:
         visit = visitas_service.iniciar_visita(
             sender_phone,
@@ -826,6 +857,9 @@ def handle_visitas_text_message(
 
     if _is_localizacao_visita_command(normalized_text):
         return True, _handle_localizacao_visita(normalized_text)
+
+    if normalize_phone(sender_phone) in visita_edit_states:
+        return True, _handle_visita_edit_message(sender_phone, text)
 
     if open_visit is None:
         return False, None
@@ -1001,6 +1035,252 @@ def _parse_visita_area(text: str) -> float | None:
 
 def _mentions_alqueires(text: str) -> bool:
     return "alqueir" in _normalize_caption(text)
+
+
+def _is_ver_visita_command(normalized_text: str) -> bool:
+    return re.fullmatch(r"ver visitas?\s+\d+", normalized_text) is not None
+
+
+def _is_editar_visita_command(normalized_text: str) -> bool:
+    return re.fullmatch(r"editar visitas?\s+\d+", normalized_text) is not None
+
+
+def _handle_ver_visita(normalized_text: str) -> str:
+    match = re.fullmatch(r"ver visitas?\s+(\d+)", normalized_text)
+    visita_id = int(match.group(1)) if match else 0
+    visita = visitas_service.obter_visita_por_id(visita_id)
+    if visita is None:
+        return (
+            "Não encontrei essa visita técnica.\n"
+            'Envie "visitas" para listar visitas válidas.'
+        )
+    if visita.get("status") == "cancelada":
+        return (
+            "Essa visita foi cancelada.\n"
+            'Envie "visitas" para listar visitas válidas.'
+        )
+    return _ver_visita_message(visita)
+
+
+def _ver_visita_message(visita: dict) -> str:
+    area = _format_visita_area_message(visita)
+    return "\n".join(
+        [
+            f"Visita #{visita.get('id')} - {visita.get('fazenda') or '-'}",
+            "",
+            f"Status: {visita.get('status') or '-'}",
+            f"Técnico: {visita.get('tecnico_nome') or '-'}",
+            f"Data: {_format_date_br(visita.get('data_visita')) or '-'}",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Proprietário: {visita.get('proprietario') or '-'}",
+            f"Gerente/responsável: {visita.get('gerente') or '-'}",
+            f"Área: {area}",
+            f"Safra: {visita.get('safra') or '-'}",
+            f"Tipo: {visita.get('tipo_visita') or visita.get('objetivo') or '-'}",
+            f"Observações: {visita.get('observacoes') or '-'}",
+            "",
+            "Para editar:",
+            f"editar visita {visita.get('id')}",
+            "",
+            "Para gerar PDF:",
+            f"relatório visita {visita.get('id')}",
+        ]
+    )
+
+
+def _start_visita_edit(sender_phone: str, normalized_text: str) -> str:
+    match = re.fullmatch(r"editar visitas?\s+(\d+)", normalized_text)
+    visita_id = int(match.group(1)) if match else 0
+    visita = visitas_service.obter_visita_por_id(visita_id)
+    if visita is None:
+        return (
+            "Não encontrei essa visita técnica.\n"
+            'Envie "visitas" para listar visitas válidas.'
+        )
+    if visita.get("status") == "cancelada":
+        return "Essa visita foi cancelada e não pode ser editada."
+    if visita.get("status") not in {"aberta", "fechada"}:
+        return "Essa visita não pode ser editada."
+    visita_edit_states[normalize_phone(sender_phone)] = visita_id
+    return "\n".join(
+        [
+            f"Você está editando a visita #{visita_id} - {visita.get('fazenda') or '-'}.",
+            "",
+            "Envie uma alteração por mensagem no formato:",
+            "campo = valor",
+            "",
+            "Campos que posso editar:",
+            "",
+            "* fazenda",
+            "* proprietário",
+            "* gerente",
+            "* área",
+            "* safra",
+            "* tipo",
+            "* observações",
+            "* data",
+            "",
+            "Exemplos:",
+            "gerente = Marcos Silva",
+            "área = 250 hectares",
+            "observações = Cliente solicitou orçamento para aplicação.",
+            "",
+            "Quando terminar, envie:",
+            "fechar edição",
+            "",
+            "Para cancelar, envie:",
+            "cancelar edição",
+        ]
+    )
+
+
+def _handle_visita_edit_message(sender_phone: str, text: str) -> str:
+    phone = normalize_phone(sender_phone)
+    visita_id = visita_edit_states.get(phone)
+    if visita_id is None:
+        return "Nenhuma edição de visita em andamento."
+    visita = visitas_service.obter_visita_por_id(visita_id)
+    if visita is None:
+        visita_edit_states.pop(phone, None)
+        return "Não encontrei mais essa visita técnica. Edição encerrada."
+    if visita.get("status") == "cancelada":
+        visita_edit_states.pop(phone, None)
+        return "Essa visita foi cancelada e não pode ser editada."
+
+    if "=" not in str(text or ""):
+        return _visita_edit_help()
+    raw_field, raw_value = str(text).split("=", 1)
+    field = _resolve_visita_edit_field(raw_field, raw_value)
+    value_text = raw_value.strip()
+    if field is None:
+        return _visita_edit_help()
+    if not value_text:
+        return "Informe um valor para atualizar esse campo."
+
+    value = _prepare_visita_edit_value(field, value_text)
+    before = visita.get(field)
+    result = visitas_service.editar_campo(
+        visita_id,
+        field,
+        value,
+        telefone_editor=sender_phone,
+    )
+    after = result.get("valor_novo")
+    return "\n".join(
+        [
+            "Campo atualizado:",
+            VISITA_EDITABLE_FIELDS.get(field, field),
+            f"Antes: {_format_edit_value(before)}",
+            f"Depois: {_format_edit_value(after)}",
+            "",
+            "Para gerar PDF atualizado:",
+            f"relatório visita {visita_id}",
+        ]
+    )
+
+
+def _close_visita_edit(sender_phone: str) -> str:
+    visita_id = visita_edit_states.pop(normalize_phone(sender_phone), None)
+    if visita_id is None:
+        return "Nenhuma edição de visita em andamento."
+    return "\n".join(
+        [
+            "Edição finalizada.",
+            "Para ver os dados atualizados:",
+            f"ver visita {visita_id}",
+            "Para gerar o PDF:",
+            f"relatório visita {visita_id}",
+        ]
+    )
+
+
+def _cancel_visita_edit(sender_phone: str) -> str:
+    visita_id = visita_edit_states.pop(normalize_phone(sender_phone), None)
+    if visita_id is None:
+        return "Nenhuma edição de visita em andamento."
+    return "\n".join(
+        [
+            "Edição encerrada.",
+            "Alterações já salvas foram mantidas.",
+        ]
+    )
+
+
+def _visita_edit_help() -> str:
+    return "\n".join(
+        [
+            "Não reconheci esse campo.",
+            "Envie no formato: campo = valor",
+            "",
+            "Campos aceitos: fazenda, proprietário, gerente, área, safra, tipo, observações, data.",
+        ]
+    )
+
+
+def _resolve_visita_edit_field(raw_field: str, raw_value: str = "") -> str | None:
+    normalized = _normalize_caption(raw_field)
+    aliases = {
+        "fazenda": "fazenda",
+        "propriedade": "fazenda",
+        "nome da fazenda": "fazenda",
+        "proprietario": "proprietario",
+        "dono": "proprietario",
+        "gerente": "gerente",
+        "responsavel": "gerente",
+        "safra": "safra",
+        "tipo": "tipo_visita",
+        "tipo visita": "tipo_visita",
+        "objetivo": "objetivo",
+        "objetivo visita": "objetivo",
+        "observacoes": "observacoes",
+        "observacao": "observacoes",
+        "obs": "observacoes",
+        "data": "data_visita",
+        "data visita": "data_visita",
+        "area": "area_hectares",
+        "area hectares": "area_hectares",
+        "hectares": "area_hectares",
+        "area alqueires": "area_alqueires",
+        "alqueires": "area_alqueires",
+    }
+    field = aliases.get(normalized)
+    if field == "area_hectares" and _mentions_alqueires(raw_value):
+        return "area_alqueires"
+    return field
+
+
+def _prepare_visita_edit_value(field: str, value: str):
+    if field in {"area_hectares", "area_alqueires"}:
+        return _parse_visita_area(value)
+    if field == "data_visita":
+        return _parse_visita_date(value)
+    return value
+
+
+def _parse_visita_date(value: str) -> str:
+    text = str(value or "").strip()
+    for date_format in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, date_format).date().isoformat()
+        except ValueError:
+            pass
+    return text
+
+
+def _format_edit_value(value: object) -> str:
+    if value in (None, ""):
+        return "-"
+    return str(value)
+
+
+def _format_visita_area_message(visita: dict) -> str:
+    hectares = visita.get("area_hectares")
+    alqueires = visita.get("area_alqueires")
+    if hectares not in (None, ""):
+        return f"{_format_optional_number(hectares)} ha"
+    if alqueires not in (None, ""):
+        return f"{_format_optional_number(alqueires)} alqueires"
+    return "-"
 
 
 def _visita_status_message(visita: dict) -> str:
@@ -1322,6 +1602,7 @@ def _format_optional_number(value: object) -> str:
 def clear_rdv_sessions() -> None:
     """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
     whatsapp_menu_states.clear()
+    visita_edit_states.clear()
 
 
 def _no_open_trip_message() -> str:

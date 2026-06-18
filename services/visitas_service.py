@@ -112,6 +112,20 @@ class VisitasTecnicasService:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS visita_edicoes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    visita_id INTEGER NOT NULL,
+                    telefone_editor TEXT,
+                    campo TEXT NOT NULL,
+                    valor_anterior TEXT,
+                    valor_novo TEXT,
+                    criado_em TEXT NOT NULL,
+                    FOREIGN KEY(visita_id) REFERENCES visitas_tecnicas(id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_visitas_abertas_telefone
                 ON visitas_tecnicas (telefone_origem, status, id)
                 """
@@ -196,6 +210,85 @@ class VisitasTecnicasService:
             raise ValueError("Campo de visita invalido.")
         safe_value = _to_float(valor) if campo in {"area_hectares", "area_alqueires", "latitude_principal", "longitude_principal"} else _clean(valor)
         return self._update_visita(visita_id, {campo: safe_value})
+
+    def editar_campo(
+        self,
+        visita_id: int,
+        campo: str,
+        valor,
+        telefone_editor: str | None = None,
+    ) -> dict:
+        visita = self.obter_visita(visita_id)
+        if visita is None:
+            raise ValueError("Visita nao encontrada.")
+        if visita.get("status") not in VALID_REPORT_STATUSES:
+            raise ValueError("Visita nao pode ser editada.")
+        before = visita.get(campo)
+        saved = self.atualizar_campo(visita_id, campo, valor)
+        self.registrar_edicao(
+            visita_id=visita_id,
+            telefone_editor=telefone_editor,
+            campo=campo,
+            valor_anterior=before,
+            valor_novo=saved.get(campo),
+        )
+        return {
+            "visita": saved,
+            "campo": campo,
+            "valor_anterior": before,
+            "valor_novo": saved.get(campo),
+        }
+
+    def registrar_edicao(
+        self,
+        visita_id: int,
+        telefone_editor: str | None,
+        campo: str,
+        valor_anterior,
+        valor_novo,
+    ) -> dict:
+        self.ensure_schema()
+        now = _now()
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO visita_edicoes (
+                    visita_id, telefone_editor, campo, valor_anterior, valor_novo, criado_em
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(visita_id),
+                    normalize_phone(telefone_editor),
+                    _clean(campo),
+                    _clean(valor_anterior),
+                    _clean(valor_novo),
+                    now,
+                ),
+            )
+            connection.commit()
+            row = connection.execute(
+                """
+                SELECT id, visita_id, telefone_editor, campo, valor_anterior, valor_novo, criado_em
+                FROM visita_edicoes
+                WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def listar_edicoes(self, visita_id: int) -> list[dict]:
+        self.ensure_schema()
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, visita_id, telefone_editor, campo, valor_anterior, valor_novo, criado_em
+                FROM visita_edicoes
+                WHERE visita_id = ?
+                ORDER BY criado_em, id
+                """,
+                (int(visita_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def adicionar_observacao(self, visita_id: int, texto: str) -> dict:
         visita = self.obter_visita(visita_id)

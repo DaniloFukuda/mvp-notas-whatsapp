@@ -96,3 +96,26 @@ def test_listar_visitas_validas_global():
         ids = {item["id"] for item in data["visitas"]}
         assert ids == {primeira["id"], segunda["id"]}
         assert all(item["status"] in {"aberta", "fechada"} for item in data["visitas"])
+
+
+def test_historico_edicao_registra_alteracao():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(visita["id"], "gerente", "Marcos")
+
+        result = service.editar_campo(
+            visita["id"],
+            "gerente",
+            "Marcos Silva",
+            telefone_editor="5500000000002",
+        )
+        edicoes = service.listar_edicoes(visita["id"])
+
+        assert result["valor_anterior"] == "Marcos"
+        assert result["valor_novo"] == "Marcos Silva"
+        assert len(edicoes) == 1
+        assert edicoes[0]["campo"] == "gerente"
+        assert edicoes[0]["valor_anterior"] == "Marcos"
+        assert edicoes[0]["valor_novo"] == "Marcos Silva"
+        assert edicoes[0]["telefone_editor"] == "5500000000002"

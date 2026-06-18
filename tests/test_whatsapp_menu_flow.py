@@ -37,6 +37,10 @@ def test_menu_abre_com_texto_explicativo():
             assert "Relatórios" in reply
             assert "* visita — inicia uma visita técnica" in reply
             assert "* visitas — lista visitas/fazendas registradas" in reply
+            assert "* ver visita 12 — mostra dados da visita" in reply
+            assert "* editar visita 12 — corrige dados da visita" in reply
+            assert "* fechar edição — encerra modo edição" in reply
+            assert "* cancelar edição — sai do modo edição" in reply
             assert "* relatório visita 12 — gera PDF pelo ID da visita" in reply
             assert "* relatório fazenda Nome da Fazenda" in reply
     finally:
@@ -76,6 +80,8 @@ def test_relatorios_retorna_opcoes_explicativas():
             assert "Relatórios disponíveis:" in sem_acento
             assert "* resumo — resumo mensal de despesas" in sem_acento
             assert "* planilha visitas — planilha com todas as visitas/fazendas registradas" in sem_acento
+            assert "* ver visita 12 — mostra dados da visita" in sem_acento
+            assert "* editar visita 12 — corrige dados da visita" in sem_acento
             assert "* relatório visita 12 — gera PDF pelo ID da visita" in sem_acento
             assert "* km inicio 120350" in sem_acento
     finally:
