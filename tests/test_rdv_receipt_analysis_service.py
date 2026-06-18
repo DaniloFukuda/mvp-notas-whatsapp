@@ -9,6 +9,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 
 
+VALID_NFCE_KEY = "52260612345678000195650010000001231876543210"
+
+
 MERCADO_PAGO_PIX_TEXT = """
 Comprovante de Pix
 14/junho/2026 as 10:17:47.
@@ -84,3 +87,26 @@ def test_rejects_future_date_from_ocr_text():
 
     assert result.valor_detectado == 80.0
     assert result.data_detectada == ""
+
+
+def test_extracts_only_valid_fiscal_access_key_from_nfce_qr_url():
+    result = RDVReceiptAnalysisService().analyze_text(
+        "https://www.sefaz.go.gov.br/nfce/qrcode?p="
+        f"{VALID_NFCE_KEY}|2|1|1|ABC&valor=64.00",
+        source="qr_code",
+    )
+
+    assert result.chave_acesso == VALID_NFCE_KEY
+    assert "chave_acesso_encontrada" in result.reasons
+
+
+def test_rejects_random_44_digit_sequence_as_fiscal_access_key():
+    random_sequence = "12345678901234567890123456789012345678901234"
+
+    result = RDVReceiptAnalysisService().analyze_text(
+        f"Texto OCR com numero longo {random_sequence} e valor R$ 64,00"
+    )
+
+    assert result.valor_detectado == 64.0
+    assert result.chave_acesso == ""
+    assert "chave_acesso_encontrada" not in result.reasons
