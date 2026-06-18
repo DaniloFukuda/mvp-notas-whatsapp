@@ -6,6 +6,8 @@ from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 
+from services.fiscal_access_key import parse_access_key
+
 
 DEFAULT_DB_PATH = Path("data/app.db")
 CATEGORIES = (
@@ -344,7 +346,9 @@ class RDVService:
             fornecedor=_clean(analysis.get("fornecedor_detectado")),
             qr_code_text=_clean(analysis.get("qr_code_text")),
             qr_code_url=_clean(analysis.get("qr_code_url")),
-            chave_acesso=_clean(analysis.get("chave_acesso")),
+            chave_acesso=self._normalize_fiscal_access_key(
+                analysis.get("chave_acesso")
+            ),
             valor_detectado=detected_value,
             data_detectada=detected_date.isoformat() if detected_date else "",
             fornecedor_detectado=_clean(analysis.get("fornecedor_detectado")),
@@ -647,7 +651,9 @@ class RDVService:
             "caminho_arquivo": _clean(file_path),
             "qr_code_text": _clean(analysis.get("qr_code_text")),
             "qr_code_url": _clean(analysis.get("qr_code_url")),
-            "chave_acesso": _clean(analysis.get("chave_acesso")),
+            "chave_acesso": self._normalize_fiscal_access_key(
+                analysis.get("chave_acesso")
+            ),
             "data_detectada": detected_date.isoformat() if detected_date else "",
             "fornecedor_detectado": _clean(analysis.get("fornecedor_detectado")),
             "fornecedor": _clean(analysis.get("fornecedor_detectado")),
@@ -1157,7 +1163,9 @@ class RDVService:
             "fornecedor": _clean(data.get("fornecedor")),
             "qr_code_text": _clean(data.get("qr_code_text")),
             "qr_code_url": _clean(data.get("qr_code_url")),
-            "chave_acesso": _clean(data.get("chave_acesso")),
+            "chave_acesso": self._normalize_fiscal_access_key(
+                data.get("chave_acesso")
+            ),
             "valor_detectado": _to_float(data.get("valor_detectado")),
             "data_detectada": _clean(data.get("data_detectada")),
             "fornecedor_detectado": _clean(data.get("fornecedor_detectado")),
@@ -1232,6 +1240,10 @@ class RDVService:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _normalize_fiscal_access_key(self, raw_key: object) -> str | None:
+        parsed = parse_access_key(raw_key)
+        return parsed.chave_acesso if parsed is not None else None
+
     def _update_launch(
         self,
         expense_id: int,
@@ -1277,6 +1289,10 @@ class RDVService:
             raise ValueError("Lancamento RDV fora da etapa esperada.")
 
         safe_updates = dict(updates)
+        if "chave_acesso" in safe_updates:
+            safe_updates["chave_acesso"] = self._normalize_fiscal_access_key(
+                safe_updates.get("chave_acesso")
+            )
         safe_updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
         assignments = ", ".join(f"{column} = ?" for column in safe_updates)
         with closing(self._connect()) as connection:

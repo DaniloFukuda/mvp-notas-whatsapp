@@ -10,6 +10,7 @@ from services.fiscal_access_key import (
     extract_access_keys,
     normalize_access_key,
     parse_access_key,
+    validate_access_key,
 )
 
 
@@ -76,3 +77,21 @@ def test_extracts_key_from_qr_code_url_and_ocr_text():
 
 def test_ignores_random_44_digit_sequence():
     assert extract_access_keys("00000000000000000000000000000000000000000000") == []
+
+def test_validate_access_key_accepts_valid_synthetic_key():
+    assert validate_access_key(VALID_NFCE_KEY)
+
+
+def test_parse_access_key_normalizes_spaces_and_separators():
+    formatted = (
+        "5226 0612.3456 7800 0195-6500 1000 0001 2318 7654 3210"
+    )
+
+    parsed = parse_access_key(formatted)
+
+    assert parsed is not None
+    assert parsed.chave_acesso == VALID_NFCE_KEY
+
+
+def test_parse_access_key_rejects_wrong_check_digit():
+    assert parse_access_key("12345678901234567890123456789012345678901234") is None

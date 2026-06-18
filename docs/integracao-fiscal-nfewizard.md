@@ -202,7 +202,11 @@ O parser atual:
 - extrai chaves de textos, QR Codes, URLs e OCR com separadores;
 - retorna string vazia quando a chave e invalida, evitando gravar lixo fiscal como chave.
 
-O proximo passo e usar esse parser no fluxo RDV para normalizar `analysis["chave_acesso"]` antes de salvar no banco.
+O parser tambem foi integrado ao `RDVService` para normalizar
+`analysis["chave_acesso"]` antes de salvar no banco. Chaves vazias,
+ausentes, aleatorias ou com digito verificador incorreto sao gravadas como
+`NULL`, mantendo o fluxo atual de RDV sem consulta SEFAZ, certificado digital,
+XML real ou emissao fiscal.
 
 ## Criterios de aceite da fase 1
 

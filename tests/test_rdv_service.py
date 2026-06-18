@@ -15,6 +15,13 @@ from services.rdv_service import (
 )
 
 
+VALID_ACCESS_KEY = "35240612345678000195650010000012341000012340"
+FORMATTED_ACCESS_KEY = (
+    "3524 0612.3456 7800 0195-6500 1000 0012 3410 0001 2340"
+)
+INVALID_ACCESS_KEY = "12345678901234567890123456789012345678901234"
+
+
 def test_calculate_month_reference_returns_year_month():
     assert calculate_month_reference(date(2026, 6, 14)) == "2026-06"
 
@@ -76,6 +83,125 @@ def test_receipt_with_detected_value_and_valid_date_waits_for_category():
         assert receipt["data_despesa"] == "2026-06-11"
         assert receipt["data_detectada"] == "2026-06-11"
         assert receipt["semana_referencia"] == calculate_week_reference("2026-06-11")
+
+
+def test_receipt_saves_valid_fiscal_access_key_normalized():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.valid-access-key",
+            received_at="16/06/2026 10:00",
+            analysis={
+                "valor_detectado": 64,
+                "data_detectada": "2026-06-11",
+                "origem_valor": "qr_code",
+                "chave_acesso": VALID_ACCESS_KEY,
+            },
+        )
+
+        assert receipt["chave_acesso"] == VALID_ACCESS_KEY
+
+
+def test_receipt_saves_formatted_fiscal_access_key_normalized():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.formatted-access-key",
+            received_at="16/06/2026 10:00",
+            analysis={
+                "valor_detectado": 64,
+                "data_detectada": "2026-06-11",
+                "origem_valor": "qr_code",
+                "chave_acesso": FORMATTED_ACCESS_KEY,
+            },
+        )
+
+        assert receipt["chave_acesso"] == VALID_ACCESS_KEY
+
+
+def test_random_44_digit_fiscal_access_key_is_not_saved():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.register_whatsapp_expense(
+            colaborador_id=collaborator["id"],
+            colaborador=collaborator["nome"],
+            telefone_origem=collaborator["telefone_whatsapp"],
+            tipo_entrada="imagem",
+            categoria="combustivel",
+            valor=150,
+            caminho_arquivo="cupom.jpg",
+            status_fluxo="completo",
+            chave_acesso=INVALID_ACCESS_KEY,
+        )
+
+        assert receipt["chave_acesso"] is None
+
+
+def test_flow_without_fiscal_access_key_continues_normally():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.no-access-key",
+            received_at="16/06/2026 10:00",
+            analysis={
+                "valor_detectado": 64,
+                "data_detectada": "2026-06-11",
+                "origem_valor": "ocr",
+            },
+        )
+
+        assert receipt["status_fluxo"] == "aguardando_categoria"
+        assert receipt["chave_acesso"] is None
+
+
+def test_retry_receipt_saves_valid_fiscal_access_key_normalized():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        collaborator = service.get_collaborator_by_phone("5500000000001")
+        receipt = service.create_whatsapp_receipt(
+            collaborator_id=collaborator["id"],
+            phone=collaborator["telefone_whatsapp"],
+            input_type="imagem",
+            file_path="cupom.jpg",
+            whatsapp_message_id="wamid.retry-original",
+            received_at="16/06/2026 10:00",
+        )
+
+        retried = service.retry_whatsapp_receipt(
+            receipt["id"],
+            input_type="imagem",
+            file_path="cupom-melhor.jpg",
+            whatsapp_message_id="wamid.retry-valid-access-key",
+            analysis={
+                "valor_detectado": 64,
+                "data_detectada": "2026-06-11",
+                "origem_valor": "qr_code",
+                "chave_acesso": FORMATTED_ACCESS_KEY,
+            },
+        )
+
+        assert retried["status_fluxo"] == "aguardando_categoria"
+        assert retried["chave_acesso"] == VALID_ACCESS_KEY
 
 
 def test_ocr_receipt_uses_document_date_week_instead_of_received_date():

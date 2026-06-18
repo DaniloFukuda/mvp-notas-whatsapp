@@ -148,6 +148,12 @@ def normalize_access_key(value: object) -> str:
     return parsed.chave_acesso if parsed else ""
 
 
+def validate_access_key(value: object) -> bool:
+    """Retorna True quando a entrada contem uma chave fiscal valida."""
+
+    return parse_access_key(value) is not None
+
+
 def extract_access_keys(
     text: object,
     allowed_models: tuple[str, ...] | None = SUPPORTED_NFE_MODELS,
