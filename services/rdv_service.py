@@ -6,6 +6,8 @@ from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 
+from services.fiscal_access_key import parse_access_key
+
 
 DEFAULT_DB_PATH = Path("data/app.db")
 CATEGORIES = (
@@ -63,6 +65,7 @@ KM_FLOW_OBSERVATIONS = (
     "viagem cancelada pelo WhatsApp",
 )
 INPUT_TYPES = ("texto", "imagem", "documento")
+FISCAL_STATUSES = ("sem_chave", "chave_valida", "chave_invalida")
 DEMO_COLLABORATORS = (
     ("Danilo", "5500000000001"),
     ("Marcelo", "5500000000002"),
@@ -83,6 +86,7 @@ RDV_COLUMNS = (
     "qr_code_text",
     "qr_code_url",
     "chave_acesso",
+    "fiscal_status",
     "valor_detectado",
     "data_detectada",
     "fornecedor_detectado",
@@ -141,6 +145,7 @@ class RDVService:
                     qr_code_text TEXT,
                     qr_code_url TEXT,
                     chave_acesso TEXT,
+                    fiscal_status TEXT NOT NULL DEFAULT 'sem_chave',
                     valor_detectado REAL,
                     data_detectada TEXT,
                     fornecedor_detectado TEXT,
@@ -344,7 +349,7 @@ class RDVService:
             fornecedor=_clean(analysis.get("fornecedor_detectado")),
             qr_code_text=_clean(analysis.get("qr_code_text")),
             qr_code_url=_clean(analysis.get("qr_code_url")),
-            chave_acesso=_clean(analysis.get("chave_acesso")),
+            chave_acesso=analysis.get("chave_acesso"),
             valor_detectado=detected_value,
             data_detectada=detected_date.isoformat() if detected_date else "",
             fornecedor_detectado=_clean(analysis.get("fornecedor_detectado")),
@@ -642,12 +647,16 @@ class RDVService:
             and detected_date is not None
             and _clean(analysis.get("origem_valor")) in {"qr_code", "ocr"}
         )
+        fiscal_key, fiscal_status = self._fiscal_access_key_state(
+            analysis.get("chave_acesso")
+        )
         updates = {
             "tipo_entrada": safe_input_type,
             "caminho_arquivo": _clean(file_path),
             "qr_code_text": _clean(analysis.get("qr_code_text")),
             "qr_code_url": _clean(analysis.get("qr_code_url")),
-            "chave_acesso": _clean(analysis.get("chave_acesso")),
+            "chave_acesso": fiscal_key,
+            "fiscal_status": fiscal_status,
             "data_detectada": detected_date.isoformat() if detected_date else "",
             "fornecedor_detectado": _clean(analysis.get("fornecedor_detectado")),
             "fornecedor": _clean(analysis.get("fornecedor_detectado")),
@@ -1145,6 +1154,9 @@ class RDVService:
 
         now = datetime.now().isoformat(timespec="seconds")
         km_rodado = calculate_distance(km_inicio, km_fim)
+        fiscal_key, fiscal_status = self._fiscal_access_key_state(
+            data.get("chave_acesso")
+        )
         record = {
             "colaborador_id": collaborator["id"] if collaborator else None,
             "colaborador": collaborator_name,
@@ -1157,7 +1169,8 @@ class RDVService:
             "fornecedor": _clean(data.get("fornecedor")),
             "qr_code_text": _clean(data.get("qr_code_text")),
             "qr_code_url": _clean(data.get("qr_code_url")),
-            "chave_acesso": _clean(data.get("chave_acesso")),
+            "chave_acesso": fiscal_key,
+            "fiscal_status": fiscal_status,
             "valor_detectado": _to_float(data.get("valor_detectado")),
             "data_detectada": _clean(data.get("data_detectada")),
             "fornecedor_detectado": _clean(data.get("fornecedor_detectado")),
@@ -1232,6 +1245,18 @@ class RDVService:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _normalize_fiscal_access_key(self, raw_key: object) -> str | None:
+        parsed = parse_access_key(raw_key)
+        return parsed.chave_acesso if parsed is not None else None
+
+    def _fiscal_access_key_state(self, raw_key: object) -> tuple[str | None, str]:
+        normalized_key = self._normalize_fiscal_access_key(raw_key)
+        if normalized_key is not None:
+            return normalized_key, "chave_valida"
+        if _clean(raw_key):
+            return None, "chave_invalida"
+        return None, "sem_chave"
+
     def _update_launch(
         self,
         expense_id: int,
@@ -1261,6 +1286,7 @@ class RDVService:
             "qr_code_text",
             "qr_code_url",
             "chave_acesso",
+            "fiscal_status",
             "valor_detectado",
             "data_detectada",
             "fornecedor_detectado",
@@ -1277,6 +1303,18 @@ class RDVService:
             raise ValueError("Lancamento RDV fora da etapa esperada.")
 
         safe_updates = dict(updates)
+        if "chave_acesso" in safe_updates:
+            fiscal_key, fiscal_status = self._fiscal_access_key_state(
+                safe_updates.get("chave_acesso")
+            )
+            safe_updates["chave_acesso"] = fiscal_key
+            safe_updates["fiscal_status"] = fiscal_status
+        elif "fiscal_status" in safe_updates:
+            safe_updates["fiscal_status"] = _validate_choice(
+                safe_updates.get("fiscal_status"),
+                FISCAL_STATUSES,
+                "status fiscal",
+            )
         safe_updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
         assignments = ", ".join(f"{column} = ?" for column in safe_updates)
         with closing(self._connect()) as connection:
@@ -1302,6 +1340,7 @@ class RDVService:
             "qr_code_text": "TEXT",
             "qr_code_url": "TEXT",
             "chave_acesso": "TEXT",
+            "fiscal_status": "TEXT NOT NULL DEFAULT 'sem_chave'",
             "valor_detectado": "REAL",
             "data_detectada": "TEXT",
             "fornecedor_detectado": "TEXT",
@@ -1319,6 +1358,16 @@ class RDVService:
             UPDATE rdv_despesas
             SET recebido_em = COALESCE(NULLIF(recebido_em, ''), created_at)
             WHERE recebido_em IS NULL OR recebido_em = ''
+            """
+        )
+        connection.execute(
+            """
+            UPDATE rdv_despesas
+            SET fiscal_status = CASE
+                WHEN chave_acesso IS NULL OR chave_acesso = '' THEN 'sem_chave'
+                ELSE 'chave_valida'
+            END
+            WHERE fiscal_status IS NULL OR fiscal_status = ''
             """
         )
 
