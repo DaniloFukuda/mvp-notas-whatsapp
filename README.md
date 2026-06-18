@@ -51,6 +51,7 @@ A arquitetura atual combina componentes simples:
 - Tratamento de erro quando nao for possivel baixar midia do WhatsApp.
 - Resposta automatica pelo WhatsApp quando possivel.
 - Mascaramento/cuidado com token, telefone, IDs e logs sensiveis.
+- Validacao local de chave de acesso fiscal de NF-e/NFC-e, com extracao a partir de texto, QR Code, URL ou OCR.
 
 ## Modulo Ciclus Agro - RDV por WhatsApp
 
@@ -93,6 +94,7 @@ python scripts/test_whatsapp_rdv_flow.py
 python scripts/test_rdv_collaborators.py
 python scripts/test_ciclus_rdv_web.py
 python scripts/test_rdv_excel_export.py
+pytest tests/test_fiscal_access_key.py
 ```
 
 ## Como rodar localmente
@@ -218,36 +220,3 @@ git ls-files
 ## Historico de evolucao
 
 - MVP inicial para processar nota fiscal a partir de imagem.
-- Suporte a recibos e comprovantes.
-- Inclusao de SQLite e painel web.
-- Leitura complementar por OCR.
-- Separacao de documentos com erro ou pendentes de conferencia.
-- Integracao com WhatsApp Cloud API.
-- Filtros por data, mes/ano, hora, tipo, categoria e origem/responsavel.
-- Exportacao CSV dos documentos filtrados.
-- Limpeza e protecao de arquivos sensiveis no Git.
-
-## Relacao com o projeto lucreagro-ficha-unica
-
-Este projeto serviu como base pratica para aprendizados reutilizados no projeto `lucreagro-ficha-unica`, especialmente em:
-
-- upload de arquivos;
-- organizacao documental;
-- uso de SQLite;
-- painel web simples;
-- integracao com WhatsApp;
-- seguranca com arquivos locais e dados sensiveis.
-
-## Aviso
-
-O `mvp-notas-whatsapp` e um projeto de MVP e estudo aplicado. Para uso em producao, ainda seria necessario reforcar autenticacao, autorizacao, auditoria, backups, tratamento de dados pessoais, armazenamento seguro de arquivos e politicas formais de retencao.
-
-## Producao Ciclus/RDV
-
-A instalacao atual do Ciclus/RDV em VPS possui documentacao separada:
-
-- [Deploy na VPS](docs/deploy-ciclus-vps.md)
-- [Operacao e recuperacao](docs/operacao-ciclus-rdv.md)
-
-Os exemplos de `systemd`, Nginx e backup ficam em `deploy/examples/` e nao
-contem credenciais, dados reais ou certificados.
