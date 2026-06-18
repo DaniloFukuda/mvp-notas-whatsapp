@@ -5,6 +5,8 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from services.fiscal_access_key import extract_access_keys
+
 
 WINDOWS_TESSERACT_PATH = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
@@ -663,21 +665,5 @@ def _extract_url(text: str) -> str:
 
 
 def _extract_access_key(text: str) -> str:
-    compact_groups = re.findall(r"(?:\d[\s.-]?){44}", text)
-    for group in compact_groups:
-        digits = re.sub(r"\D", "", group)
-        if len(digits) == 44:
-            return digits
-
-    url = _extract_url(text)
-    if url:
-        query = parse_qs(urlparse(url).query)
-        for key in ("chNFe", "chave", "accessKey"):
-            for value in query.get(key, []):
-                digits = re.sub(r"\D", "", value)
-                if len(digits) == 44:
-                    return digits
-        match = re.search(r"\bp=(\d{44})(?:\||&|$)", url)
-        if match:
-            return match.group(1)
-    return ""
+    keys = extract_access_keys(text)
+    return keys[0] if keys else ""
