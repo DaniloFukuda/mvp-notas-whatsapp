@@ -19,15 +19,18 @@ def test_build_visita_pdf_basico():
     assert len(content) > 1000
     text = _extract_pdf_text(content)
     assert "Relatório de Visita Técnica" in text
+    assert "Gestão de Campo" in text
     assert "Ciclus Agro" in text
-    assert "Fazenda" in text
+    assert "FAZENDA IMPERIAL" in text
     assert "Técnico" in text
     assert "Proprietário" in text
     assert "Gerente/responsável" in text
     assert "Área em hectares" in text
-    assert "Localização principal" in text
+    assert "Resumo da visita" in text
+    assert "Objetivo comercial" in text
+    assert "Oportunidades e próximos passos" in text
+    assert "Localizações e pontos de referência" in text
     assert "Abrir no Google Maps" in text
-    assert "Localizações" in text
 
 
 def test_build_visita_pdf_com_logo_nao_quebra():
@@ -84,7 +87,7 @@ def test_build_visita_pdf_com_foto(tmp_path):
 
     assert content.startswith(b"%PDF")
     text = _extract_pdf_text(content)
-    assert "Fotos e anexos" in text
+    assert "Registros fotográficos" in text
     assert "Talhão norte" in text
 
 
@@ -108,6 +111,9 @@ def test_build_visita_pdf_com_localizacao():
     )
 
     assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Localizações e pontos de referência" in text
+    assert "Abrir no Google Maps" in text
 
 
 def test_build_visita_pdf_com_dados_coletados():
@@ -129,6 +135,38 @@ def test_build_visita_pdf_com_dados_coletados():
     text = _extract_pdf_text(content)
     assert "Dados coletados" in text
     assert "tanque" in text
+
+
+def test_build_visita_pdf_destaca_oportunidade_por_orcamento():
+    visita = _visita_completa()
+    visita["observacoes"] = "Cliente pediu orçamento para a próxima compra."
+
+    content = visitas_pdf_service.build_visita_pdf(visita)
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Oportunidade identificada" in text
+    assert "Observações mencionam orçamento" in text
+
+
+def test_build_visita_pdf_tolera_campos_vazios():
+    content = visitas_pdf_service.build_visita_pdf(
+        {
+            "id": 6,
+            "fazenda": "",
+            "tecnico_nome": "",
+            "observacoes": "",
+            "dados_coletados": [{"chave": "", "valor": "", "observacao": ""}],
+            "midias": [{"caminho_arquivo": "", "legenda": ""}],
+            "localizacoes": [{"descricao": "", "latitude": "", "longitude": "", "maps_url": ""}],
+        }
+    )
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Fazenda não informada" in text
+    assert "Resumo da visita" in text
+    assert "Registros fotográficos" in text
 
 
 def _visita_completa() -> dict:
