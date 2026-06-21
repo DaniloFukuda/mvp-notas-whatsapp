@@ -45,6 +45,7 @@ logger.setLevel(logging.INFO)
 router = APIRouter()
 WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
+VIRATEXTO_TEST_LOG_PATH = Path("logs/viratexto_test_log.jsonl")
 RDV_MONTHLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_mensal.xlsx"
 RDV_WEEKLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
 RDV_EXCEL_MIME_TYPE = (
@@ -466,6 +467,9 @@ def _handle_whatsapp_message(message: dict) -> None:
 
     if not sender_phone:
         logger.warning("Mensagem WhatsApp sem remetente ignorada.")
+        return
+
+    if _handle_viratexto_test_message_if_enabled(message):
         return
 
     collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
@@ -1913,6 +1917,111 @@ def _extract_media_id(message: dict, message_type: str) -> str:
     if not isinstance(media, dict):
         return ""
     return str(media.get("id") or "")
+
+
+def _handle_viratexto_test_message_if_enabled(message: dict) -> bool:
+    if not _env_flag_enabled("VIRATEXTO_TEST_MODE"):
+        return False
+
+    configured_phone = os.getenv("VIRATEXTO_PHONE", "").strip()
+    sender_phone = str(message.get("from") or "").strip()
+    if not configured_phone or sender_phone != configured_phone:
+        return False
+
+    record = _parse_viratexto_test_message(message)
+    _append_viratexto_test_log(record)
+    logger.info(
+        "Mensagem ViraTexto registrada em modo teste: from=%s message_id=%s type=%s has_text=%s",
+        _mask_phone(sender_phone),
+        _mask_message_id(str(message.get("id") or "")),
+        str(message.get("type") or "-"),
+        bool(record.get("text")),
+    )
+    return True
+
+
+def _parse_viratexto_test_message(message: dict) -> dict:
+    message_type = str(message.get("type") or "").strip()
+    text = _extract_text(message)
+    button = _extract_button_reply(message)
+    interactive = _extract_interactive_reply(message)
+
+    if not text and button.get("text"):
+        text = str(button.get("text") or "").strip()
+    if not text and interactive.get("title"):
+        text = str(interactive.get("title") or "").strip()
+
+    return {
+        "timestamp": _viratexto_log_timestamp(),
+        "sender_phone": str(message.get("from") or "").strip(),
+        "message_type": message_type,
+        "text": _safe_text_for_log(text),
+        "button": button,
+        "interactive": interactive,
+        "ids": _extract_viratexto_message_ids(message, message_type),
+        "raw_payload_sanitized": _redact_sensitive_payload(message),
+    }
+
+
+def _append_viratexto_test_log(record: dict) -> None:
+    VIRATEXTO_TEST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with VIRATEXTO_TEST_LOG_PATH.open("a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def _viratexto_log_timestamp() -> str:
+    try:
+        return datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat()
+    except Exception:
+        return datetime.now().isoformat()
+
+
+def _extract_button_reply(message: dict) -> dict:
+    button = message.get("button") or {}
+    if not isinstance(button, dict):
+        return {}
+    return {
+        "text": _safe_text_for_log(str(button.get("text") or "")),
+        "payload": _safe_text_for_log(str(button.get("payload") or "")),
+    }
+
+
+def _extract_interactive_reply(message: dict) -> dict:
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return {}
+
+    interactive_type = str(interactive.get("type") or "").strip()
+    reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+    if not isinstance(reply, dict):
+        reply = {}
+
+    return {
+        "type": interactive_type,
+        "id": str(reply.get("id") or "").strip(),
+        "title": _safe_text_for_log(str(reply.get("title") or "")),
+        "description": _safe_text_for_log(str(reply.get("description") or "")),
+    }
+
+
+def _extract_viratexto_message_ids(message: dict, message_type: str) -> dict:
+    media = message.get(message_type) or {}
+    if not isinstance(media, dict):
+        media = {}
+    context = message.get("context") or {}
+    if not isinstance(context, dict):
+        context = {}
+
+    return {
+        "message_id": str(message.get("id") or "").strip(),
+        "context_message_id": str(context.get("id") or "").strip(),
+        "media_id": str(media.get("id") or "").strip(),
+        "wa_timestamp": str(message.get("timestamp") or "").strip(),
+    }
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "sim", "on"}
 
 
 def _classify_document_type(caption: str) -> str | None:

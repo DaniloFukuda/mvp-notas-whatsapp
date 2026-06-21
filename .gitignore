@@ -32,3 +32,4 @@ scripts/test_limpar_banco_rdv_ciclus.py
 
 # Logs
 *.log
+logs/
