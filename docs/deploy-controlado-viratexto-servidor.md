@@ -92,6 +92,23 @@ bash scripts/server_rollback_viratexto.sh
 O script de rollback le `rollback_viratexto.txt` e pede confirmacao digitada
 `VOLTAR` antes de alterar o Git ou o `.env`.
 
+## Correcao de rollback pos-deploy
+
+Se `scripts/server_deploy_viratexto.sh` for executado quando a branch de teste
+ja estiver ativa no servidor, o arquivo `rollback_viratexto.txt` pode registrar
+`test/viratexto-whatsapp-api` como branch anterior. Nesse caso, corrija o
+arquivo antes de qualquer teste real:
+
+```bash
+cd /home/deploy/apps/ciclus-rdv
+bash scripts/server_fix_viratexto_rollback.sh
+```
+
+O script mostra `git reflog --date=iso -20`, pede a branch e o commit reais
+anteriores ao deploy, valida se o commit existe, cria backup do rollback antigo
+e regrava `rollback_viratexto.txt`. Ele nao executa rollback, nao reinicia
+servico, nao altera `.env`, nao mexe no banco e nao envia mensagens.
+
 ## Deploy no servidor
 
 ### 1. Entrar no servidor
