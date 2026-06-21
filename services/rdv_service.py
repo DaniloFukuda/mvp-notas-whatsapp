@@ -384,6 +384,18 @@ class RDVService:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def save_launch_observation(self, expense_id: int, observation: str) -> dict:
+        safe_observation = _clean(observation)
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        if current.get("status_fluxo") in {"cancelado"}:
+            raise ValueError("Lancamento RDV cancelado nao aceita comentario.")
+        return self._update_launch(
+            expense_id,
+            updates={"observacao": safe_observation},
+        )
+
     def get_open_km_launch_by_phone(self, phone: str) -> dict | None:
         self.init_database()
         normalized_phone = normalize_phone(phone)

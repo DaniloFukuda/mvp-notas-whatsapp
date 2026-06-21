@@ -26,6 +26,7 @@ from services.rdv_excel_service import (
     build_weekly_rdv_workbook,
 )
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
+from services.audio_transcription_service import AudioTranscriptionService
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
 from services.visitas_service import VisitasTecnicasService, normalize_phone
@@ -225,6 +226,7 @@ whatsapp_menu_states: dict[str, str] = {}
 visita_edit_states: dict[str, int] = {}
 visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
+rdv_comment_states: dict[str, dict] = {}
 
 
 @router.get("/webhook/whatsapp")
@@ -468,7 +470,7 @@ def _handle_whatsapp_message(message: dict) -> None:
     message_type = str(message.get("type") or "")
     text = _extract_text(message)
     caption = _extract_caption(message, message_type)
-    media = message.get(message_type) if message_type in ("image", "document") else {}
+    media = message.get(message_type) if message_type in ("image", "document", "audio") else {}
     media_id = str((media or {}).get("id") or "")
     image_sha256 = str((media or {}).get("sha256") or "") if message_type == "image" else ""
     mime_type = str((media or {}).get("mime_type") or "")
@@ -514,6 +516,16 @@ def _handle_whatsapp_message(message: dict) -> None:
         if reply:
             _safe_send_text(sender_phone, reply)
             return
+
+    if message_type == "audio":
+        reply = handle_rdv_audio_comment_message(
+            sender_phone=sender_phone,
+            media_id=media_id,
+            mime_type=mime_type,
+        )
+        if reply:
+            _safe_send_text(sender_phone, reply)
+        return
 
     if message_type not in ("image", "document") or not media_id:
         _safe_send_text(
@@ -654,6 +666,14 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     if global_command_handled:
         return global_reply
 
+    comment_handled, comment_reply = handle_rdv_comment_text_message(
+        sender_phone,
+        text,
+        normalized,
+    )
+    if comment_handled:
+        return comment_reply
+
     if normalized in MENU_OPEN_COMMANDS:
         return _open_main_menu(sender_phone)
 
@@ -753,7 +773,33 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             pending["id"],
             category,
         )
-        lines = [
+        lines = _rdv_completed_lines(completed)
+        if _audio_transcription_enabled():
+            _start_rdv_comment_state(sender_phone, completed["id"])
+            lines.extend(
+                [
+                    "",
+                    "Deseja adicionar comentario ao RDV?",
+                    "Digite o comentario ou envie um audio.",
+                    "Para deixar sem comentario, envie: 3",
+                ]
+            )
+        else:
+            month = calculate_month_reference(completed["data_despesa"])
+            lines.extend(
+                [
+                    "",
+                    "Para receber a planilha do mes, envie:",
+                    f"planilha {month}",
+                ]
+            )
+        return "\n".join(lines)
+
+    return RDV_MENU
+
+
+def _rdv_completed_lines(completed: dict) -> list[str]:
+    lines = [
             "RDV registrado com sucesso.",
             f"Lancamento #{completed['id']}.",
             f"Data do comprovante: {_format_date_br(completed['data_despesa'])}.",
@@ -763,25 +809,225 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
             f"Valor: {_format_brl_text(completed['valor'])}.",
             f"Categoria: {_category_label(completed['categoria'])}.",
             "Status: completo.",
-        ]
-        if completed.get("origem_valor") == "manual":
-            lines.append("Valor informado manualmente.")
-        if completed.get("semana_referencia") != calculate_week_reference(date.today()):
-            lines.append(
-                "Este comprovante entrou pela data real do documento, "
-                "nao pela data de envio no WhatsApp."
-            )
-        month = calculate_month_reference(completed["data_despesa"])
-        lines.extend(
-            [
-                "",
-                "Para receber a planilha do mes, envie:",
-                f"planilha {month}",
-            ]
+    ]
+    if completed.get("origem_valor") == "manual":
+        lines.append("Valor informado manualmente.")
+    if completed.get("semana_referencia") != calculate_week_reference(date.today()):
+        lines.append(
+            "Este comprovante entrou pela data real do documento, "
+            "nao pela data de envio no WhatsApp."
         )
-        return "\n".join(lines)
+    return lines
 
-    return RDV_MENU
+
+def handle_rdv_comment_text_message(
+    sender_phone: str,
+    text: str,
+    normalized: str | None = None,
+) -> tuple[bool, str | None]:
+    state = _get_rdv_comment_state(sender_phone)
+    if state is None:
+        return False, None
+
+    normalized_text = normalized if normalized is not None else _normalize_caption(text)
+    expense_id = int(state["expense_id"])
+    current_state = str(state.get("state") or "")
+
+    if current_state == "awaiting_audio_confirmation":
+        if normalized_text == "1":
+            saved = rdv_service.save_launch_observation(
+                expense_id,
+                str(state.get("text") or ""),
+            )
+            _clear_rdv_comment_state(sender_phone)
+            return True, _rdv_comment_saved_message(saved)
+        if normalized_text == "2":
+            state["state"] = "awaiting_correction"
+            return True, "Digite o comentario corrigido para salvar no RDV."
+        if normalized_text == "3":
+            _clear_rdv_comment_state(sender_phone)
+            return True, "Comentario removido. O RDV ficou sem comentario adicional."
+        return True, _rdv_transcription_confirmation_message(str(state.get("text") or ""))
+
+    if current_state in {"awaiting_comment", "awaiting_correction"}:
+        if normalized_text in {"3", "nao", "sem comentario", "remover"}:
+            _clear_rdv_comment_state(sender_phone)
+            return True, "Comentario removido. O RDV ficou sem comentario adicional."
+        comment = str(text or "").strip()
+        if not comment:
+            return True, "Digite o comentario ou envie 3 para deixar sem comentario."
+        saved = rdv_service.save_launch_observation(expense_id, comment)
+        _clear_rdv_comment_state(sender_phone)
+        return True, _rdv_comment_saved_message(saved)
+
+    return False, None
+
+
+def handle_rdv_audio_comment_message(
+    sender_phone: str,
+    media_id: str,
+    mime_type: str = "",
+) -> str:
+    state = _get_rdv_comment_state(sender_phone)
+    if state is None:
+        if not _audio_transcription_enabled():
+            return (
+                "Recebi um audio, mas comentarios por audio ainda estao desativados. "
+                "Digite o comentario em texto."
+            )
+        return (
+            "Recebi um audio, mas nao ha RDV aguardando comentario agora. "
+            "Finalize um comprovante antes de enviar audio de comentario."
+        )
+
+    if not _audio_transcription_enabled():
+        state["state"] = "awaiting_correction"
+        return (
+            "Recebi um audio, mas a transcricao esta desativada. "
+            "Voce pode digitar o comentario?"
+        )
+
+    if not media_id:
+        state["state"] = "awaiting_correction"
+        return "Nao consegui ler o audio recebido. Voce pode digitar o comentario?"
+
+    destination = _build_audio_transcription_destination(
+        sender_phone=sender_phone,
+        media_id=media_id,
+        mime_type=mime_type,
+    )
+    try:
+        downloaded_path = download_media(media_id, destination)
+        transcription = _transcribe_audio_file(downloaded_path)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao transcrever audio RDV: media_id=%s erro=%s",
+            _mask_media_id(media_id),
+            _safe_exception_summary(exc),
+        )
+        state["state"] = "awaiting_correction"
+        return (
+            "Nao consegui transcrever esse audio com seguranca.\n"
+            "Voce pode digitar o comentario?"
+        )
+    finally:
+        if not _keep_audio_after_transcription():
+            _safe_unlink(destination)
+
+    if not transcription:
+        state["state"] = "awaiting_correction"
+        return (
+            "Nao consegui transcrever esse audio com seguranca.\n"
+            "Voce pode digitar o comentario?"
+        )
+
+    state["state"] = "awaiting_audio_confirmation"
+    state["text"] = transcription
+    return _rdv_transcription_confirmation_message(transcription)
+
+
+def _start_rdv_comment_state(sender_phone: str, expense_id: int) -> None:
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return
+    rdv_comment_states[phone] = {
+        "expense_id": int(expense_id),
+        "state": "awaiting_comment",
+        "text": "",
+    }
+
+
+def _get_rdv_comment_state(sender_phone: str) -> dict | None:
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return None
+    return rdv_comment_states.get(phone)
+
+
+def _clear_rdv_comment_state(sender_phone: str) -> None:
+    phone = normalize_phone(sender_phone)
+    if phone:
+        rdv_comment_states.pop(phone, None)
+
+
+def _rdv_comment_saved_message(expense: dict) -> str:
+    month = calculate_month_reference(expense["data_despesa"])
+    return "\n".join(
+        [
+            "Comentario salvo no RDV.",
+            f"Lancamento #{expense['id']}.",
+            "",
+            "Para receber a planilha do mes, envie:",
+            f"planilha {month}",
+        ]
+    )
+
+
+def _rdv_transcription_confirmation_message(text: str) -> str:
+    return "\n".join(
+        [
+            "Transcrevi seu audio assim:",
+            "",
+            f'"{_safe_text_for_message(text)}"',
+            "",
+            "1 - Confirmar comentario",
+            "2 - Corrigir digitando",
+            "3 - Remover comentario",
+        ]
+    )
+
+
+def _safe_text_for_message(text: str, limit: int = 1200) -> str:
+    safe_text = str(text or "").strip()
+    safe_text = safe_text.replace("\r", " ").strip()
+    if len(safe_text) <= limit:
+        return safe_text
+    return safe_text[: limit - 3].rstrip() + "..."
+
+
+def _audio_transcription_enabled() -> bool:
+    return _env_flag_enabled("AUDIO_TRANSCRIPTION_ENABLED")
+
+
+def _keep_audio_after_transcription() -> bool:
+    return _env_flag_enabled("WHISPER_KEEP_AUDIO")
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+def _transcribe_audio_file(audio_path: Path) -> str:
+    provider = os.getenv("AUDIO_TRANSCRIPTION_PROVIDER", "whisper_local").strip()
+    if provider != "whisper_local":
+        raise RuntimeError(f"Provider de transcricao nao suportado: {provider}")
+    service = AudioTranscriptionService(
+        model_name=os.getenv("WHISPER_MODEL", "base").strip() or "base",
+        language=os.getenv("WHISPER_LANGUAGE", "pt").strip() or "pt",
+    )
+    return service.transcrever(str(audio_path))
+
+
+def _build_audio_transcription_destination(
+    sender_phone: str,
+    media_id: str,
+    mime_type: str,
+) -> Path:
+    tmp_dir = Path(os.getenv("WHISPER_TMP_DIR", "tmp/audio_transcriptions"))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_phone = _safe_filename_part(sender_phone) or "sem_telefone"
+    safe_media_id = _safe_filename_part(media_id)[-12:] or "audio"
+    extension = _extension_from_mime_type(mime_type)
+    if extension == ".bin":
+        extension = ".ogg"
+    return tmp_dir / f"{timestamp}_{safe_phone}_{safe_media_id}{extension}"
+
+
+def _safe_unlink(path: str | Path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        logger.warning("Nao foi possivel remover audio temporario: %s", Path(path).name)
 
 
 def _open_main_menu(sender_phone: str) -> str:

@@ -15,6 +15,7 @@ data/app.db
 
 # Arquivos gerados e dados locais
 output/
+tmp/
 data/documentos/uploads/
 uploads/
 backups/
