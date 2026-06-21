@@ -43,6 +43,55 @@ git push origin test/viratexto-whatsapp-api
 
 Confirme que a branch enviada e `test/viratexto-whatsapp-api`.
 
+## Scripts auxiliares
+
+A branch da POC inclui scripts para executar o roteiro no servidor sem colar
+comandos longos manualmente. Eles devem ser rodados dentro de:
+
+```bash
+cd /home/deploy/apps/ciclus-rdv
+```
+
+Se necessario, habilite permissao de execucao:
+
+```bash
+chmod +x scripts/server_deploy_viratexto.sh
+chmod +x scripts/server_test_viratexto_text.sh
+chmod +x scripts/server_rollback_viratexto.sh
+```
+
+Deploy controlado:
+
+```bash
+cd /home/deploy/apps/ciclus-rdv
+bash scripts/server_deploy_viratexto.sh
+```
+
+Teste real somente de texto:
+
+```bash
+cd /home/deploy/apps/ciclus-rdv
+bash scripts/server_test_viratexto_text.sh
+```
+
+O script de teste pede confirmacao digitada `ENVIAR` antes de chamar a API.
+
+Acompanhar log:
+
+```bash
+tail -f logs/viratexto_test_log.jsonl
+```
+
+Rollback:
+
+```bash
+cd /home/deploy/apps/ciclus-rdv
+bash scripts/server_rollback_viratexto.sh
+```
+
+O script de rollback le `rollback_viratexto.txt` e pede confirmacao digitada
+`VOLTAR` antes de alterar o Git ou o `.env`.
+
 ## Deploy no servidor
 
 ### 1. Entrar no servidor
