@@ -247,3 +247,166 @@ def test_comandos_diretos_continuam_funcionando():
         api_whatsapp._send_monthly_rdv_excel = original_monthly
         api_whatsapp.send_whatsapp_document = original_sender
         api_whatsapp.whatsapp_menu_states.clear()
+
+
+def test_payload_menu_principal_interativo():
+    payload = api_whatsapp._build_whatsapp_list_payload(
+        to="5500000000001",
+        header="Ciclus Agro",
+        body="Escolha uma opcao para continuar.",
+        button_text="Ver opcoes",
+        sections=[
+            {
+                "title": "RDV",
+                "rows": [
+                    {
+                        "id": "menu_rdv_summary",
+                        "title": "Resumo RDV",
+                        "description": "Resumo mensal de despesas",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messaging_product"] == "whatsapp"
+    assert payload["to"] == "5500000000001"
+    assert payload["type"] == "interactive"
+    assert payload["interactive"]["type"] == "list"
+    assert payload["interactive"]["header"]["text"] == "Ciclus Agro"
+    assert payload["interactive"]["action"]["button"] == "Ver opcoes"
+    assert payload["interactive"]["action"]["sections"][0]["rows"][0]["id"] == "menu_rdv_summary"
+
+
+def test_payload_menu_relatorios_interativo():
+    sent = []
+    original_sender = api_whatsapp.send_whatsapp_list_message
+    try:
+        api_whatsapp.send_whatsapp_list_message = lambda **kwargs: sent.append(kwargs)
+
+        api_whatsapp.send_reports_menu_interactive("5500000000001")
+
+        assert sent[0]["to"] == "5500000000001"
+        assert sent[0]["header"] == "Relatorios"
+        rows = [
+            row
+            for section in sent[0]["sections"]
+            for row in section["rows"]
+        ]
+        assert {row["id"] for row in rows} >= {
+            "menu_rdv_summary",
+            "menu_rdv_excel",
+            "menu_weekly_summary",
+            "menu_weekly_excel",
+            "menu_visit_list",
+            "menu_visit_excel",
+        }
+    finally:
+        api_whatsapp.send_whatsapp_list_message = original_sender
+
+
+def test_payload_botoes_confirmacao():
+    payload = api_whatsapp._build_whatsapp_button_payload(
+        to="5500000000001",
+        body="Confirma a acao?",
+        buttons=[
+            {"id": "confirm_clear_km", "title": "Limpar KM"},
+            {"id": "cancel_action", "title": "Cancelar"},
+        ],
+    )
+
+    assert payload["type"] == "interactive"
+    assert payload["interactive"]["type"] == "button"
+    buttons = payload["interactive"]["action"]["buttons"]
+    assert buttons[0]["type"] == "reply"
+    assert buttons[0]["reply"] == {"id": "confirm_clear_km", "title": "Limpar KM"}
+    assert buttons[1]["reply"] == {"id": "cancel_action", "title": "Cancelar"}
+
+
+def test_leitura_de_interactive_button_reply():
+    message = {
+        "type": "interactive",
+        "interactive": {
+            "button_reply": {
+                "id": "menu_rdv_summary",
+                "title": "Resumo RDV",
+            }
+        },
+    }
+
+    assert api_whatsapp._extract_text(message) == "resumo"
+
+
+def test_leitura_de_interactive_list_reply():
+    message = {
+        "type": "interactive",
+        "interactive": {
+            "list_reply": {
+                "id": "menu_weekly_excel",
+                "title": "Planilha semanal",
+            }
+        },
+    }
+
+    assert api_whatsapp._extract_text(message) == "planilha semanal"
+
+
+def test_ids_interativos_mapeiam_para_comandos_antigos():
+    expected = {
+        "menu_rdv_summary": "resumo",
+        "menu_rdv_excel": "planilha",
+        "menu_weekly_summary": "resumo semanal",
+        "menu_weekly_excel": "planilha semanal",
+        "menu_km": "km",
+        "menu_visit_start": "visita",
+        "menu_visit_list": "visitas",
+        "menu_visit_excel": "planilha visitas",
+        "menu_reports": "relatorios",
+        "menu_help": "menu",
+    }
+
+    for reply_id, command in expected.items():
+        assert api_whatsapp.INTERACTIVE_COMMAND_IDS[reply_id] == command
+
+
+def test_interactive_list_reply_executa_comando_antigo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_send_text = api_whatsapp.send_whatsapp_text
+    original_send_menu = api_whatsapp.send_main_menu_interactive
+    original_message_check = api_whatsapp._was_whatsapp_message_processed
+    original_image_check = api_whatsapp._was_whatsapp_image_processed_for_sender
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _rdv, _visitas, sender = _install_services(temp_dir)
+            sent_texts = []
+            api_whatsapp.send_whatsapp_text = lambda to, message: sent_texts.append((to, message))
+            api_whatsapp.send_main_menu_interactive = lambda to: (_ for _ in ()).throw(RuntimeError("meta recusou"))
+            api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
+            api_whatsapp._was_whatsapp_image_processed_for_sender = lambda sha, phone: False
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.interactive.menu",
+                    "type": "interactive",
+                    "interactive": {
+                        "list_reply": {
+                            "id": "menu_help",
+                            "title": "Menu em texto",
+                        }
+                    },
+                }
+            )
+
+            assert sent_texts
+            assert sent_texts[-1][0] == sender
+            assert "Sou o assistente da Ciclus Agro" in sent_texts[-1][1]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_text = original_send_text
+        api_whatsapp.send_main_menu_interactive = original_send_menu
+        api_whatsapp._was_whatsapp_message_processed = original_message_check
+        api_whatsapp._was_whatsapp_image_processed_for_sender = original_image_check
+        api_whatsapp.whatsapp_menu_states.clear()
