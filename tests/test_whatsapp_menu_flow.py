@@ -260,9 +260,9 @@ def test_payload_menu_principal_interativo():
                 "title": "RDV",
                 "rows": [
                     {
-                        "id": "menu_rdv_summary",
-                        "title": "Resumo RDV",
-                        "description": "Resumo mensal de despesas",
+                        "id": "menu_rdv_receipt",
+                        "title": "Enviar comprovante",
+                        "description": "Como registrar despesa por foto/PDF",
                     }
                 ],
             }
@@ -275,7 +275,7 @@ def test_payload_menu_principal_interativo():
     assert payload["interactive"]["type"] == "list"
     assert payload["interactive"]["header"]["text"] == "Ciclus Agro"
     assert payload["interactive"]["action"]["button"] == "Ver opcoes"
-    assert payload["interactive"]["action"]["sections"][0]["rows"][0]["id"] == "menu_rdv_summary"
+    assert payload["interactive"]["action"]["sections"][0]["rows"][0]["id"] == "menu_rdv_receipt"
 
 
 def test_payload_menu_relatorios_interativo():
@@ -353,6 +353,7 @@ def test_leitura_de_interactive_list_reply():
 
 def test_ids_interativos_mapeiam_para_comandos_antigos():
     expected = {
+        "menu_rdv_receipt": "rdv",
         "menu_rdv_summary": "resumo",
         "menu_rdv_excel": "planilha",
         "menu_weekly_summary": "resumo semanal",

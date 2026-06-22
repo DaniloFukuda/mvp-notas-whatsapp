@@ -80,6 +80,7 @@ VISITA_FLOW_STEPS = {
 }
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
 INTERACTIVE_COMMAND_IDS = {
+    "menu_rdv_receipt": "rdv",
     "menu_rdv_summary": "resumo",
     "menu_rdv_excel": "planilha",
     "menu_weekly_summary": "resumo semanal",
@@ -436,6 +437,11 @@ def send_main_menu_interactive(to: str) -> None:
             {
                 "title": "RDV e KM",
                 "rows": [
+                    {
+                        "id": "menu_rdv_receipt",
+                        "title": "Enviar comprovante",
+                        "description": "Como registrar despesa por foto/PDF",
+                    },
                     {
                         "id": "menu_rdv_summary",
                         "title": "Resumo RDV",
