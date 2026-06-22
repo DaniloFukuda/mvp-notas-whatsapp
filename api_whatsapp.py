@@ -727,37 +727,50 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         category = _match_numbered_choice(text, RDV_CATEGORIES)
         if category is None:
             return _category_prompt("Categoria invalida.")
-        completed = rdv_service.complete_launch_category(
+        saved = rdv_service.put_launch_in_review_after_category(
             pending["id"],
             category,
         )
-        lines = [
-            "RDV registrado com sucesso.",
-            f"Lancamento #{completed['id']}.",
-            f"Data do comprovante: {_format_date_br(completed['data_despesa'])}.",
-            f"Enviado no WhatsApp: {_format_datetime_br(completed.get('recebido_em'))}.",
-            f"Mes: {calculate_month_reference(completed['data_despesa'])}.",
-            f"Semana: {completed['semana_referencia']}.",
-            f"Valor: {_format_brl_text(completed['valor'])}.",
-            f"Categoria: {_category_label(completed['categoria'])}.",
-            "Status: completo.",
-        ]
-        if completed.get("origem_valor") == "manual":
-            lines.append("Valor informado manualmente.")
-        if completed.get("semana_referencia") != calculate_week_reference(date.today()):
-            lines.append(
-                "Este comprovante entrou pela data real do documento, "
-                "nao pela data de envio no WhatsApp."
+        return _rdv_review_message(saved)
+
+    if state == "revisao":
+        if normalized in {"1", "sim", "confirmar", "ok"}:
+            completed = rdv_service.confirm_launch_review(pending["id"])
+            return _rdv_completed_message(completed)
+        if normalized == "2":
+            rdv_service.start_launch_value_correction(pending["id"])
+            return "Informe o novo valor. Exemplo: 125,50"
+        if normalized == "3":
+            rdv_service.start_launch_receipt_date_correction(pending["id"])
+            return "Informe a nova data do comprovante no formato 11/06/2026."
+        if normalized == "4":
+            rdv_service.start_launch_category_correction(pending["id"])
+            return _category_prompt("Escolha a nova categoria.")
+        return _rdv_review_message(pending, "Opcao invalida.")
+
+    if state == "corrigindo_valor":
+        value = _parse_rdv_value(text)
+        if value is None:
+            return "Valor invalido. Informe somente o valor, por exemplo: 125,50"
+        saved = rdv_service.save_launch_value_correction(pending["id"], value)
+        return _rdv_review_message(saved)
+
+    if state == "corrigindo_data_comprovante":
+        try:
+            saved = rdv_service.save_launch_receipt_date_correction(
+                pending["id"],
+                text,
             )
-        month = calculate_month_reference(completed["data_despesa"])
-        lines.extend(
-            [
-                "",
-                "Para receber a planilha do mes, envie:",
-                f"planilha {month}",
-            ]
-        )
-        return "\n".join(lines)
+        except ValueError:
+            return "Data invalida. Informe a data do comprovante no formato 11/06/2026."
+        return _rdv_review_message(saved)
+
+    if state == "corrigindo_categoria":
+        category = _match_numbered_choice(text, RDV_CATEGORIES)
+        if category is None:
+            return _category_prompt("Categoria invalida.")
+        saved = rdv_service.save_launch_category_correction(pending["id"], category)
+        return _rdv_review_message(saved)
 
     return RDV_MENU
 
@@ -1715,6 +1728,61 @@ def _summary_lines(title: str, summary: dict) -> str:
         for category, total in sorted(by_category.items()):
             lines.append(f"- {_category_label(category)}: {_format_brl_text(total)}")
 
+    return "\n".join(lines)
+
+
+def _rdv_review_message(expense: dict, prefix: str = "") -> str:
+    lines = []
+    if prefix:
+        lines.append(prefix)
+        lines.append("")
+    lines.extend(
+        [
+            "Confira os dados do lancamento RDV:",
+            f"ID do lancamento: #{expense['id']}.",
+            f"Data do comprovante: {_format_date_br(expense['data_despesa'])}.",
+            f"Enviado no WhatsApp: {_format_datetime_br(expense.get('recebido_em'))}.",
+            f"Mes: {calculate_month_reference(expense['data_despesa'])}.",
+            f"Semana: {expense['semana_referencia']}.",
+            f"Valor: {_format_brl_text(expense['valor'])}.",
+            f"Categoria: {_category_label(expense['categoria'])}.",
+            "",
+            "1 - Confirmar lancamento",
+            "2 - Alterar valor",
+            "3 - Alterar data do comprovante",
+            "4 - Alterar categoria",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _rdv_completed_message(expense: dict) -> str:
+    lines = [
+        "RDV registrado com sucesso.",
+        f"Lancamento #{expense['id']}.",
+        f"Data do comprovante: {_format_date_br(expense['data_despesa'])}.",
+        f"Enviado no WhatsApp: {_format_datetime_br(expense.get('recebido_em'))}.",
+        f"Mes: {calculate_month_reference(expense['data_despesa'])}.",
+        f"Semana: {expense['semana_referencia']}.",
+        f"Valor: {_format_brl_text(expense['valor'])}.",
+        f"Categoria: {_category_label(expense['categoria'])}.",
+        "Status: completo.",
+    ]
+    if expense.get("origem_valor") == "manual":
+        lines.append("Valor informado manualmente.")
+    if expense.get("semana_referencia") != calculate_week_reference(date.today()):
+        lines.append(
+            "Este comprovante entrou pela data real do documento, "
+            "nao pela data de envio no WhatsApp."
+        )
+    month = calculate_month_reference(expense["data_despesa"])
+    lines.extend(
+        [
+            "",
+            "Para receber a planilha do mes, envie:",
+            f"planilha {month}",
+        ]
+    )
     return "\n".join(lines)
 
 

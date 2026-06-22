@@ -23,6 +23,10 @@ FLOW_STATUSES = (
     "aguardando_valor",
     "aguardando_data_comprovante",
     "aguardando_categoria",
+    "revisao",
+    "corrigindo_valor",
+    "corrigindo_data_comprovante",
+    "corrigindo_categoria",
     "aguardando_km_origem",
     "aguardando_km_destino",
     "aguardando_km_inicio",
@@ -30,12 +34,15 @@ FLOW_STATUSES = (
     "viagem_em_andamento",
     "cancelado",
     "completo",
-    "revisao",
 )
 OPEN_FLOW_STATUSES = (
     "aguardando_valor",
     "aguardando_data_comprovante",
     "aguardando_categoria",
+    "revisao",
+    "corrigindo_valor",
+    "corrigindo_data_comprovante",
+    "corrigindo_categoria",
     "aguardando_km_origem",
     "aguardando_km_destino",
     "aguardando_km_inicio",
@@ -46,6 +53,10 @@ INTERACTIVE_EXPENSE_FLOW_STATUSES = (
     "aguardando_valor",
     "aguardando_data_comprovante",
     "aguardando_categoria",
+    "revisao",
+    "corrigindo_valor",
+    "corrigindo_data_comprovante",
+    "corrigindo_categoria",
 )
 LEGACY_KM_FLOW_STATUSES = (
     "aguardando_km_origem",
@@ -754,6 +765,108 @@ class RDVService:
             },
         )
 
+    def put_launch_in_review_after_category(
+        self,
+        expense_id: int,
+        category: str,
+    ) -> dict:
+        normalized_category = _normalize_category(category)
+        current = self.get_expense(expense_id)
+        if current is None:
+            raise ValueError("Lancamento RDV nao encontrado.")
+        receipt_date = _valid_receipt_date(current.get("data_detectada"))
+        if receipt_date is None:
+            raise ValueError("Data do comprovante nao informada.")
+        automatic_read_ok = self._automatic_read_ok(current)
+        return self._update_launch(
+            expense_id,
+            expected_status="aguardando_categoria",
+            updates={
+                "categoria": normalized_category,
+                "data_despesa": receipt_date.isoformat(),
+                "semana_referencia": calculate_week_reference(receipt_date),
+                "status_fluxo": "revisao",
+                "status_revisao": "aprovado" if automatic_read_ok else "pendente",
+            },
+        )
+
+    def confirm_launch_review(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="revisao",
+            updates={"status_fluxo": "completo"},
+        )
+
+    def start_launch_value_correction(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="revisao",
+            updates={"status_fluxo": "corrigindo_valor"},
+        )
+
+    def start_launch_receipt_date_correction(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="revisao",
+            updates={"status_fluxo": "corrigindo_data_comprovante"},
+        )
+
+    def start_launch_category_correction(self, expense_id: int) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="revisao",
+            updates={"status_fluxo": "corrigindo_categoria"},
+        )
+
+    def save_launch_value_correction(self, expense_id: int, value: object) -> dict:
+        parsed_value = _to_float(value)
+        if parsed_value is None or parsed_value < 0:
+            raise ValueError("Valor da despesa invalido.")
+        return self._update_launch(
+            expense_id,
+            expected_status="corrigindo_valor",
+            updates={
+                "valor": parsed_value,
+                "origem_valor": "manual",
+                "falha_leitura": 1,
+                "motivo_revisao": "valor corrigido manualmente na conferencia",
+                "status_fluxo": "revisao",
+                "status_revisao": "pendente",
+            },
+        )
+
+    def save_launch_receipt_date_correction(
+        self,
+        expense_id: int,
+        value: object,
+    ) -> dict:
+        receipt_date = parse_receipt_date(value)
+        return self._update_launch(
+            expense_id,
+            expected_status="corrigindo_data_comprovante",
+            updates={
+                "data_despesa": receipt_date.isoformat(),
+                "data_detectada": receipt_date.isoformat(),
+                "semana_referencia": calculate_week_reference(receipt_date),
+                "status_fluxo": "revisao",
+                "status_revisao": "pendente",
+            },
+        )
+
+    def save_launch_category_correction(
+        self,
+        expense_id: int,
+        category: str,
+    ) -> dict:
+        return self._update_launch(
+            expense_id,
+            expected_status="corrigindo_categoria",
+            updates={
+                "categoria": _normalize_category(category),
+                "status_fluxo": "revisao",
+            },
+        )
+
     def mark_launch_for_review(self, expense_id: int) -> dict:
         return self._update_launch(
             expense_id,
@@ -1286,6 +1399,13 @@ class RDVService:
             )
             connection.commit()
         return self.get_expense(expense_id) or {}
+
+    def _automatic_read_ok(self, expense: dict) -> bool:
+        return (
+            expense.get("origem_valor") in {"qr_code", "ocr"}
+            and expense.get("valor_detectado") is not None
+            and not bool(expense.get("falha_leitura"))
+        )
 
     def _migrate_expense_columns(self, connection: sqlite3.Connection) -> None:
         existing = {

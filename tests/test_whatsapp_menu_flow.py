@@ -169,8 +169,14 @@ def test_numero_no_fluxo_rdv_categoria_continua_funcionando():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "1")
 
-            assert "RDV registrado com sucesso." in reply
-            assert rdv.get_expense(pending["id"])["categoria"] == "combustivel"
+            assert "Confira os dados do lancamento RDV:" in reply
+            reviewing = rdv.get_expense(pending["id"])
+            assert reviewing["status_fluxo"] == "revisao"
+            assert reviewing["categoria"] == "combustivel"
+
+            completed_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "RDV registrado com sucesso." in completed_reply
+            assert rdv.get_expense(pending["id"])["status_fluxo"] == "completo"
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas

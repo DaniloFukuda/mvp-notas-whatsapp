@@ -334,6 +334,15 @@ def test_manual_value_then_manual_date_and_category_completes_rdv():
             date_reply = api_whatsapp.handle_rdv_text_message(sender, "11-06-2026")
             assert "Data registrada: 11/06/2026. Qual a categoria?" in date_reply
 
+            review_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "Confira os dados do lancamento RDV:" in review_reply
+            assert "ID do lancamento:" in review_reply
+            assert "Data do comprovante: 11/06/2026." in review_reply
+            assert "1 - Confirmar lancamento" in review_reply
+            reviewing = service.get_expense(pending["id"])
+            assert reviewing["status_fluxo"] == "revisao"
+            assert reviewing["categoria"] == "combustivel"
+
             completed_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
             assert "RDV registrado com sucesso." in completed_reply
             assert "Data do comprovante: 11/06/2026." in completed_reply
@@ -345,6 +354,118 @@ def test_manual_value_then_manual_date_and_category_completes_rdv():
             assert completed["categoria"] == "combustivel"
             assert completed["data_despesa"] == "2026-06-11"
             assert completed["data_detectada"] == "2026-06-11"
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_rdv_review_allows_value_correction_before_confirmation():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            pending = service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_valor",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "64,00")
+            api_whatsapp.handle_rdv_text_message(sender, "11/06/2026")
+            review_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "Valor: R$ 64,00." in review_reply
+
+            ask_value = api_whatsapp.handle_rdv_text_message(sender, "2")
+            assert ask_value == "Informe o novo valor. Exemplo: 125,50"
+            updated_review = api_whatsapp.handle_rdv_text_message(sender, "75,50")
+            assert "Confira os dados do lancamento RDV:" in updated_review
+            assert "Valor: R$ 75,50." in updated_review
+
+            completed_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
+            assert "RDV registrado com sucesso." in completed_reply
+            completed = service.get_expense(pending["id"])
+            assert completed["status_fluxo"] == "completo"
+            assert completed["valor"] == 75.5
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_rdv_review_allows_receipt_date_correction_and_recalculates_week():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            pending = service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_valor",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "64,00")
+            api_whatsapp.handle_rdv_text_message(sender, "11/06/2026")
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            ask_date = api_whatsapp.handle_rdv_text_message(sender, "3")
+            assert ask_date == (
+                "Informe a nova data do comprovante no formato 11/06/2026."
+            )
+            updated_review = api_whatsapp.handle_rdv_text_message(sender, "15/06/2026")
+            assert "Data do comprovante: 15/06/2026." in updated_review
+            assert "Semana: 2026-W25." in updated_review
+
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            completed = service.get_expense(pending["id"])
+            assert completed["status_fluxo"] == "completo"
+            assert completed["data_despesa"] == "2026-06-15"
+            assert completed["semana_referencia"] == api_whatsapp.calculate_week_reference(
+                "2026-06-15"
+            )
+    finally:
+        api_whatsapp.rdv_service = original_service
+
+
+def test_rdv_review_allows_category_correction_before_confirmation():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            pending = service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_valor",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "64,00")
+            api_whatsapp.handle_rdv_text_message(sender, "11/06/2026")
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            category_prompt = api_whatsapp.handle_rdv_text_message(sender, "4")
+            assert "Escolha a nova categoria. Qual a categoria?" in category_prompt
+            updated_review = api_whatsapp.handle_rdv_text_message(sender, "2")
+            assert "Categoria: Alimentacao." in updated_review
+
+            api_whatsapp.handle_rdv_text_message(sender, "ok")
+            completed = service.get_expense(pending["id"])
+            assert completed["status_fluxo"] == "completo"
+            assert completed["categoria"] == "alimentacao"
     finally:
         api_whatsapp.rdv_service = original_service
 
