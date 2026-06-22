@@ -135,13 +135,13 @@ def test_visita_fechar():
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
 
             reviewing = visitas.obter_visita(visita["id"])
-            assert "Confira o relatorio de visita:" in reply
-            assert "1 - Confirmar relatorio" in reply
-            assert "8 - Cancelar" in reply
+            assert "Revisao da visita" in reply
+            assert "Digite CONFIRMAR para finalizar a visita." in reply
+            assert "Digite CANCELAR para sair sem finalizar." in reply
             assert reviewing["status"] == "aberta"
-            assert reviewing["estado_fluxo"] == "conferencia"
+            assert reviewing["estado_fluxo"] == "revisao_visita"
 
-            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
             closed = visitas.obter_visita(visita["id"])
             assert "Visita fechada com sucesso." in confirm_reply
             assert "Comandos" in confirm_reply
@@ -153,7 +153,7 @@ def test_visita_fechar():
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_visita_conferencia_antes_de_concluir_relatorio():
+def test_visita_revisao_antes_de_concluir_relatorio():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -175,15 +175,15 @@ def test_visita_conferencia_antes_de_concluir_relatorio():
             review_reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
 
             visit = visitas.obter_visita_aberta(sender)
-            assert "Confira o relatorio de visita:" in review_reply
-            assert "Fazenda: Fazenda Imperial" in review_reply
+            assert "Revisao da visita" in review_reply
+            assert "1. Fazenda: Fazenda Imperial" in review_reply
             assert "Data da visita:" in review_reply
-            assert "Tecnico: Danilo" in review_reply
-            assert "Gerente/responsavel: Paulo Silva" in review_reply
-            assert "Atividade: Apresentacao de produtos ao cliente" in review_reply
-            assert "Observacoes: Pedido de 300T" in review_reply
+            assert "3. Tecnico: Danilo" in review_reply
+            assert "2. Gerente: Paulo Silva" in review_reply
+            assert "6. Descricao: Apresentacao de produtos ao cliente" in review_reply
+            assert "7. Observacao: Pedido de 300T" in review_reply
             assert visit["status"] == "aberta"
-            assert visit["estado_fluxo"] == "conferencia"
+            assert visit["estado_fluxo"] == "revisao_visita"
 
             completed_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
             closed = visitas.obter_visita(visit["id"])
@@ -195,7 +195,7 @@ def test_visita_conferencia_antes_de_concluir_relatorio():
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_visita_conferencia_corrige_fazenda_e_volta_para_resumo():
+def test_visita_revisao_corrige_fazenda_e_volta_para_resumo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -208,17 +208,17 @@ def test_visita_conferencia_corrige_fazenda_e_volta_para_resumo():
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
 
             api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
-            ask_farm = api_whatsapp.handle_rdv_text_message(sender, "2")
+            ask_farm = api_whatsapp.handle_rdv_text_message(sender, "1")
             assert ask_farm == "Informe o novo nome da fazenda."
             updated_review = api_whatsapp.handle_rdv_text_message(
                 sender,
                 "Fazenda Corrigida",
             )
 
-            assert "Confira o relatorio de visita:" in updated_review
-            assert "Fazenda: Fazenda Corrigida" in updated_review
+            assert "Revisao da visita" in updated_review
+            assert "1. Fazenda: Fazenda Corrigida" in updated_review
             reviewing = visitas.obter_visita_aberta(sender)
-            assert reviewing["estado_fluxo"] == "conferencia"
+            assert reviewing["estado_fluxo"] == "revisao_visita"
 
             api_whatsapp.handle_rdv_text_message(sender, "ok")
             closed = visitas.obter_visita(visita["id"])
@@ -229,7 +229,7 @@ def test_visita_conferencia_corrige_fazenda_e_volta_para_resumo():
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_visita_conferencia_cancelar_nao_conclui_relatorio():
+def test_visita_revisao_cancelar_nao_conclui_relatorio():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -240,20 +240,20 @@ def test_visita_conferencia_cancelar_nao_conclui_relatorio():
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
 
             api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
-            cancel_reply = api_whatsapp.handle_rdv_text_message(sender, "8")
+            cancel_reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar")
 
             saved = visitas.obter_visita(visita["id"])
-            assert cancel_reply == "Visita cancelada com sucesso."
-            assert saved["status"] == "cancelada"
-            assert saved["estado_fluxo"] == "cancelada"
-            assert saved["fechado_em"]
-            assert visitas.obter_visita_aberta(sender) is None
+            assert cancel_reply == "Revisao cancelada. A visita continua aberta."
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "visita_aberta"
+            assert not saved["fechado_em"]
+            assert visitas.obter_visita_aberta(sender) is not None
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_visita_conferencia_corrige_data():
+def test_visita_revisao_corrige_area():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -264,21 +264,21 @@ def test_visita_conferencia_corrige_data():
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
 
             api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
-            ask_date = api_whatsapp.handle_rdv_text_message(sender, "3")
-            assert ask_date == "Informe a nova data da visita no formato 11/06/2026."
-            updated_review = api_whatsapp.handle_rdv_text_message(sender, "11/06/2026")
+            ask_area = api_whatsapp.handle_rdv_text_message(sender, "4")
+            assert ask_area == "Informe a nova area. Exemplo: 2299 ha"
+            updated_review = api_whatsapp.handle_rdv_text_message(sender, "150 ha")
 
-            assert "Data da visita: 11/06/2026" in updated_review
+            assert "4. Area: 150 ha" in updated_review
             api_whatsapp.handle_rdv_text_message(sender, "sim")
             closed = visitas.obter_visita(visita["id"])
             assert closed["status"] == "fechada"
-            assert closed["data_visita"] == "2026-06-11"
+            assert closed["area_hectares"] == 150
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_visita_conferencia_corrige_observacoes():
+def test_visita_revisao_corrige_observacoes():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -290,15 +290,15 @@ def test_visita_conferencia_corrige_observacoes():
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
 
             api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
-            ask_observation = api_whatsapp.handle_rdv_text_message(sender, "6")
+            ask_observation = api_whatsapp.handle_rdv_text_message(sender, "7")
             assert ask_observation == "Informe as novas observacoes da visita."
             updated_review = api_whatsapp.handle_rdv_text_message(
                 sender,
                 "Observacao corrigida",
             )
 
-            assert "Observacoes: Observacao corrigida" in updated_review
-            api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "7. Observacao: Observacao corrigida" in updated_review
+            api_whatsapp.handle_rdv_text_message(sender, "finalizar")
             closed = visitas.obter_visita(visita["id"])
             assert closed["status"] == "fechada"
             assert closed["observacoes"] == "Observacao corrigida"
