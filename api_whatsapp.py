@@ -831,14 +831,46 @@ def handle_visitas_text_message(
         return False, None
 
     if normalized_text == "fechar visita":
-        closed = visitas_service.fechar_visita(open_visit["id"])
-        return True, _visita_fechada_message(closed)
+        reviewing = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "conferencia",
+        )
+        return True, _visita_conferencia_message(reviewing)
 
     if normalized_text == "cancelar visita":
         visitas_service.cancelar_visita(open_visit["id"])
         return True, "Visita cancelada com sucesso."
 
     state = str(open_visit.get("estado_fluxo") or "")
+    if state == "conferencia":
+        if normalized_text in {"1", "sim", "confirmar", "ok"}:
+            closed = visitas_service.fechar_visita(open_visit["id"])
+            return True, _visita_fechada_message(closed)
+        if normalized_text in {"cancelar", "sair", "8", "9"}:
+            visitas_service.cancelar_visita(open_visit["id"])
+            return True, "Visita cancelada com sucesso."
+        correction_state = _visita_correction_state(normalized_text)
+        if correction_state is not None:
+            visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                correction_state,
+            )
+            return True, _visita_correction_prompt(correction_state)
+        return True, _visita_conferencia_message(open_visit, "Opcao invalida.")
+
+    if state.startswith("corrigindo_"):
+        reply = _save_visita_correction(open_visit, state, text)
+        if reply is not None:
+            return True, reply
+        updated = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "conferencia",
+        )
+        return True, _visita_conferencia_message(updated)
+
     if state in VISITA_FLOW_STEPS:
         field, next_question = VISITA_FLOW_STEPS[state]
         value = _parse_visita_area(text) if field == "area_hectares" else text
@@ -1001,6 +1033,117 @@ def _parse_visita_area(text: str) -> float | None:
 
 def _mentions_alqueires(text: str) -> bool:
     return "alqueir" in _normalize_caption(text)
+
+
+def _visita_correction_state(normalized_text: str) -> str | None:
+    return {
+        "2": "corrigindo_fazenda",
+        "3": "corrigindo_data_visita",
+        "4": "corrigindo_gerente",
+        "5": "corrigindo_tipo_visita",
+        "6": "corrigindo_observacoes",
+        "7": "corrigindo_tecnico",
+    }.get(normalized_text)
+
+
+def _visita_correction_prompt(state: str) -> str:
+    prompts = {
+        "corrigindo_fazenda": "Informe o novo nome da fazenda.",
+        "corrigindo_data_visita": "Informe a nova data da visita no formato 11/06/2026.",
+        "corrigindo_gerente": "Informe o novo gerente/responsavel.",
+        "corrigindo_tipo_visita": "Informe a nova atividade/descricao da visita.",
+        "corrigindo_observacoes": "Informe as novas observacoes da visita.",
+        "corrigindo_tecnico": "Informe o novo tecnico responsavel.",
+    }
+    return prompts[state]
+
+
+def _save_visita_correction(open_visit: dict, state: str, text: str) -> str | None:
+    visita_id = open_visit["id"]
+    if state == "corrigindo_fazenda":
+        visitas_service.atualizar_campo(visita_id, "fazenda", text)
+        return None
+    if state == "corrigindo_data_visita":
+        parsed_date = _parse_visita_date(text)
+        if parsed_date is None:
+            return "Data invalida. Informe a data da visita no formato 11/06/2026."
+        visitas_service.atualizar_campo(visita_id, "data_visita", parsed_date)
+        return None
+    if state == "corrigindo_gerente":
+        visitas_service.atualizar_campo(visita_id, "gerente", text)
+        return None
+    if state == "corrigindo_tipo_visita":
+        visitas_service.atualizar_campo(visita_id, "tipo_visita", text)
+        return None
+    if state == "corrigindo_observacoes":
+        visitas_service.atualizar_campo(visita_id, "observacoes", text)
+        return None
+    if state == "corrigindo_tecnico":
+        visitas_service.atualizar_campo(visita_id, "tecnico_nome", text)
+        return None
+    return "Continue preenchendo a visita tecnica atual."
+
+
+def _parse_visita_date(text: str) -> str | None:
+    raw = str(text or "").strip()
+    for date_format in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _visita_conferencia_message(visita: dict, prefix: str = "") -> str:
+    resumo = visitas_service.obter_visita_completa(visita["id"]) or visita
+    contadores = resumo.get("contadores") or {}
+    fotos = contadores.get("fotos", len(resumo.get("midias") or []))
+    localizacoes = contadores.get(
+        "localizacoes",
+        len(resumo.get("localizacoes") or []),
+    )
+    dados = contadores.get(
+        "dados_coletados",
+        len(resumo.get("dados_coletados") or []),
+    )
+    area = _format_optional_number(resumo.get("area_hectares"))
+    if resumo.get("area_alqueires") not in (None, ""):
+        area = f"{_format_optional_number(resumo.get('area_alqueires'))} alq"
+    elif area != "-":
+        area = f"{area} ha"
+    lines = []
+    if prefix:
+        lines.extend([prefix, ""])
+    lines.extend(
+        [
+            "Confira o relatorio de visita:",
+            "",
+            f"Fazenda: {resumo.get('fazenda') or '-'}",
+            f"Data da visita: {_format_date_br(resumo.get('data_visita'))}",
+            f"Tecnico: {resumo.get('tecnico_nome') or '-'}",
+            f"Proprietario: {resumo.get('proprietario') or '-'}",
+            f"Gerente/responsavel: {resumo.get('gerente') or '-'}",
+            f"Area: {area}",
+            f"Safra: {resumo.get('safra') or '-'}",
+            f"Atividade: {resumo.get('tipo_visita') or '-'}",
+            f"Observacoes: {resumo.get('observacoes') or '-'}",
+            f"Fotos/anexos: {fotos}",
+            f"Localizacoes: {localizacoes}",
+            f"Dados coletados: {dados}",
+            "",
+            "Esta tudo certo?",
+            "",
+            "1 - Confirmar relatorio",
+            "2 - Alterar fazenda",
+            "3 - Alterar data",
+            "4 - Alterar gerente/responsavel",
+            "5 - Alterar atividade/descricao",
+            "6 - Alterar observacoes",
+            "7 - Alterar tecnico",
+            "8 - Cancelar",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _visita_status_message(visita: dict) -> str:
