@@ -178,6 +178,7 @@ def test_visita_revisao_antes_de_concluir_relatorio():
             visit = visitas.obter_visita_aberta(sender)
             assert "Revisao da visita" in review_reply
             assert "1. Fazenda: Fazenda Imperial" in review_reply
+            assert "Data da visita:" in review_reply
             assert "3. Tecnico: Danilo" in review_reply
             assert "2. Gerente: Paulo Silva" in review_reply
             assert "6. Descricao: Apresentacao de produtos ao cliente" in review_reply
