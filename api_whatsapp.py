@@ -66,6 +66,23 @@ VISITA_FLOW_STEPS = {
     "aguardando_tipo_visita": ("tipo_visita", ""),
 }
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
+INTERACTIVE_COMMAND_IDS = {
+    "menu_rdv_receipt": "rdv",
+    "menu_rdv_summary": "resumo",
+    "menu_rdv_excel": "planilha",
+    "menu_weekly_summary": "resumo semanal",
+    "menu_weekly_excel": "planilha semanal",
+    "menu_km": "km",
+    "menu_visit_start": "visita",
+    "menu_visit_list": "visitas",
+    "menu_visit_excel": "planilha visitas",
+    "menu_reports": "relatorios",
+    "menu_help": "menu",
+    "confirm_clear_km": "confirmar limpar km",
+    "cancel_action": "menu",
+    "confirm_visit_close": "confirmar",
+    "cancel_visit_review": "cancelar",
+}
 MAIN_MENU_MESSAGE = "\n".join(
     [
         "Olá! Sou o assistente da Ciclus Agro.",
@@ -352,6 +369,272 @@ def send_whatsapp_text(to: str, message: str) -> None:
     )
 
 
+def send_whatsapp_list_message(
+    to: str,
+    header: str,
+    body: str,
+    button_text: str,
+    sections: list[dict],
+    fallback_text: str,
+) -> None:
+    payload = _build_whatsapp_list_payload(
+        to=to,
+        header=header,
+        body=body,
+        button_text=button_text,
+        sections=sections,
+    )
+    try:
+        _post_whatsapp_message_payload(payload, to, "interactive.list")
+    except Exception:
+        logger.exception(
+            "Falha ao enviar lista interativa; usando fallback texto para %s",
+            _mask_phone(to),
+        )
+        send_whatsapp_text(to, fallback_text)
+
+
+def send_whatsapp_button_message(
+    to: str,
+    body: str,
+    buttons: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> None:
+    payload = _build_whatsapp_button_payload(
+        to=to,
+        body=body,
+        buttons=buttons,
+        header=header,
+        footer=footer,
+    )
+    _post_whatsapp_message_payload(payload, to, "interactive.button")
+
+
+def send_main_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="🌱 Ciclus Agro",
+        body="Escolha uma opção para continuar:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "Menu principal",
+                "rows": [
+                    {
+                        "id": "menu_rdv_receipt",
+                        "title": "🧾 Lançar comprovante",
+                        "description": "Enviar foto ou PDF",
+                    },
+                    {
+                        "id": "menu_km",
+                        "title": "🚗 Registrar KM",
+                        "description": "Iniciar ou finalizar viagem",
+                    },
+                    {
+                        "id": "menu_visit_start",
+                        "title": "🌱 Nova visita técnica",
+                        "description": "Registrar fazenda visitada",
+                    },
+                    {
+                        "id": "menu_rdv_summary",
+                        "title": "📊 Resumo RDV",
+                        "description": "Ver resumo mensal",
+                    },
+                    {
+                        "id": "menu_rdv_excel",
+                        "title": "📎 Planilha RDV",
+                        "description": "Receber Excel mensal",
+                    },
+                    {
+                        "id": "menu_reports",
+                        "title": "📋 Relatórios",
+                        "description": "Ver relatórios disponíveis",
+                    },
+                    {
+                        "id": "menu_help",
+                        "title": "❓ Ajuda",
+                        "description": "Ver comandos e orientações",
+                    },
+                ],
+            },
+        ],
+        fallback_text=MAIN_MENU_MESSAGE,
+    )
+
+
+def send_reports_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Relatorios",
+        body="Escolha qual relatorio deseja receber.",
+        button_text="Ver relatorios",
+        sections=[
+            {
+                "title": "RDV",
+                "rows": [
+                    {
+                        "id": "menu_rdv_summary",
+                        "title": "Resumo RDV",
+                        "description": "Resumo mensal de despesas",
+                    },
+                    {
+                        "id": "menu_rdv_excel",
+                        "title": "Planilha RDV",
+                        "description": "Excel mensal de despesas",
+                    },
+                    {
+                        "id": "menu_weekly_summary",
+                        "title": "Resumo semanal",
+                        "description": "Resumo semanal de despesas",
+                    },
+                    {
+                        "id": "menu_weekly_excel",
+                        "title": "Planilha semanal",
+                        "description": "Excel semanal de despesas",
+                    },
+                ],
+            },
+            {
+                "title": "Visitas",
+                "rows": [
+                    {
+                        "id": "menu_visit_list",
+                        "title": "Listar visitas",
+                        "description": "Ver visitas/fazendas",
+                    },
+                    {
+                        "id": "menu_visit_excel",
+                        "title": "Planilha visitas",
+                        "description": "Excel de visitas tecnicas",
+                    },
+                ],
+            },
+        ],
+        fallback_text=REPORTS_MENU_MESSAGE,
+    )
+
+
+def send_confirmation_buttons(
+    to: str,
+    body: str,
+    confirm_id: str,
+    confirm_title: str = "Confirmar",
+    cancel_id: str = "cancel_action",
+    cancel_title: str = "Cancelar",
+) -> None:
+    send_whatsapp_button_message(
+        to=to,
+        body=body,
+        buttons=[
+            {"id": confirm_id, "title": confirm_title},
+            {"id": cancel_id, "title": cancel_title},
+        ],
+    )
+
+
+def _build_whatsapp_list_payload(
+    to: str,
+    body: str,
+    button_text: str,
+    sections: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> dict:
+    recipient = str(to or "").strip()
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
+
+    interactive: dict = {
+        "type": "list",
+        "body": {"text": str(body or "").strip()},
+        "action": {
+            "button": str(button_text or "Ver opcoes").strip()[:20],
+            "sections": sections,
+        },
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": str(header).strip()[:60]}
+    if footer:
+        interactive["footer"] = {"text": str(footer).strip()}
+    return {
+        "messaging_product": "whatsapp",
+        "to": recipient,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+
+def _build_whatsapp_button_payload(
+    to: str,
+    body: str,
+    buttons: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> dict:
+    recipient = str(to or "").strip()
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
+
+    action_buttons = [
+        {
+            "type": "reply",
+            "reply": {
+                "id": str(button.get("id") or "").strip(),
+                "title": str(button.get("title") or "").strip()[:20],
+            },
+        }
+        for button in buttons[:3]
+    ]
+    interactive: dict = {
+        "type": "button",
+        "body": {"text": str(body or "").strip()},
+        "action": {"buttons": action_buttons},
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": str(header).strip()[:60]}
+    if footer:
+        interactive["footer"] = {"text": str(footer).strip()}
+    return {
+        "messaging_product": "whatsapp",
+        "to": recipient,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+
+def _post_whatsapp_message_payload(payload: dict, recipient: str, message_type: str) -> None:
+    requests = _requests_module()
+    token = _whatsapp_access_token()
+    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
+    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        logger.error(
+            "Erro da Meta ao enviar mensagem interativa: status_code=%s to=%s type=%s body=%s",
+            response.status_code,
+            _mask_phone(recipient),
+            message_type,
+            _safe_response_body(response),
+        )
+        response.raise_for_status()
+
+    logger.info(
+        "Mensagem interativa WhatsApp enviada: status_code=%s to=%s type=%s",
+        response.status_code,
+        _mask_phone(recipient),
+        message_type,
+    )
+
+
 def upload_whatsapp_document(
     content: bytes,
     filename: str = RDV_MONTHLY_EXCEL_FILENAME,
@@ -481,10 +764,10 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    if message_type == "text":
+    if message_type in {"text", "interactive"}:
         reply = handle_rdv_text_message(sender_phone, text)
         if reply:
-            _safe_send_text(sender_phone, reply)
+            _send_rdv_reply(sender_phone, text, reply)
         return
 
     if message_type == "location":
@@ -633,10 +916,12 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         return global_reply
 
     if normalized in MENU_OPEN_COMMANDS:
-        return _open_main_menu(sender_phone)
+        send_main_menu_interactive(sender_phone)
+        return None
 
     if normalized == "relatorios":
-        return REPORTS_MENU_MESSAGE
+        send_reports_menu_interactive(sender_phone)
+        return None
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
@@ -1895,8 +2180,43 @@ def _log_whatsapp_webhook_summary(payload: dict) -> None:
 
 
 def _extract_text(message: dict) -> str:
+    if str(message.get("type") or "") == "interactive":
+        return _extract_interactive_command(message)
     text = message.get("text") or {}
     return str(text.get("body") or "").strip()
+
+
+def _extract_interactive_command(message: dict) -> str:
+    reply_id = _extract_interactive_reply_id(message)
+    if reply_id in INTERACTIVE_COMMAND_IDS:
+        return INTERACTIVE_COMMAND_IDS[reply_id]
+
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return ""
+    reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+    if not isinstance(reply, dict):
+        return ""
+    title = str(reply.get("title") or "").strip()
+    return title
+
+
+def _extract_interactive_reply_id(message: dict) -> str:
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return ""
+
+    button_reply = interactive.get("button_reply") or {}
+    if isinstance(button_reply, dict):
+        reply_id = str(button_reply.get("id") or "").strip()
+        if reply_id:
+            return reply_id
+
+    list_reply = interactive.get("list_reply") or {}
+    if isinstance(list_reply, dict):
+        return str(list_reply.get("id") or "").strip()
+
+    return ""
 
 
 def _extract_caption(message: dict, message_type: str) -> str:
@@ -2236,6 +2556,32 @@ def _safe_send_text(to: str, message: str) -> None:
         send_whatsapp_text(to, message)
     except Exception:
         logger.exception("Erro ao enviar resposta de WhatsApp para %s", _mask_phone(to))
+
+
+def _send_rdv_reply(to: str, command_text: str, reply: str) -> None:
+    normalized = _normalize_caption(command_text)
+    try:
+        if normalized in MENU_OPEN_COMMANDS and reply == MAIN_MENU_MESSAGE:
+            send_main_menu_interactive(to)
+            return
+        if normalized == "relatorios" and reply == REPORTS_MENU_MESSAGE:
+            send_reports_menu_interactive(to)
+            return
+        if normalized in KM_CLEAR_REQUEST_COMMANDS and reply == KM_CLEAR_WARNING:
+            send_confirmation_buttons(
+                to,
+                KM_CLEAR_WARNING,
+                confirm_id="confirm_clear_km",
+                confirm_title="Limpar KM",
+            )
+            return
+    except Exception:
+        logger.exception(
+            "Falha ao enviar mensagem interativa; usando fallback texto para %s",
+            _mask_phone(to),
+        )
+
+    _safe_send_text(to, reply)
 
 
 def _safe_payload_for_log(payload: dict) -> str:
