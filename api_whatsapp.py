@@ -881,9 +881,13 @@ def handle_visitas_text_message(
     if normalized_text == "fechar visita":
         if open_visit is None:
             return True, NO_OPEN_VISITA_MESSAGE
-        closed = visitas_service.fechar_visita(open_visit["id"])
-        _clear_active_visita(sender_phone, open_visit["id"])
-        return True, _visita_fechada_message(closed)
+        reviewing = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "revisao_visita",
+        )
+        visita_active_states[phone] = int(reviewing["id"])
+        return True, _visita_revisao_message(reviewing)
 
     if normalized_text == "cancelar visita":
         if open_visit is None:
@@ -896,6 +900,42 @@ def handle_visitas_text_message(
         return False, None
 
     state = str(open_visit.get("estado_fluxo") or "")
+    if state == "revisao_visita":
+        if normalized_text in {"confirmar", "sim", "ok", "finalizar"}:
+            closed = visitas_service.fechar_visita(open_visit["id"])
+            _clear_active_visita(sender_phone, open_visit["id"])
+            return True, _visita_fechada_message(closed)
+        if normalized_text in {"cancelar", "sair"}:
+            saved = visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                "visita_aberta",
+            )
+            visita_active_states[phone] = int(saved["id"])
+            return True, "Revisao cancelada. A visita continua aberta."
+        correction_state = _visita_correction_state(normalized_text)
+        if correction_state is not None:
+            saved = visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                correction_state,
+            )
+            visita_active_states[phone] = int(saved["id"])
+            return True, _visita_correction_prompt(correction_state)
+        return True, _visita_revisao_message(open_visit, "Opcao invalida.")
+
+    if state.startswith("corrigindo_"):
+        reply = _save_visita_correction(open_visit, state, text)
+        if reply is not None:
+            return True, reply
+        updated = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "revisao_visita",
+        )
+        visita_active_states[phone] = int(updated["id"])
+        return True, _visita_revisao_message(updated)
+
     if state in VISITA_FLOW_STEPS:
         field, next_question = VISITA_FLOW_STEPS[state]
         value = _parse_visita_area(text) if field == "area_hectares" else text
@@ -935,7 +975,10 @@ def handle_visitas_text_message(
 
 def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
     open_visit = _get_active_visita_for_phone(sender_phone)
-    if open_visit is None or open_visit.get("estado_fluxo") != "visita_aberta":
+    if open_visit is None or open_visit.get("estado_fluxo") not in {
+        "visita_aberta",
+        "corrigindo_localizacao",
+    }:
         return None
     latitude = location.get("latitude")
     longitude = location.get("longitude")
@@ -948,6 +991,14 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
         float(longitude),
         descricao=description,
     )
+    if open_visit.get("estado_fluxo") == "corrigindo_localizacao":
+        updated = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "revisao_visita",
+        )
+        visita_active_states[normalize_phone(sender_phone)] = int(updated["id"])
+        return _visita_revisao_message(updated)
     return "\n".join(
         [
             "📍 Localização salva.",
@@ -967,6 +1018,8 @@ def handle_visitas_media_message(
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
         return "Nenhuma visita em andamento encontrada."
+    if open_visit.get("estado_fluxo") not in {"visita_aberta", "corrigindo_fotos"}:
+        return "Nenhuma visita em andamento encontrada."
     visitas_service.adicionar_midia(
         open_visit["id"],
         tipo="foto" if message_type == "image" else message_type,
@@ -974,6 +1027,14 @@ def handle_visitas_media_message(
         caminho_arquivo=file_path,
         legenda=caption,
     )
+    if open_visit.get("estado_fluxo") == "corrigindo_fotos":
+        updated = visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "revisao_visita",
+        )
+        visita_active_states[normalize_phone(sender_phone)] = int(updated["id"])
+        return _visita_revisao_message(updated)
     fazenda = open_visit.get("fazenda") or "visita em andamento"
     return "\n".join(
         [
@@ -1411,6 +1472,119 @@ def _format_visita_area_message(visita: dict) -> str:
     if alqueires not in (None, ""):
         return f"{_format_optional_number(alqueires)} alqueires"
     return "-"
+
+
+def _visita_correction_state(normalized_text: str) -> str | None:
+    return {
+        "1": "corrigindo_fazenda",
+        "2": "corrigindo_gerente",
+        "3": "corrigindo_tecnico",
+        "4": "corrigindo_area",
+        "5": "corrigindo_safra",
+        "6": "corrigindo_tipo_visita",
+        "7": "corrigindo_observacoes",
+        "8": "corrigindo_localizacao",
+        "9": "corrigindo_fotos",
+    }.get(normalized_text)
+
+
+def _visita_correction_prompt(state: str) -> str:
+    prompts = {
+        "corrigindo_fazenda": "Informe o novo nome da fazenda.",
+        "corrigindo_gerente": "Informe o novo gerente/responsavel.",
+        "corrigindo_tecnico": "Informe o novo tecnico responsavel.",
+        "corrigindo_area": "Informe a nova area. Exemplo: 2299 ha",
+        "corrigindo_safra": "Informe a nova safra.",
+        "corrigindo_tipo_visita": "Informe a nova atividade/descricao da visita.",
+        "corrigindo_observacoes": "Informe as novas observacoes da visita.",
+        "corrigindo_localizacao": "Envie a nova localizacao pelo WhatsApp.",
+        "corrigindo_fotos": "Envie a nova foto pelo WhatsApp.",
+    }
+    return prompts[state]
+
+
+def _save_visita_correction(open_visit: dict, state: str, text: str) -> str | None:
+    visita_id = open_visit["id"]
+    if state == "corrigindo_fazenda":
+        visitas_service.atualizar_campo(visita_id, "fazenda", text)
+        return None
+    if state == "corrigindo_gerente":
+        visitas_service.atualizar_campo(visita_id, "gerente", text)
+        return None
+    if state == "corrigindo_tecnico":
+        visitas_service.atualizar_campo(visita_id, "tecnico_nome", text)
+        return None
+    if state == "corrigindo_area":
+        area = _parse_visita_area(text)
+        if area is None:
+            return "Area invalida. Informe a area, por exemplo: 2299 ha"
+        field = "area_alqueires" if _mentions_alqueires(text) else "area_hectares"
+        visitas_service.atualizar_campo(visita_id, field, area)
+        return None
+    if state == "corrigindo_safra":
+        visitas_service.atualizar_campo(visita_id, "safra", text)
+        return None
+    if state == "corrigindo_tipo_visita":
+        visitas_service.atualizar_campo(visita_id, "tipo_visita", text)
+        return None
+    if state == "corrigindo_observacoes":
+        visitas_service.atualizar_campo(visita_id, "observacoes", text)
+        return None
+    if state == "corrigindo_localizacao":
+        return "Envie uma localizacao pelo WhatsApp para atualizar este campo."
+    if state == "corrigindo_fotos":
+        return "Envie uma foto pelo WhatsApp para adicionar ao relatorio."
+    return "Continue preenchendo a visita tecnica atual."
+
+
+def _visita_revisao_message(visita: dict, prefix: str = "") -> str:
+    resumo = visitas_service.obter_visita_completa(visita["id"]) or visita
+    contadores = resumo.get("contadores") or {}
+    fotos = contadores.get("fotos", len(resumo.get("midias") or []))
+    localizacoes = contadores.get(
+        "localizacoes",
+        len(resumo.get("localizacoes") or []),
+    )
+    dados = contadores.get(
+        "dados_coletados",
+        len(resumo.get("dados_coletados") or []),
+    )
+    area = _format_visita_area_message(resumo)
+    if area == "-":
+        area = "nao informado"
+    location_text = f"{localizacoes} localizacao(oes)"
+    maps_url = resumo.get("maps_url_principal")
+    if maps_url:
+        location_text = f"{location_text} - {maps_url}"
+    lines = []
+    if prefix:
+        lines.extend([prefix, ""])
+    lines.extend(
+        [
+            "Revisao da visita",
+            "",
+            "Confira os dados antes de finalizar:",
+            "",
+            f"1. Fazenda: {resumo.get('fazenda') or 'nao informado'}",
+            f"2. Gerente: {resumo.get('gerente') or 'nao informado'}",
+            f"3. Tecnico: {resumo.get('tecnico_nome') or 'nao informado'}",
+            f"4. Area: {area}",
+            f"5. Safra: {resumo.get('safra') or 'nao informado'}",
+            f"6. Descricao: {resumo.get('tipo_visita') or 'nao informado'}",
+            f"7. Observacao: {resumo.get('observacoes') or 'nao informado'}",
+            f"8. Localizacao: {location_text}",
+            f"9. Fotos: {fotos}",
+            "",
+            f"Data da visita: {_format_date_br(resumo.get('data_visita'))}",
+            f"Proprietario: {resumo.get('proprietario') or 'nao informado'}",
+            f"Dados coletados: {dados}",
+            "",
+            "Digite o numero do campo para corrigir.",
+            "Digite CONFIRMAR para finalizar a visita.",
+            "Digite CANCELAR para sair sem finalizar.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _visita_status_message(visita: dict) -> str:

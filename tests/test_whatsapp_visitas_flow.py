@@ -137,18 +137,183 @@ def test_visita_fechar():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
 
+            reviewing = visitas.obter_visita(visita["id"])
+            assert "Revisao da visita" in reply
+            assert "Digite CONFIRMAR para finalizar a visita." in reply
+            assert "Digite CANCELAR para sair sem finalizar." in reply
+            assert reviewing["status"] == "aberta"
+            assert reviewing["estado_fluxo"] == "revisao_visita"
+
+            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
             closed = visitas.obter_visita(visita["id"])
-            assert "Visita fechada com sucesso." in reply
-            assert "Área: - ha" in reply
-            assert "Localizações: 0" in reply
-            assert "Comandos disponíveis:" in reply
-            assert "relatório visita" in reply
-            assert "localização visita" in reply
+            assert "Visita fechada com sucesso." in confirm_reply
             assert closed["status"] == "fechada"
             assert closed["fechado_em"]
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_revisao_antes_de_concluir_relatorio():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda Imperial")
+            api_whatsapp.handle_rdv_text_message(sender, "Alexander Duarte Paniago")
+            api_whatsapp.handle_rdv_text_message(sender, "Paulo Silva")
+            api_whatsapp.handle_rdv_text_message(sender, "2299 ha")
+            api_whatsapp.handle_rdv_text_message(sender, "26/27")
+            api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Apresentacao de produtos ao cliente",
+            )
+            api_whatsapp.handle_rdv_text_message(sender, "obs Pedido de 300T")
+
+            review_reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+
+            visit = visitas.obter_visita_aberta(sender)
+            assert "Revisao da visita" in review_reply
+            assert "1. Fazenda: Fazenda Imperial" in review_reply
+            assert "3. Tecnico: Danilo" in review_reply
+            assert "2. Gerente: Paulo Silva" in review_reply
+            assert "6. Descricao: Apresentacao de produtos ao cliente" in review_reply
+            assert "7. Observacao: Pedido de 300T" in review_reply
+            assert visit["status"] == "aberta"
+            assert visit["estado_fluxo"] == "revisao_visita"
+
+            completed_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
+            closed = visitas.obter_visita(visit["id"])
+            assert "Visita fechada com sucesso." in completed_reply
+            assert closed["status"] == "fechada"
+            assert closed["estado_fluxo"] == "fechada"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_corrige_fazenda_e_volta_para_resumo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Antiga")
+            visitas.atualizar_campo(visita["id"], "gerente", "Paulo Silva")
+            visitas.atualizar_campo(visita["id"], "tipo_visita", "Visita tecnica")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            api_whatsapp.handle_rdv_text_message(sender, f"continuar visita {visita['id']}")
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            ask_farm = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert ask_farm == "Informe o novo nome da fazenda."
+            updated_review = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Fazenda Corrigida",
+            )
+
+            assert "Revisao da visita" in updated_review
+            assert "1. Fazenda: Fazenda Corrigida" in updated_review
+            reviewing = visitas.obter_visita_aberta(sender)
+            assert reviewing["estado_fluxo"] == "revisao_visita"
+
+            api_whatsapp.handle_rdv_text_message(sender, "ok")
+            closed = visitas.obter_visita(visita["id"])
+            assert closed["status"] == "fechada"
+            assert closed["fazenda"] == "Fazenda Corrigida"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_cancelar_nao_conclui_relatorio():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Cancelada")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            api_whatsapp.handle_rdv_text_message(sender, f"continuar visita {visita['id']}")
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            cancel_reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar")
+
+            saved = visitas.obter_visita(visita["id"])
+            assert cancel_reply == "Revisao cancelada. A visita continua aberta."
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "visita_aberta"
+            assert not saved["fechado_em"]
+            assert visitas.obter_visita_aberta(sender) is not None
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_corrige_area():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            api_whatsapp.handle_rdv_text_message(sender, f"continuar visita {visita['id']}")
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            ask_area = api_whatsapp.handle_rdv_text_message(sender, "4")
+            assert ask_area == "Informe a nova area. Exemplo: 2299 ha"
+            updated_review = api_whatsapp.handle_rdv_text_message(sender, "150 ha")
+
+            assert "4. Area: 150 ha" in updated_review
+            api_whatsapp.handle_rdv_text_message(sender, "sim")
+            closed = visitas.obter_visita(visita["id"])
+            assert closed["status"] == "fechada"
+            assert closed["area_hectares"] == 150
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_corrige_observacoes():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.adicionar_observacao(visita["id"], "Observacao antiga")
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            api_whatsapp.handle_rdv_text_message(sender, f"continuar visita {visita['id']}")
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            ask_observation = api_whatsapp.handle_rdv_text_message(sender, "7")
+            assert ask_observation == "Informe as novas observacoes da visita."
+            updated_review = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Observacao corrigida",
+            )
+
+            assert "7. Observacao: Observacao corrigida" in updated_review
+            api_whatsapp.handle_rdv_text_message(sender, "finalizar")
+            closed = visitas.obter_visita(visita["id"])
+            assert closed["status"] == "fechada"
+            assert closed["observacoes"] == "Observacao corrigida"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_active_states.clear()
 
 
 def test_nova_visita_nao_usa_visita_aberta_antiga():
@@ -248,6 +413,10 @@ def test_fechar_visita_limpa_estado_ativo():
             visita_id = api_whatsapp.visita_active_states[sender]
 
             close_reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            assert "Revisao da visita" in close_reply
+            assert sender in api_whatsapp.visita_active_states
+
+            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, "confirmar")
             media_reply = api_whatsapp.handle_visitas_media_message(
                 sender,
                 "image",
@@ -256,7 +425,8 @@ def test_fechar_visita_limpa_estado_ativo():
             )
 
             saved = visitas.obter_visita_completa(visita_id)
-            assert "Visita fechada com sucesso." in close_reply
+            assert "Visita fechada com sucesso." in confirm_reply
+            assert sender not in api_whatsapp.visita_active_states
             assert media_reply == "Nenhuma visita em andamento encontrada."
             assert saved["midias"] == []
     finally:
