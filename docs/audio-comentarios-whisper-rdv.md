@@ -71,6 +71,38 @@ python scripts/test_whisper_transcricao.py --audio "C:\caminho\audio.ogg" --mode
 
 O script mostra modelo, idioma, tempo gasto e texto transcrito. Ele nao remove o arquivo original informado pelo usuario.
 
+## Scripts auxiliares de teste local
+
+Os scripts auxiliares ajudam a preparar o ambiente e testar audios ficticios sem WhatsApp, sem Meta API, sem servidor e sem alterar `.env`.
+
+Windows setup:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_whisper_local_setup.ps1
+```
+
+Para apenas checar Python e ffmpeg, sem instalar dependencias:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_whisper_local_setup.ps1 -SkipInstall
+```
+
+Windows teste:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_whisper_local_audio_test.ps1 -Audio "C:\caminho\audio-ficticio.ogg"
+```
+
+Ubuntu teste:
+
+```bash
+bash scripts/run_whisper_local_audio_test.sh --audio "/caminho/audio-ficticio.ogg"
+```
+
+Esses testes locais nao enviam nada para WhatsApp, nao chamam Meta API, nao alteram RDV e nao ativam feature flag. Eles servem apenas para medir qualidade e velocidade da transcricao local com Whisper.
+
+Para producao, ainda e necessario homologar o fluxo WhatsApp completo, validar privacidade/LGPD, definir retencao de audio e manter plano de rollback com `AUDIO_TRANSCRIPTION_ENABLED=false`.
+
 ## Fluxo no WhatsApp
 
 Com `AUDIO_TRANSCRIPTION_ENABLED=true`, apos completar a categoria de um comprovante RDV, o assistente pergunta se deseja adicionar comentario.

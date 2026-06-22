@@ -16,6 +16,7 @@ data/app.db
 # Arquivos gerados e dados locais
 output/
 tmp/
+logs/
 data/documentos/uploads/
 uploads/
 backups/
@@ -30,6 +31,13 @@ scripts/test_limpar_banco_rdv_ciclus.py
 *.png
 *.webp
 *.pdf
+*.ogg
+*.opus
+*.mp3
+*.m4a
+*.wav
+*.webm
+*.aac
 
 # Logs
 *.log
