@@ -5,7 +5,7 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-.pytest_tmp/
+.pytest_tmp*/
 
 # Variaveis sensiveis
 .env

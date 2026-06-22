@@ -27,11 +27,18 @@ def _install_services(temp_dir):
 def test_menu_abre_com_texto_explicativo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_main_menu_interactive
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _rdv, _visitas, sender = _install_services(temp_dir)
+            sent = []
+            api_whatsapp.send_main_menu_interactive = lambda to: sent.append(to)
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "menu")
+
+            assert reply is None
+            assert sent == [sender]
+            return
 
             assert "Olá! Sou o assistente da Ciclus Agro." in reply
             assert "RDV / Comprovantes" in reply
@@ -49,35 +56,52 @@ def test_menu_abre_com_texto_explicativo():
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_main_menu_interactive = original_sender
         api_whatsapp.whatsapp_menu_states.clear()
 
 
 def test_ajuda_retorna_mesmo_menu_explicativo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_main_menu_interactive
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _rdv, _visitas, sender = _install_services(temp_dir)
+            sent = []
+            api_whatsapp.send_main_menu_interactive = lambda to: sent.append(to)
 
             menu = api_whatsapp.handle_rdv_text_message(sender, "menu")
             ajuda = api_whatsapp.handle_rdv_text_message(sender, "ajuda")
 
+            assert menu is None
+            assert ajuda is None
+            assert sent == [sender, sender]
+            return
             assert ajuda == menu
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_main_menu_interactive = original_sender
         api_whatsapp.whatsapp_menu_states.clear()
 
 
 def test_relatorios_retorna_opcoes_explicativas():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_reports_menu_interactive
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _rdv, _visitas, sender = _install_services(temp_dir)
+            sent = []
+            api_whatsapp.send_reports_menu_interactive = lambda to: sent.append(to)
 
             sem_acento = api_whatsapp.handle_rdv_text_message(sender, "relatorios")
             com_acento = api_whatsapp.handle_rdv_text_message(sender, "relatórios")
+
+            assert sem_acento is None
+            assert com_acento is None
+            assert sent == [sender, sender]
+            return
 
             assert sem_acento == com_acento
             assert "Relatórios disponíveis:" in sem_acento
@@ -90,6 +114,7 @@ def test_relatorios_retorna_opcoes_explicativas():
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_reports_menu_interactive = original_sender
         api_whatsapp.whatsapp_menu_states.clear()
 
 
@@ -250,32 +275,70 @@ def test_comandos_diretos_continuam_funcionando():
 
 
 def test_payload_menu_principal_interativo():
+    sent = []
+    original_sender = api_whatsapp.send_whatsapp_list_message
+    try:
+        api_whatsapp.send_whatsapp_list_message = lambda **kwargs: sent.append(kwargs)
+
+        api_whatsapp.send_main_menu_interactive("5500000000001")
+
+        kwargs = sent[0]
+    finally:
+        api_whatsapp.send_whatsapp_list_message = original_sender
+
     payload = api_whatsapp._build_whatsapp_list_payload(
-        to="5500000000001",
-        header="Ciclus Agro",
-        body="Escolha uma opcao para continuar.",
-        button_text="Ver opcoes",
-        sections=[
-            {
-                "title": "RDV",
-                "rows": [
-                    {
-                        "id": "menu_rdv_receipt",
-                        "title": "Enviar comprovante",
-                        "description": "Como registrar despesa por foto/PDF",
-                    }
-                ],
-            }
-        ],
+        to=kwargs["to"],
+        header=kwargs["header"],
+        body=kwargs["body"],
+        button_text=kwargs["button_text"],
+        sections=kwargs["sections"],
     )
 
     assert payload["messaging_product"] == "whatsapp"
     assert payload["to"] == "5500000000001"
     assert payload["type"] == "interactive"
     assert payload["interactive"]["type"] == "list"
-    assert payload["interactive"]["header"]["text"] == "Ciclus Agro"
-    assert payload["interactive"]["action"]["button"] == "Ver opcoes"
-    assert payload["interactive"]["action"]["sections"][0]["rows"][0]["id"] == "menu_rdv_receipt"
+    assert payload["interactive"]["header"]["text"] == "🌱 Ciclus Agro"
+    assert payload["interactive"]["body"]["text"] == "Escolha uma opção para continuar:"
+    assert payload["interactive"]["action"]["button"] == "Abrir menu"
+    rows = payload["interactive"]["action"]["sections"][0]["rows"]
+    assert rows == [
+        {
+            "id": "menu_rdv_receipt",
+            "title": "🧾 Lançar comprovante",
+            "description": "Enviar foto ou PDF",
+        },
+        {
+            "id": "menu_km",
+            "title": "🚗 Registrar KM",
+            "description": "Iniciar ou finalizar viagem",
+        },
+        {
+            "id": "menu_visit_start",
+            "title": "🌱 Nova visita técnica",
+            "description": "Registrar fazenda visitada",
+        },
+        {
+            "id": "menu_rdv_summary",
+            "title": "📊 Resumo RDV",
+            "description": "Ver resumo mensal",
+        },
+        {
+            "id": "menu_rdv_excel",
+            "title": "📎 Planilha RDV",
+            "description": "Receber Excel mensal",
+        },
+        {
+            "id": "menu_reports",
+            "title": "📋 Relatórios",
+            "description": "Ver relatórios disponíveis",
+        },
+        {
+            "id": "menu_help",
+            "title": "❓ Ajuda",
+            "description": "Ver comandos e orientações",
+        },
+    ]
 
 
 def test_payload_menu_relatorios_interativo():
@@ -351,6 +414,63 @@ def test_leitura_de_interactive_list_reply():
     assert api_whatsapp._extract_text(message) == "planilha semanal"
 
 
+def test_extrai_id_de_interactive_list_reply():
+    message = {
+        "type": "interactive",
+        "interactive": {
+            "list_reply": {
+                "id": "menu_km",
+                "title": "Registrar KM",
+            }
+        },
+    }
+
+    assert api_whatsapp._extract_interactive_reply_id(message) == "menu_km"
+
+
+def test_mapeamento_menu_km_para_comando_km():
+    message = {
+        "type": "interactive",
+        "interactive": {
+            "list_reply": {
+                "id": "menu_km",
+                "title": "Registrar KM",
+            }
+        },
+    }
+
+    assert api_whatsapp._extract_text(message) == "km"
+
+
+def test_lista_interativa_faz_fallback_textual_quando_meta_recusa():
+    sent_texts = []
+    original_post = api_whatsapp._post_whatsapp_message_payload
+    original_text = api_whatsapp.send_whatsapp_text
+    try:
+        api_whatsapp._post_whatsapp_message_payload = (
+            lambda payload, recipient, message_type: (_ for _ in ()).throw(
+                RuntimeError("Meta recusou")
+            )
+        )
+        api_whatsapp.send_whatsapp_text = (
+            lambda to, message: sent_texts.append((to, message))
+        )
+
+        api_whatsapp.send_whatsapp_list_message(
+            to="5500000000001",
+            header="Header",
+            body="Body",
+            button_text="Abrir",
+            sections=[{"title": "S", "rows": [{"id": "menu_km", "title": "KM"}]}],
+            fallback_text="menu textual antigo",
+        )
+
+        assert sent_texts == [("5500000000001", "menu textual antigo")]
+    finally:
+        api_whatsapp._post_whatsapp_message_payload = original_post
+        api_whatsapp.send_whatsapp_text = original_text
+
+
 def test_ids_interativos_mapeiam_para_comandos_antigos():
     expected = {
         "menu_rdv_receipt": "rdv",
@@ -380,9 +500,10 @@ def test_interactive_list_reply_executa_comando_antigo():
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _rdv, _visitas, sender = _install_services(temp_dir)
+            sent = []
+            api_whatsapp.send_main_menu_interactive = lambda to: sent.append(to)
             sent_texts = []
             api_whatsapp.send_whatsapp_text = lambda to, message: sent_texts.append((to, message))
-            api_whatsapp.send_main_menu_interactive = lambda to: (_ for _ in ()).throw(RuntimeError("meta recusou"))
             api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
             api_whatsapp._was_whatsapp_image_processed_for_sender = lambda sha, phone: False
 
@@ -400,9 +521,8 @@ def test_interactive_list_reply_executa_comando_antigo():
                 }
             )
 
-            assert sent_texts
-            assert sent_texts[-1][0] == sender
-            assert "Sou o assistente da Ciclus Agro" in sent_texts[-1][1]
+            assert sent == [sender]
+            assert sent_texts == []
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas

@@ -393,21 +393,27 @@ def send_whatsapp_text(to: str, message: str) -> None:
 
 def send_whatsapp_list_message(
     to: str,
+    header: str,
     body: str,
     button_text: str,
     sections: list[dict],
-    header: str = "",
-    footer: str = "",
+    fallback_text: str,
 ) -> None:
     payload = _build_whatsapp_list_payload(
         to=to,
+        header=header,
         body=body,
         button_text=button_text,
         sections=sections,
-        header=header,
-        footer=footer,
     )
-    _post_whatsapp_message_payload(payload, to, "interactive.list")
+    try:
+        _post_whatsapp_message_payload(payload, to, "interactive.list")
+    except Exception:
+        logger.exception(
+            "Falha ao enviar lista interativa; usando fallback texto para %s",
+            _mask_phone(to),
+        )
+        send_whatsapp_text(to, fallback_text)
 
 
 def send_whatsapp_button_message(
@@ -430,81 +436,52 @@ def send_whatsapp_button_message(
 def send_main_menu_interactive(to: str) -> None:
     send_whatsapp_list_message(
         to=to,
-        header="Ciclus Agro",
-        body="Escolha uma opcao para continuar.",
-        button_text="Ver opcoes",
+        header="🌱 Ciclus Agro",
+        body="Escolha uma opção para continuar:",
+        button_text="Abrir menu",
         sections=[
             {
-                "title": "RDV e KM",
+                "title": "Menu principal",
                 "rows": [
                     {
                         "id": "menu_rdv_receipt",
-                        "title": "Enviar comprovante",
-                        "description": "Como registrar despesa por foto/PDF",
-                    },
-                    {
-                        "id": "menu_rdv_summary",
-                        "title": "Resumo RDV",
-                        "description": "Resumo mensal de despesas",
-                    },
-                    {
-                        "id": "menu_rdv_excel",
-                        "title": "Planilha RDV",
-                        "description": "Excel mensal de despesas",
-                    },
-                    {
-                        "id": "menu_weekly_summary",
-                        "title": "Resumo semanal",
-                        "description": "Resumo da semana atual",
-                    },
-                    {
-                        "id": "menu_weekly_excel",
-                        "title": "Planilha semanal",
-                        "description": "Excel da semana atual",
+                        "title": "🧾 Lançar comprovante",
+                        "description": "Enviar foto ou PDF",
                     },
                     {
                         "id": "menu_km",
-                        "title": "Registrar KM",
-                        "description": "Ajuda para iniciar/finalizar viagem",
+                        "title": "🚗 Registrar KM",
+                        "description": "Iniciar ou finalizar viagem",
                     },
-                ],
-            },
-            {
-                "title": "Visitas",
-                "rows": [
                     {
                         "id": "menu_visit_start",
-                        "title": "Iniciar visita",
-                        "description": "Abrir uma visita tecnica",
+                        "title": "🌱 Nova visita técnica",
+                        "description": "Registrar fazenda visitada",
                     },
                     {
-                        "id": "menu_visit_list",
-                        "title": "Listar visitas",
-                        "description": "Ver fazendas registradas",
+                        "id": "menu_rdv_summary",
+                        "title": "📊 Resumo RDV",
+                        "description": "Ver resumo mensal",
                     },
                     {
-                        "id": "menu_visit_excel",
-                        "title": "Planilha visitas",
-                        "description": "Excel das visitas tecnicas",
+                        "id": "menu_rdv_excel",
+                        "title": "📎 Planilha RDV",
+                        "description": "Receber Excel mensal",
                     },
-                ],
-            },
-            {
-                "title": "Ajuda",
-                "rows": [
                     {
                         "id": "menu_reports",
-                        "title": "Relatorios",
-                        "description": "Abrir menu de relatorios",
+                        "title": "📋 Relatórios",
+                        "description": "Ver relatórios disponíveis",
                     },
                     {
                         "id": "menu_help",
-                        "title": "Menu em texto",
-                        "description": "Ver comandos digitaveis",
+                        "title": "❓ Ajuda",
+                        "description": "Ver comandos e orientações",
                     },
                 ],
             },
         ],
+        fallback_text=MAIN_MENU_MESSAGE,
     )
 
 
@@ -556,6 +533,7 @@ def send_reports_menu_interactive(to: str) -> None:
                 ],
             },
         ],
+        fallback_text=REPORTS_MENU_MESSAGE,
     )
 
 
@@ -2810,20 +2788,36 @@ def _extract_text(message: dict) -> str:
 
 
 def _extract_interactive_command(message: dict) -> str:
+    reply_id = _extract_interactive_reply_id(message)
+    if reply_id in INTERACTIVE_COMMAND_IDS:
+        return INTERACTIVE_COMMAND_IDS[reply_id]
+
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return ""
+    reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+    if not isinstance(reply, dict):
+        return ""
+    title = str(reply.get("title") or "").strip()
+    return title
+
+
+def _extract_interactive_reply_id(message: dict) -> str:
     interactive = message.get("interactive") or {}
     if not isinstance(interactive, dict):
         return ""
 
-    reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
-    if not isinstance(reply, dict):
-        return ""
+    button_reply = interactive.get("button_reply") or {}
+    if isinstance(button_reply, dict):
+        reply_id = str(button_reply.get("id") or "").strip()
+        if reply_id:
+            return reply_id
 
-    reply_id = str(reply.get("id") or "").strip()
-    if reply_id in INTERACTIVE_COMMAND_IDS:
-        return INTERACTIVE_COMMAND_IDS[reply_id]
+    list_reply = interactive.get("list_reply") or {}
+    if isinstance(list_reply, dict):
+        return str(list_reply.get("id") or "").strip()
 
-    title = str(reply.get("title") or "").strip()
-    return title
+    return ""
 
 
 def _extract_caption(message: dict, message_type: str) -> str:
