@@ -12,13 +12,18 @@ VISITA_COLUMNS = (
     "tecnico_nome",
     "fazenda",
     "proprietario",
+    "telefone_proprietario",
     "gerente",
+    "telefone_gerente",
+    "area",
     "area_hectares",
     "area_alqueires",
     "safra",
     "tipo_visita",
+    "descricao_visita",
     "objetivo",
     "observacoes",
+    "observacoes_gerais",
     "status",
     "estado_fluxo",
     "data_visita",
@@ -47,13 +52,18 @@ class VisitasTecnicasService:
                     tecnico_nome TEXT,
                     fazenda TEXT,
                     proprietario TEXT,
+                    telefone_proprietario TEXT,
                     gerente TEXT,
+                    telefone_gerente TEXT,
+                    area TEXT,
                     area_hectares REAL,
                     area_alqueires REAL,
                     safra TEXT,
                     tipo_visita TEXT,
+                    descricao_visita TEXT,
                     objetivo TEXT,
                     observacoes TEXT,
+                    observacoes_gerais TEXT,
                     status TEXT NOT NULL DEFAULT 'aberta',
                     estado_fluxo TEXT,
                     data_visita TEXT,
@@ -78,6 +88,9 @@ class VisitasTecnicasService:
                     latitude REAL,
                     longitude REAL,
                     maps_url TEXT,
+                    indice INTEGER,
+                    comentario TEXT,
+                    comentario_status TEXT,
                     enviado_em TEXT,
                     FOREIGN KEY(visita_id) REFERENCES visitas_tecnicas(id)
                 )
@@ -96,6 +109,26 @@ class VisitasTecnicasService:
                     FOREIGN KEY(visita_id) REFERENCES visitas_tecnicas(id)
                 )
                 """
+            )
+            self._ensure_columns(
+                connection,
+                "visitas_tecnicas",
+                {
+                    "telefone_proprietario": "TEXT",
+                    "telefone_gerente": "TEXT",
+                    "area": "TEXT",
+                    "descricao_visita": "TEXT",
+                    "observacoes_gerais": "TEXT",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                "visita_midias",
+                {
+                    "indice": "INTEGER",
+                    "comentario": "TEXT",
+                    "comentario_status": "TEXT",
+                },
             )
             connection.execute(
                 """
@@ -179,13 +212,18 @@ class VisitasTecnicasService:
             "tecnico_nome",
             "fazenda",
             "proprietario",
+            "telefone_proprietario",
             "gerente",
+            "telefone_gerente",
+            "area",
             "area_hectares",
             "area_alqueires",
             "safra",
             "tipo_visita",
+            "descricao_visita",
             "objetivo",
             "observacoes",
+            "observacoes_gerais",
             "estado_fluxo",
             "data_visita",
             "latitude_principal",
@@ -197,6 +235,9 @@ class VisitasTecnicasService:
         safe_value = _to_float(valor) if campo in {"area_hectares", "area_alqueires", "latitude_principal", "longitude_principal"} else _clean(valor)
         return self._update_visita(visita_id, {campo: safe_value})
 
+    def descricao_da_visita(self, visita: dict) -> str:
+        return _clean(visita.get("descricao_visita")) or _clean(visita.get("tipo_visita"))
+
     def adicionar_observacao(self, visita_id: int, texto: str) -> dict:
         visita = self.obter_visita(visita_id)
         if visita is None:
@@ -205,6 +246,24 @@ class VisitasTecnicasService:
         current = _clean(visita.get("observacoes"))
         combined = "\n".join(item for item in (current, text) if item)
         return self._update_visita(visita_id, {"observacoes": combined})
+
+    def adicionar_observacao_geral(self, visita_id: int, texto: str) -> dict:
+        visita = self.obter_visita(visita_id)
+        if visita is None:
+            raise ValueError("Visita nao encontrada.")
+        text = _clean(texto)
+        current = self.observacoes_gerais_lista(visita)
+        if text:
+            current.append(text)
+        return self._update_visita(visita_id, {"observacoes_gerais": "\n".join(current)})
+
+    def substituir_observacoes_gerais(self, visita_id: int, observacoes: list[str]) -> dict:
+        clean_items = [_clean(item) for item in observacoes if _clean(item)]
+        return self._update_visita(visita_id, {"observacoes_gerais": "\n".join(clean_items)})
+
+    def observacoes_gerais_lista(self, visita: dict) -> list[str]:
+        text = _clean(visita.get("observacoes_gerais")) or _clean(visita.get("observacoes"))
+        return [line.strip() for line in text.splitlines() if line.strip()]
 
     def adicionar_dado_coletado(
         self,
@@ -309,12 +368,14 @@ class VisitasTecnicasService:
         )
         now = _now()
         with closing(self._connect()) as connection:
+            indice = self._next_media_index(connection, int(visita_id))
             cursor = connection.execute(
                 """
                 INSERT INTO visita_midias (
                     visita_id, tipo, media_id_whatsapp, caminho_arquivo, legenda,
-                    latitude, longitude, maps_url, enviado_em
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    latitude, longitude, maps_url, indice, comentario,
+                    comentario_status, enviado_em
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(visita_id),
@@ -325,6 +386,9 @@ class VisitasTecnicasService:
                     latitude,
                     longitude,
                     maps_url,
+                    indice,
+                    None,
+                    "pendente" if _clean(tipo) == "foto" else "",
                     now,
                 ),
             )
@@ -336,13 +400,67 @@ class VisitasTecnicasService:
             row = connection.execute(
                 """
                 SELECT id, visita_id, tipo, media_id_whatsapp, caminho_arquivo,
-                       legenda, latitude, longitude, maps_url, enviado_em
+                       legenda, latitude, longitude, maps_url, indice, comentario,
+                       comentario_status, enviado_em
                 FROM visita_midias
                 WHERE id = ?
                 """,
                 (cursor.lastrowid,),
             ).fetchone()
         return dict(row) if row is not None else {}
+
+    def obter_midia(self, midia_id: int) -> dict | None:
+        self.ensure_schema()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM visita_midias WHERE id = ?",
+                (int(midia_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def proxima_foto_pendente(self, visita_id: int) -> dict | None:
+        self.ensure_schema()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM visita_midias
+                WHERE visita_id = ?
+                  AND tipo = 'foto'
+                  AND COALESCE(comentario_status, '') = 'pendente'
+                ORDER BY COALESCE(indice, id), id
+                LIMIT 1
+                """,
+                (int(visita_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def existem_fotos_pendentes(self, visita_id: int) -> bool:
+        return self.proxima_foto_pendente(visita_id) is not None
+
+    def salvar_comentario_foto(self, midia_id: int, comentario: str) -> dict:
+        now = _now()
+        safe_comment = _clean(comentario) or "Sem comentario informado."
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                UPDATE visita_midias
+                SET comentario = ?, comentario_status = 'resolvido'
+                WHERE id = ?
+                """,
+                (safe_comment, int(midia_id)),
+            )
+            row = connection.execute(
+                "SELECT visita_id FROM visita_midias WHERE id = ?",
+                (int(midia_id),),
+            ).fetchone()
+            if row is not None:
+                connection.execute(
+                    "UPDATE visitas_tecnicas SET atualizado_em = ? WHERE id = ?",
+                    (now, int(row["visita_id"])),
+                )
+            connection.commit()
+        return self.obter_midia(midia_id) or {}
 
     def fechar_visita(self, visita_id: int) -> dict:
         now = _now()
@@ -563,6 +681,31 @@ class VisitasTecnicasService:
             visita_ids,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def _ensure_columns(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        columns: dict[str, str],
+    ) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for column, definition in columns.items():
+            if column not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _next_media_index(self, connection: sqlite3.Connection, visita_id: int) -> int:
+        row = connection.execute(
+            """
+            SELECT MAX(COALESCE(indice, 0)) AS ultimo
+            FROM visita_midias
+            WHERE visita_id = ? AND tipo = 'foto'
+            """,
+            (int(visita_id),),
+        ).fetchone()
+        return int((row or {"ultimo": 0})["ultimo"] or 0) + 1
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
