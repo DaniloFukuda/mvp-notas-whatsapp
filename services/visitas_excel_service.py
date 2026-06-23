@@ -82,6 +82,54 @@ def _build_visitas_sheet(workbook: Workbook, visitas: list[dict]) -> None:
         sheet.cell(row_index, 2).number_format = DATE_FORMAT
 
 
+def _build_visitas_sheet(workbook: Workbook, visitas: list[dict]) -> None:
+    sheet = workbook.create_sheet("Visitas")
+    sheet.append(
+        (
+            "ID",
+            "Data",
+            "Tecnico",
+            "Telefone",
+            "Fazenda",
+            "Proprietario",
+            "Telefone do proprietario",
+            "Gerente",
+            "Telefone do gerente",
+            "Area/local visitado",
+            "Descricao da visita",
+            "Status",
+            "Qtd fotos",
+            "Qtd localizacoes",
+            "Link GPS principal",
+            "Observacoes gerais",
+        )
+    )
+    for visita in visitas:
+        sheet.append(
+            (
+                visita.get("id"),
+                _parse_date(visita.get("data_visita")),
+                visita.get("tecnico_nome") or "",
+                visita.get("telefone_origem") or "",
+                visita.get("fazenda") or "",
+                visita.get("proprietario") or "",
+                visita.get("telefone_proprietario") or "",
+                visita.get("gerente") or "",
+                visita.get("telefone_gerente") or "",
+                visita.get("area") or "",
+                visita.get("descricao_visita") or visita.get("tipo_visita") or "",
+                _humanize(visita.get("status")),
+                len(visita.get("midias") or []),
+                len(visita.get("localizacoes") or []),
+                visita.get("maps_url_principal") or "",
+                visita.get("observacoes_gerais") or visita.get("observacoes") or "",
+            )
+        )
+    _prepare_sheet(sheet)
+    for row_index in range(2, sheet.max_row + 1):
+        sheet.cell(row_index, 2).number_format = DATE_FORMAT
+
+
 def _build_localizacoes_sheet(
     workbook: Workbook,
     rows: list[dict],
@@ -129,7 +177,7 @@ def _build_fotos_sheet(
             "Fazenda",
             "Data/hora",
             "Tipo",
-            "Legenda",
+            "Comentario",
             "Latitude",
             "Longitude",
             "Link GPS",
@@ -144,7 +192,7 @@ def _build_fotos_sheet(
                 visita.get("fazenda") or "",
                 _parse_datetime(row.get("enviado_em")),
                 row.get("tipo") or "",
-                row.get("legenda") or "",
+                row.get("comentario") or row.get("legenda") or "",
                 _optional_float(row.get("latitude")),
                 _optional_float(row.get("longitude")),
                 row.get("maps_url") or "",

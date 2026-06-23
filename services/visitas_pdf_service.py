@@ -68,7 +68,7 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         story.append(_key_value_table(gps_lines, styles))
         story.append(Spacer(1, 0.3 * cm))
 
-    observations = _text(visita_data.get("observacoes"))
+    observations = _text(visita_data.get("observacoes_gerais")) or _text(visita_data.get("observacoes"))
     if observations:
         story.extend(_section("Observações", styles))
         story.append(_note_box(observations, styles))
@@ -217,6 +217,24 @@ def _info_table(visita: dict, styles: dict) -> Table:
     return _key_value_table(rows, styles)
 
 
+def _info_table(visita: dict, styles: dict) -> Table:
+    rows = [
+        ["Técnico", _text(visita.get("tecnico_nome"))],
+        ["Telefone", _text(visita.get("telefone_origem"))],
+        ["Fazenda/propriedade", _text(visita.get("fazenda"))],
+        ["Proprietário", _text(visita.get("proprietario"))],
+        ["Telefone do proprietário", _text(visita.get("telefone_proprietario"))],
+        ["Gerente/responsável local", _text(visita.get("gerente"))],
+        ["Telefone do gerente", _text(visita.get("telefone_gerente"))],
+        ["Área/local visitado", _text(visita.get("area"))],
+        ["Área em hectares", _number(visita.get("area_hectares"))],
+        ["Área em alqueires", _number(visita.get("area_alqueires"))],
+        ["Descrição da visita", _text(visita.get("descricao_visita")) or _text(visita.get("tipo_visita"))],
+        ["Status", _text(visita.get("status"))],
+    ]
+    return _key_value_table(rows, styles)
+
+
 def _key_value_table(rows: list[list], styles: dict) -> Table:
     table_rows = [
         [
@@ -282,7 +300,7 @@ def _media_block(media: dict, styles: dict) -> KeepTogether:
     image_path = Path(_text(media.get("caminho_arquivo")))
     file_name = image_path.name if _text(media.get("caminho_arquivo")) else "-"
     rows = [
-        ["Legenda", _text(media.get("legenda"))],
+        ["Comentario", _text(media.get("comentario")) or _text(media.get("legenda"))],
         ["Arquivo", file_name],
         ["Latitude", _number(media.get("latitude"))],
         ["Longitude", _number(media.get("longitude"))],
