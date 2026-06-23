@@ -589,12 +589,25 @@ def _build_whatsapp_list_payload(
     if not recipient:
         raise RuntimeError("Destinatario WhatsApp nao informado.")
 
+    limited_sections = []
+    total_rows = 0
+    for section in sections:
+        rows = list(section.get("rows") or [])
+        available = max(0, 10 - total_rows)
+        if available <= 0:
+            break
+        selected_rows = rows[:available]
+        total_rows += len(selected_rows)
+        limited_section = dict(section)
+        limited_section["rows"] = selected_rows
+        limited_sections.append(limited_section)
+
     interactive: dict = {
         "type": "list",
         "body": {"text": str(body or "").strip()},
         "action": {
             "button": str(button_text or "Ver opcoes").strip()[:20],
-            "sections": sections,
+            "sections": limited_sections,
         },
     }
     if header:
@@ -960,10 +973,12 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         return global_reply
 
     if normalized in MENU_OPEN_COMMANDS:
-        return _open_main_menu(sender_phone)
+        send_main_menu_interactive(sender_phone)
+        return None
 
     if normalized == "relatorios":
-        return REPORTS_MENU_MESSAGE
+        send_reports_menu_interactive(sender_phone)
+        return None
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
@@ -1090,6 +1105,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
 
 
 def _open_main_menu(sender_phone: str) -> str:
+    # Mantido apenas como fallback textual/compatibilidade.
     return MAIN_MENU_MESSAGE
 
 
