@@ -80,16 +80,40 @@ VISITA_FLOW_STEPS = {
 }
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
 INTERACTIVE_COMMAND_IDS = {
+    "menu_comprovantes": "menu comprovantes",
+    "menu_visitas": "menu visitas",
+    "menu_relatorios": "menu relatorios",
+    "comprovante_enviar": "comprovante enviar",
+    "comprovante_ajuda": "comprovante ajuda",
+    "km_iniciar": "km",
+    "km_finalizar": "km termino",
+    "km_status": "status km",
+    "km_cancelar": "cancelar km",
+    "visita_nova": "visita",
+    "visita_status": "visita status",
+    "visita_listar": "visitas",
+    "visita_revisar": "revisar visita",
+    "visita_fechar": "fechar visita",
+    "visita_cancelar": "cancelar visita",
+    "relatorio_rdv_resumo": "resumo",
+    "relatorio_rdv_planilha": "planilha",
+    "relatorio_semana_resumo": "resumo semanal",
+    "relatorio_semana_planilha": "planilha semanal",
+    "relatorio_visitas_lista": "visitas",
+    "relatorio_visitas_excel": "planilha visitas",
+    "relatorio_visita_pdf": "relatorio visita",
+    "relatorio_fazenda_pdf": "relatorio fazenda",
+    "voltar_menu": "menu",
     "menu_rdv_receipt": "rdv",
     "menu_rdv_summary": "resumo",
     "menu_rdv_excel": "planilha",
     "menu_weekly_summary": "resumo semanal",
     "menu_weekly_excel": "planilha semanal",
-    "menu_km": "km",
+    "menu_km": "menu km",
     "menu_visit_start": "visita",
     "menu_visit_list": "visitas",
     "menu_visit_excel": "planilha visitas",
-    "menu_reports": "relatorios",
+    "menu_reports": "menu relatorios",
     "menu_help": "menu",
     "confirm_clear_km": "confirmar limpar km",
     "cancel_action": "menu",
@@ -537,6 +561,236 @@ def send_reports_menu_interactive(to: str) -> None:
     )
 
 
+def send_main_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Ciclus Agro",
+        body="🌱 Escolha um módulo:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "Menu principal",
+                "rows": [
+                    {
+                        "id": "menu_comprovantes",
+                        "title": "Comprovantes",
+                        "description": "Recibos, comprovantes, cupons e notas",
+                    },
+                    {
+                        "id": "menu_km",
+                        "title": "KM",
+                        "description": "Calcular quilometragem percorrida",
+                    },
+                    {
+                        "id": "menu_visitas",
+                        "title": "Visitas",
+                        "description": "Registrar, revisar e fechar visitas",
+                    },
+                    {
+                        "id": "menu_relatorios",
+                        "title": "Relatorios",
+                        "description": "Todos os relatorios do sistema",
+                    },
+                ],
+            },
+        ],
+        fallback_text=MAIN_MENU_MESSAGE,
+    )
+
+
+def send_comprovantes_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Comprovantes",
+        body="🧾 Escolha uma opção:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "Comprovantes",
+                "rows": [
+                    {
+                        "id": "comprovante_enviar",
+                        "title": "Enviar comprovante",
+                        "description": "Recibo, comprovante, cupom ou nota",
+                    },
+                    {
+                        "id": "comprovante_ajuda",
+                        "title": "Como lancar",
+                        "description": "Ver orientacao de envio",
+                    },
+                    {
+                        "id": "voltar_menu",
+                        "title": "Voltar ao menu",
+                        "description": "Retornar ao menu principal",
+                    },
+                ],
+            },
+        ],
+        fallback_text=RDV_MENU,
+    )
+
+
+def send_km_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="KM",
+        body="🚗 Escolha uma opção:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "KM",
+                "rows": [
+                    {
+                        "id": "km_iniciar",
+                        "title": "Iniciar viagem",
+                        "description": "Informar KM inicial",
+                    },
+                    {
+                        "id": "km_finalizar",
+                        "title": "Finalizar viagem",
+                        "description": "Informar KM final",
+                    },
+                    {
+                        "id": "km_status",
+                        "title": "Status da viagem",
+                        "description": "Ver viagem em andamento",
+                    },
+                    {
+                        "id": "km_cancelar",
+                        "title": "Cancelar viagem",
+                        "description": "Cancelar KM aberto",
+                    },
+                    {
+                        "id": "voltar_menu",
+                        "title": "Voltar ao menu",
+                        "description": "Retornar ao menu principal",
+                    },
+                ],
+            },
+        ],
+        fallback_text=KM_HELP_MESSAGE,
+    )
+
+
+def send_visitas_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Visitas",
+        body="🌱 Escolha uma opção:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "Visitas",
+                "rows": [
+                    {
+                        "id": "visita_nova",
+                        "title": "Nova visita",
+                        "description": "Registrar visita tecnica",
+                    },
+                    {
+                        "id": "visita_status",
+                        "title": "Status da visita",
+                        "description": "Ver visita em andamento",
+                    },
+                    {
+                        "id": "visita_listar",
+                        "title": "Listar visitas",
+                        "description": "Ver visitas registradas",
+                    },
+                    {
+                        "id": "visita_revisar",
+                        "title": "Revisar visita",
+                        "description": "Corrigir dados da visita",
+                    },
+                    {
+                        "id": "visita_fechar",
+                        "title": "Fechar visita",
+                        "description": "Finalizar visita tecnica",
+                    },
+                    {
+                        "id": "visita_cancelar",
+                        "title": "Cancelar visita",
+                        "description": "Cancelar visita aberta",
+                    },
+                    {
+                        "id": "voltar_menu",
+                        "title": "Voltar ao menu",
+                        "description": "Retornar ao menu principal",
+                    },
+                ],
+            },
+        ],
+        fallback_text=MAIN_MENU_MESSAGE,
+    )
+
+
+def send_reports_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Relatorios",
+        body="📊 Escolha o relatório:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "RDV",
+                "rows": [
+                    {
+                        "id": "relatorio_rdv_resumo",
+                        "title": "Resumo RDV",
+                        "description": "Resumo mensal de despesas",
+                    },
+                    {
+                        "id": "relatorio_rdv_planilha",
+                        "title": "Planilha RDV",
+                        "description": "Excel mensal de despesas",
+                    },
+                    {
+                        "id": "relatorio_semana_resumo",
+                        "title": "Resumo semanal",
+                        "description": "Resumo semanal de despesas",
+                    },
+                    {
+                        "id": "relatorio_semana_planilha",
+                        "title": "Planilha semanal",
+                        "description": "Excel semanal de despesas",
+                    },
+                ],
+            },
+            {
+                "title": "Visitas",
+                "rows": [
+                    {
+                        "id": "relatorio_visitas_lista",
+                        "title": "Listar visitas",
+                        "description": "Ver visitas/fazendas",
+                    },
+                    {
+                        "id": "relatorio_visitas_excel",
+                        "title": "Planilha visitas",
+                        "description": "Excel de visitas tecnicas",
+                    },
+                    {
+                        "id": "relatorio_visita_pdf",
+                        "title": "Relatorio PDF",
+                        "description": "Gerar PDF por ID",
+                    },
+                    {
+                        "id": "relatorio_fazenda_pdf",
+                        "title": "Relatorio fazenda",
+                        "description": "Gerar PDF por fazenda",
+                    },
+                    {
+                        "id": "voltar_menu",
+                        "title": "Voltar ao menu",
+                        "description": "Retornar ao menu principal",
+                    },
+                ],
+            },
+        ],
+        fallback_text=REPORTS_MENU_MESSAGE,
+    )
+
+
 def send_confirmation_buttons(
     to: str,
     body: str,
@@ -954,9 +1208,51 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         send_main_menu_interactive(sender_phone)
         return None
 
-    if normalized == "relatorios":
+    if normalized == "menu comprovantes":
+        send_comprovantes_menu_interactive(sender_phone)
+        return None
+
+    if normalized == "menu km":
+        send_km_menu_interactive(sender_phone)
+        return None
+
+    if normalized == "menu visitas":
+        send_visitas_menu_interactive(sender_phone)
+        return None
+
+    if normalized in {"relatorios", "menu relatorios"}:
         send_reports_menu_interactive(sender_phone)
         return None
+
+    if normalized == "comprovante enviar":
+        return (
+            "🧾 Envie agora a foto ou PDF do recibo, comprovante, cupom fiscal ou nota.\n\n"
+            "Vou tentar identificar valor, data e informações automaticamente."
+        )
+
+    if normalized == "comprovante ajuda":
+        return (
+            "🧾 Como lançar comprovante\n\n"
+            "Envie uma foto nítida ou PDF do recibo, comprovante, cupom fiscal ou nota.\n"
+            "Depois eu peço apenas o que não conseguir identificar."
+        )
+
+    if normalized == "revisar visita":
+        return (
+            "✏️ Revisar visita\n\n"
+            "Para revisar uma visita, primeiro liste as visitas registradas.\n"
+            "Depois informe o ID da visita que deseja corrigir.\n\n"
+            "Exemplo:\n"
+            "editar visita 12"
+        )
+
+    if normalized == "relatorio fazenda":
+        return (
+            "🌱 Relatório por fazenda\n\n"
+            "Digite o nome da fazenda para gerar o PDF.\n\n"
+            "Exemplo:\n"
+            "relatório fazenda Santa Rita"
+        )
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)

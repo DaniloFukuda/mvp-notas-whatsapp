@@ -24,6 +24,21 @@ def _install_services(temp_dir):
     return rdv, visitas, collaborator["telefone_whatsapp"]
 
 
+def _capture_interactive_menu(sender):
+    sent = []
+    original_sender = api_whatsapp.send_whatsapp_list_message
+    try:
+        api_whatsapp.send_whatsapp_list_message = lambda **kwargs: sent.append(kwargs)
+        sender("5500000000001")
+        return sent[0]
+    finally:
+        api_whatsapp.send_whatsapp_list_message = original_sender
+
+
+def _rows(menu):
+    return [row for section in menu["sections"] for row in section["rows"]]
+
+
 def test_menu_abre_com_texto_explicativo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -275,6 +290,39 @@ def test_comandos_diretos_continuam_funcionando():
 
 
 def test_payload_menu_principal_interativo():
+    kwargs = _capture_interactive_menu(api_whatsapp.send_main_menu_interactive)
+    rows = _rows(kwargs)
+    assert kwargs["header"] == "Ciclus Agro"
+    assert kwargs["body"] == "🌱 Escolha um módulo:"
+    assert kwargs["button_text"] == "Abrir menu"
+    assert rows == [
+        {
+            "id": "menu_comprovantes",
+            "title": "Comprovantes",
+            "description": "Recibos, comprovantes, cupons e notas",
+        },
+        {
+            "id": "menu_km",
+            "title": "KM",
+            "description": "Calcular quilometragem percorrida",
+        },
+        {
+            "id": "menu_visitas",
+            "title": "Visitas",
+            "description": "Registrar, revisar e fechar visitas",
+        },
+        {
+            "id": "menu_relatorios",
+            "title": "Relatorios",
+            "description": "Todos os relatorios do sistema",
+        },
+    ]
+    ids = {row["id"] for row in rows}
+    assert "relatorio_visita_pdf" not in ids
+    assert "relatorio_rdv_planilha" not in ids
+    assert "relatorio_visitas_lista" not in ids
+    return
+
     sent = []
     original_sender = api_whatsapp.send_whatsapp_list_message
     try:
@@ -342,6 +390,16 @@ def test_payload_menu_principal_interativo():
 
 
 def test_payload_menu_relatorios_interativo():
+    menu = _capture_interactive_menu(api_whatsapp.send_reports_menu_interactive)
+    rows = _rows(menu)
+    ids = {row["id"] for row in rows}
+    assert menu["header"] == "Relatorios"
+    assert "relatorio_visita_pdf" in ids
+    assert "relatorio_fazenda_pdf" in ids
+    assert "relatorio_rdv_planilha" in ids
+    assert "relatorio_visitas_lista" in ids
+    return
+
     sent = []
     original_sender = api_whatsapp.send_whatsapp_list_message
     try:
@@ -428,7 +486,7 @@ def test_extrai_id_de_interactive_list_reply():
     assert api_whatsapp._extract_interactive_reply_id(message) == "menu_km"
 
 
-def test_mapeamento_menu_km_para_comando_km():
+def test_mapeamento_menu_km_abre_submenu_km():
     message = {
         "type": "interactive",
         "interactive": {
@@ -439,7 +497,7 @@ def test_mapeamento_menu_km_para_comando_km():
         },
     }
 
-    assert api_whatsapp._extract_text(message) == "km"
+    assert api_whatsapp._extract_text(message) == "menu km"
 
 
 def test_lista_interativa_faz_fallback_textual_quando_meta_recusa():
@@ -473,21 +531,113 @@ def test_lista_interativa_faz_fallback_textual_quando_meta_recusa():
 
 def test_ids_interativos_mapeiam_para_comandos_antigos():
     expected = {
+        "menu_comprovantes": "menu comprovantes",
+        "menu_visitas": "menu visitas",
+        "menu_relatorios": "menu relatorios",
+        "comprovante_enviar": "comprovante enviar",
+        "comprovante_ajuda": "comprovante ajuda",
+        "km_iniciar": "km",
+        "km_finalizar": "km termino",
+        "km_status": "status km",
+        "km_cancelar": "cancelar km",
+        "visita_nova": "visita",
+        "visita_status": "visita status",
+        "visita_listar": "visitas",
+        "visita_revisar": "revisar visita",
+        "visita_fechar": "fechar visita",
+        "visita_cancelar": "cancelar visita",
+        "relatorio_rdv_resumo": "resumo",
+        "relatorio_rdv_planilha": "planilha",
+        "relatorio_semana_resumo": "resumo semanal",
+        "relatorio_semana_planilha": "planilha semanal",
+        "relatorio_visitas_lista": "visitas",
+        "relatorio_visitas_excel": "planilha visitas",
+        "relatorio_visita_pdf": "relatorio visita",
+        "relatorio_fazenda_pdf": "relatorio fazenda",
+        "voltar_menu": "menu",
         "menu_rdv_receipt": "rdv",
         "menu_rdv_summary": "resumo",
         "menu_rdv_excel": "planilha",
         "menu_weekly_summary": "resumo semanal",
         "menu_weekly_excel": "planilha semanal",
-        "menu_km": "km",
+        "menu_km": "menu km",
         "menu_visit_start": "visita",
         "menu_visit_list": "visitas",
         "menu_visit_excel": "planilha visitas",
-        "menu_reports": "relatorios",
+        "menu_reports": "menu relatorios",
         "menu_help": "menu",
     }
 
     for reply_id, command in expected.items():
         assert api_whatsapp.INTERACTIVE_COMMAND_IDS[reply_id] == command
+
+
+def test_submenu_visitas_contem_revisar_visita():
+    menu = _capture_interactive_menu(api_whatsapp.send_visitas_menu_interactive)
+    ids = {row["id"] for row in _rows(menu)}
+
+    assert "visita_revisar" in ids
+
+
+def test_clique_menu_comprovantes_abre_submenu_comprovantes():
+    original_sender = api_whatsapp.send_comprovantes_menu_interactive
+    try:
+        sent = []
+        api_whatsapp.send_comprovantes_menu_interactive = lambda to: sent.append(to)
+
+        assert api_whatsapp.handle_rdv_text_message("5500000000001", "menu comprovantes") is None
+        assert sent == ["5500000000001"]
+    finally:
+        api_whatsapp.send_comprovantes_menu_interactive = original_sender
+
+
+def test_clique_menu_km_abre_submenu_km():
+    original_sender = api_whatsapp.send_km_menu_interactive
+    try:
+        sent = []
+        api_whatsapp.send_km_menu_interactive = lambda to: sent.append(to)
+
+        assert api_whatsapp.handle_rdv_text_message("5500000000001", "menu km") is None
+        assert sent == ["5500000000001"]
+    finally:
+        api_whatsapp.send_km_menu_interactive = original_sender
+
+
+def test_clique_menu_visitas_abre_submenu_visitas():
+    original_sender = api_whatsapp.send_visitas_menu_interactive
+    try:
+        sent = []
+        api_whatsapp.send_visitas_menu_interactive = lambda to: sent.append(to)
+
+        assert api_whatsapp.handle_rdv_text_message("5500000000001", "menu visitas") is None
+        assert sent == ["5500000000001"]
+    finally:
+        api_whatsapp.send_visitas_menu_interactive = original_sender
+
+
+def test_clique_menu_relatorios_abre_submenu_relatorios():
+    original_sender = api_whatsapp.send_reports_menu_interactive
+    try:
+        sent = []
+        api_whatsapp.send_reports_menu_interactive = lambda to: sent.append(to)
+
+        assert api_whatsapp.handle_rdv_text_message("5500000000001", "menu relatorios") is None
+        assert sent == ["5500000000001"]
+    finally:
+        api_whatsapp.send_reports_menu_interactive = original_sender
+
+
+def test_nenhuma_lista_interativa_ultrapassa_10_linhas():
+    menus = [
+        _capture_interactive_menu(api_whatsapp.send_main_menu_interactive),
+        _capture_interactive_menu(api_whatsapp.send_comprovantes_menu_interactive),
+        _capture_interactive_menu(api_whatsapp.send_km_menu_interactive),
+        _capture_interactive_menu(api_whatsapp.send_visitas_menu_interactive),
+        _capture_interactive_menu(api_whatsapp.send_reports_menu_interactive),
+    ]
+
+    for menu in menus:
+        assert len(_rows(menu)) <= 10
 
 
 def test_interactive_list_reply_executa_comando_antigo():
