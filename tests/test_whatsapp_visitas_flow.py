@@ -843,6 +843,69 @@ def test_visita_duas_fotos_em_fila_e_bloqueia_fechamento():
         api_whatsapp.visitas_service = original_visitas
 
 
+def test_visita_tres_fotos_mantem_fila_de_comentarios():
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            first = api_whatsapp.handle_visitas_media_message(
+                sender, "image", "wamid.1", str(Path(temp_dir) / "foto1.jpg")
+            )
+            second = api_whatsapp.handle_visitas_media_message(
+                sender, "image", "wamid.2", str(Path(temp_dir) / "foto2.jpg")
+            )
+            third = api_whatsapp.handle_visitas_media_message(
+                sender, "image", "wamid.3", str(Path(temp_dir) / "foto3.jpg")
+            )
+
+            assert "Foto 1 adicionada" in first
+            assert "Foto 1 adicionada" in second
+            assert "Foto 1 adicionada" in third
+            assert "Digite o comentario da Foto 1" in api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "Foto 2" in api_whatsapp.handle_rdv_text_message(sender, "Comentario da foto 1")
+            assert "Digite o comentario da Foto 2" in api_whatsapp.handle_rdv_text_message(sender, "sim")
+            assert "Foto 3" in api_whatsapp.handle_rdv_text_message(sender, "Comentario da foto 2")
+            assert "Fotos salvas" in api_whatsapp.handle_rdv_text_message(sender, "2")
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            assert [media["comentario"] for media in saved["midias"]] == [
+                "Comentario da foto 1",
+                "Comentario da foto 2",
+                "Sem comentario informado.",
+            ]
+    finally:
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_resumo_final_mostra_comentarios_das_fotos():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            media = visitas.adicionar_midia(
+                visita["id"],
+                "foto",
+                media_id_whatsapp="wamid.1",
+                caminho_arquivo=str(Path(temp_dir) / "foto1.jpg"),
+            )
+            visitas.salvar_comentario_foto(media["id"], "Vazamento no registro")
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+
+            assert "Fotos da visita" in reply
+            assert "Foto 1" in reply
+            assert "Comentario: Vazamento no registro" in reply
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
 def test_visita_fechar():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
