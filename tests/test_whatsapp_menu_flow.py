@@ -361,16 +361,14 @@ def test_payload_menu_relatorios_interativo():
             "Resumo RDV",
             "Planilha RDV",
             "PDF RDV",
-            "Resumo semanal",
-            "Planilha semanal",
-            "PDF semanal",
         ]
         assert [row["title"] for row in sent[0]["sections"][1]["rows"]] == [
             "Listar visitas",
             "Planilha visitas",
+            "PDF visita",
         ]
         assert all(
-            "PDF visita" not in row["title"]
+            row["title"] not in {"Resumo semanal", "Planilha semanal", "PDF semanal"}
             for section in sent[0]["sections"]
             for row in section["rows"]
         )
@@ -383,18 +381,16 @@ def test_payload_menu_relatorios_interativo():
             "menu_rdv_summary",
             "menu_rdv_excel",
             "menu_rdv_pdf",
-            "menu_weekly_summary",
-            "menu_weekly_excel",
-            "menu_weekly_pdf",
             "menu_visit_list",
             "menu_visit_excel",
+            "menu_visit_pdf",
         }
         assert {
             (row["title"], row["description"])
             for row in rows
         } >= {
             ("PDF RDV", "Relatório mensal em PDF"),
-            ("PDF semanal", "Relatório semanal em PDF"),
+            ("PDF visita", "Gerar PDF individual de uma visita"),
         }
     finally:
         api_whatsapp.send_whatsapp_list_message = original_sender
@@ -404,7 +400,7 @@ def test_menu_relatorios_e_ids_interativos_usam_catalogo_unico():
     report_commands = {
         report.report_id: report.aliases[0]
         for report in REPORT_DEFINITIONS
-        if report.aliases
+        if report.aliases and report.show_in_menu
     }
     menu_rows = [
         row
@@ -556,6 +552,7 @@ def test_ids_interativos_mapeiam_para_comandos_antigos():
         "menu_visit_start": "visita",
         "menu_visit_list": "visitas",
         "menu_visit_excel": "planilha visitas",
+        "menu_visit_pdf": "pdf visita",
         "menu_reports": "relatorios",
         "menu_help": "menu",
     }

@@ -20,6 +20,7 @@ class ReportDefinition:
     period: ReportPeriod
     handler: str
     menu_section: str
+    show_in_menu: bool = True
 
 
 REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
@@ -62,6 +63,7 @@ REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
         period="semanal",
         handler="rdv_summary",
         menu_section="RDV",
+        show_in_menu=False,
     ),
     ReportDefinition(
         report_id="menu_weekly_excel",
@@ -72,6 +74,7 @@ REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
         period="semanal",
         handler="rdv_excel",
         menu_section="RDV",
+        show_in_menu=False,
     ),
     ReportDefinition(
         report_id="menu_weekly_pdf",
@@ -82,6 +85,7 @@ REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
         period="semanal",
         handler="rdv_pdf",
         menu_section="RDV",
+        show_in_menu=False,
     ),
     ReportDefinition(
         report_id="menu_visit_list",
@@ -103,6 +107,16 @@ REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
         handler="visit_excel",
         menu_section="Visitas técnicas",
     ),
+    ReportDefinition(
+        report_id="menu_visit_pdf",
+        menu_title="PDF visita",
+        menu_description="Gerar PDF individual de uma visita",
+        aliases=("pdf visita",),
+        format="pdf",
+        period="visitas",
+        handler="visit_pdf",
+        menu_section="Visitas técnicas",
+    ),
 )
 
 
@@ -119,7 +133,7 @@ def report_menu_sections() -> list[dict]:
                 "description": report.menu_description,
             }
             for report in REPORT_DEFINITIONS
-            if report.menu_section == section_title
+            if report.menu_section == section_title and report.show_in_menu
         ]
         sections.append({"title": section_title, "rows": rows})
     return sections
@@ -193,7 +207,7 @@ def _match_exact_alias(text: str) -> ReportDefinition | None:
 
 
 def _match_parameterized_alias(text: str) -> ReportDefinition | None:
-    if re.fullmatch(r"(?:pdf visita|visita pdf)\s+\d+", text):
+    if re.fullmatch(r"(?:pdf visita|visita pdf)(?:\s+\d+)?", text):
         return None
 
     if re.search(r"(?:^|\s)pdf(?:\s|$)", text):

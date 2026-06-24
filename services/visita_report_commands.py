@@ -32,7 +32,7 @@ def parse_visit_report_command(normalized_text: str, original_text: str = "") ->
             fazenda_query=_extract_fazenda_query(original_text),
         )
 
-    if re.fullmatch(r"relatorio visitas?", text):
+    if re.fullmatch(r"(?:relatorio visitas?|pdf visita|visita pdf)", text):
         return VisitReportCommand(kind="list")
 
     return None
