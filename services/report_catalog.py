@@ -91,17 +91,17 @@ REPORT_DEFINITIONS: tuple[ReportDefinition, ...] = (
         format="text",
         period="visitas",
         handler="visit_list",
-        menu_section="Visitas",
+        menu_section="Visitas técnicas",
     ),
     ReportDefinition(
         report_id="menu_visit_excel",
         menu_title="Planilha visitas",
-        menu_description="Excel de visitas tecnicas",
+        menu_description="Excel de visitas técnicas",
         aliases=("planilha visitas", "fazendas visitadas"),
         format="excel",
         period="visitas",
         handler="visit_excel",
-        menu_section="Visitas",
+        menu_section="Visitas técnicas",
     ),
 )
 
@@ -111,7 +111,7 @@ REPORTS_BY_ID = {report.report_id: report for report in REPORT_DEFINITIONS}
 
 def report_menu_sections() -> list[dict]:
     sections: list[dict] = []
-    for section_title in ("RDV", "Visitas"):
+    for section_title in ("RDV", "Visitas técnicas"):
         rows = [
             {
                 "id": report.report_id,
@@ -193,6 +193,9 @@ def _match_exact_alias(text: str) -> ReportDefinition | None:
 
 
 def _match_parameterized_alias(text: str) -> ReportDefinition | None:
+    if re.fullmatch(r"(?:pdf visita|visita pdf)\s+\d+", text):
+        return None
+
     if re.search(r"(?:^|\s)pdf(?:\s|$)", text):
         if re.search(r"(?:^|\s)(semanal|semana)(?:\s|$)", text) or _is_week_reference(text):
             return _definition("pdf", "semanal")

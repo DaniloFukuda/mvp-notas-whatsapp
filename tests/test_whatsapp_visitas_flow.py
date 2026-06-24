@@ -174,7 +174,10 @@ def test_relatorio_visita_envia_pdf():
 
             api_whatsapp.send_whatsapp_document = fake_send
 
-            reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatorio visita {visita['id']}",
+            )
 
             assert reply is None
             assert len(sent) == 1
@@ -233,6 +236,42 @@ def test_relatorio_visita_por_id_de_outro_telefone():
             assert sent[0][0] == other
             assert sent[0][1] == f"relatorio_visita_{visita['id']}.pdf"
             assert sent[0][4].startswith(b"%PDF")
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_pdf_visita_por_id_envia_pdf_individual():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"pdf visita {visita['id']}",
+            ) is None
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"visita pdf {visita['id']}",
+            ) is None
+
+            assert len(sent) == 2
+            assert sent[0][1] == f"relatorio_visita_{visita['id']}.pdf"
+            assert sent[1][1] == f"relatorio_visita_{visita['id']}.pdf"
+            assert sent[0][4].startswith(b"%PDF")
+            assert sent[1][4].startswith(b"%PDF")
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -659,8 +698,14 @@ def test_comandos_visita_aceitam_acentos_e_sem_acentos():
             assert api_whatsapp.handle_rdv_text_message(
                 sender, "localização visita"
             ).startswith("Fazenda Imperial")
-            assert api_whatsapp.handle_rdv_text_message(sender, "relatorio visita") is None
-            assert api_whatsapp.handle_rdv_text_message(sender, "relatório visita") is None
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatorio visita {visita['id']}",
+            ) is None
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatório visita {visita['id']}",
+            ) is None
             assert len(sent) == 2
     finally:
         api_whatsapp.rdv_service = original_rdv

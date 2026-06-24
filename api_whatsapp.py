@@ -38,6 +38,7 @@ from services.report_catalog import (
 )
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
+from services.visita_report_commands import parse_visit_report_command
 from services.visitas_service import VisitasTecnicasService
 
 
@@ -1756,9 +1757,13 @@ def _listar_visitas_message(normalized_text: str) -> str:
         lines.append("")
     lines.extend(
         [
-            "Para gerar relatório, envie:",
+            "Para gerar PDF individual de uma visita, envie:",
             f"relatório visita {visitas[0]['id']}",
             "",
+        ]
+    )
+    lines.extend(
+        [
             "Para buscar por fazenda, envie:",
             f"relatório fazenda {visitas[0].get('fazenda') or 'Nome da Fazenda'}",
         ]
@@ -1789,10 +1794,7 @@ def _is_planilha_visitas_command(normalized_text: str) -> bool:
 
 
 def _is_relatorio_visita_command(normalized_text: str) -> bool:
-    return (
-        re.fullmatch(r"relatorio visitas?(?:\s+\d+)?", normalized_text) is not None
-        or re.fullmatch(r"relatorio fazenda\s+.+", normalized_text) is not None
-    )
+    return parse_visit_report_command(normalized_text) is not None
 
 
 def _is_localizacao_visita_command(normalized_text: str) -> bool:
@@ -1816,7 +1818,10 @@ def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
 
 
 def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
-    visita = _select_visita_for_pdf(normalized_text)
+    command = parse_visit_report_command(normalized_text)
+    if command is None or command.kind != "by_id" or command.visita_id is None:
+        return False
+    visita = _select_visita_for_pdf(command.visita_id)
     if visita is None:
         return False
     _send_visita_pdf_data(sender_phone, visita)
@@ -1835,9 +1840,12 @@ def _send_visita_pdf_data(sender_phone: str, visita: dict) -> None:
 
 
 def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str) -> str | None:
-    fazenda_match = re.fullmatch(r"relatorio fazenda\s+(.+)", normalized_text)
-    if fazenda_match is not None:
-        query = _extract_relatorio_fazenda_query(text)
+    command = parse_visit_report_command(normalized_text, text)
+    if command is None:
+        return None
+
+    if command.kind == "by_fazenda":
+        query = command.fazenda_query
         data = visitas_service.buscar_visitas_por_fazenda(query)
         visitas = data.get("visitas") or []
         if not visitas:
@@ -1853,9 +1861,8 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
         _send_visita_pdf_data(sender_phone, visita)
         return None
 
-    id_match = re.fullmatch(r"relatorio visitas?\s+(\d+)", normalized_text)
-    if id_match is not None:
-        visita = _select_visita_for_pdf(normalized_text)
+    if command.kind == "by_id" and command.visita_id is not None:
+        visita = _select_visita_for_pdf(command.visita_id)
         if visita is None:
             return (
                 "Não encontrei essa visita técnica.\n"
@@ -1868,48 +1875,29 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
     visitas = data.get("visitas") or []
     if not visitas:
         return NO_VALID_VISITA_MESSAGE
-    if len(visitas) == 1:
-        visita = visitas_service.obter_visita_completa(visitas[0]["id"])
-        if visita is None:
-            return NO_VALID_VISITA_MESSAGE
-        _send_visita_pdf_data(sender_phone, visita)
-        return None
     return _multiple_visitas_report_message(visitas)
 
 
-def _select_visita_for_pdf(normalized_text: str) -> dict | None:
-    match = re.fullmatch(r"relatorio visitas?(?:\s+(\d+))?", normalized_text)
-    if match is not None and match.group(1):
-        visita_id = int(match.group(1))
-        raw_visita = visitas_service.obter_visita_por_id(visita_id)
-        if raw_visita is None:
-            return None
-        if raw_visita.get("status") == "cancelada":
-            raise ValueError("visita_cancelada")
-        visita = visitas_service.obter_visita_completa(visita_id)
-        if visita is None:
-            return None
-        if visita.get("status") not in {"aberta", "fechada"}:
-            return None
-        return visita
-    return visitas_service.obter_ultima_visita()
-
-
-def _extract_relatorio_fazenda_query(text: str) -> str:
-    match = re.match(r"(?is)\s*relat[oó]rio\s+fazenda\s+(.+?)\s*$", str(text or ""))
-    if match is not None:
-        return match.group(1).strip()
-    return re.sub(r"(?i)^relatorio\s+fazenda\s+", "", _normalize_caption(text)).strip()
+def _select_visita_for_pdf(visita_id: int) -> dict | None:
+    raw_visita = visitas_service.obter_visita_por_id(visita_id)
+    if raw_visita is None:
+        return None
+    if raw_visita.get("status") == "cancelada":
+        raise ValueError("visita_cancelada")
+    visita = visitas_service.obter_visita_completa(visita_id)
+    if visita is None:
+        return None
+    if visita.get("status") not in {"aberta", "fechada"}:
+        return None
+    return visita
 
 
 def _multiple_fazenda_visitas_message(query: str, visitas: list[dict]) -> str:
     lines = [f'Encontrei mais de uma visita para "{query}":', ""]
     for visita in visitas[:10]:
-        lines.append(
-            f"#{visita.get('id')} - {visita.get('fazenda') or '-'} - "
-            f"{_format_date_br(visita.get('data_visita'))} - {visita.get('status') or '-'}"
-        )
-    lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
+        lines.extend(_format_visita_list_item(visita, detailed=True))
+        lines.append("")
+    lines.extend(["Escolha uma pelo ID:", f"relatório visita {visitas[0]['id']}"])
     return "\n".join(lines)
 
 
@@ -1920,7 +1908,8 @@ def _multiple_visitas_report_message(visitas: list[dict]) -> str:
         "",
     ]
     for visita in visitas[:10]:
-        lines.extend(_format_visita_list_item(visita))
+        lines.extend(_format_visita_list_item(visita, detailed=True))
+        lines.append("")
     lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
     return "\n".join(lines)
 

@@ -71,18 +71,6 @@ def _build_rdv_pdf(report_data: dict, title: str, period_label: str) -> bytes:
             ]
         )
 
-    story.extend(
-        [
-            Spacer(1, 0.35 * cm),
-            _section_title("Visitas tecnicas", styles),
-            Paragraph(
-                "Secao reservada para consolidacao futura de visitas tecnicas ou "
-                "relatorio separado de visitas.",
-                styles["Body"],
-            ),
-        ]
-    )
-
     def draw_footer(canvas, doc):
         _footer(canvas, doc, generated_at)
 

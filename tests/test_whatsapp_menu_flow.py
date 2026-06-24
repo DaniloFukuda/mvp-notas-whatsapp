@@ -252,8 +252,14 @@ def test_comandos_diretos_continuam_funcionando():
             assert "Resumo geral do mes" in api_whatsapp.handle_rdv_text_message(sender, "resumo")
             assert api_whatsapp.handle_rdv_text_message(sender, "planilha") is None
             assert api_whatsapp.handle_rdv_text_message(sender, "planilha visitas") is None
-            assert api_whatsapp.handle_rdv_text_message(sender, "relatorio visita") is None
-            assert api_whatsapp.handle_rdv_text_message(sender, "relatório visita") is None
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatorio visita {visita['id']}",
+            ) is None
+            assert api_whatsapp.handle_rdv_text_message(
+                sender,
+                f"relatório visita {visita['id']}",
+            ) is None
             assert "KM inicial: 120350" in api_whatsapp.handle_rdv_text_message(sender, "km inicio 120350")
             assert "Vamos iniciar uma visita técnica." in api_whatsapp.handle_rdv_text_message("5500000000002", "visita")
 
@@ -347,6 +353,27 @@ def test_payload_menu_relatorios_interativo():
 
         assert sent[0]["to"] == "5500000000001"
         assert sent[0]["header"] == "Relatorios"
+        assert [section["title"] for section in sent[0]["sections"]] == [
+            "RDV",
+            "Visitas técnicas",
+        ]
+        assert [row["title"] for row in sent[0]["sections"][0]["rows"]] == [
+            "Resumo RDV",
+            "Planilha RDV",
+            "PDF RDV",
+            "Resumo semanal",
+            "Planilha semanal",
+            "PDF semanal",
+        ]
+        assert [row["title"] for row in sent[0]["sections"][1]["rows"]] == [
+            "Listar visitas",
+            "Planilha visitas",
+        ]
+        assert all(
+            "PDF visita" not in row["title"]
+            for section in sent[0]["sections"]
+            for row in section["rows"]
+        )
         rows = [
             row
             for section in sent[0]["sections"]
