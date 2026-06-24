@@ -300,7 +300,7 @@ def _media_block(media: dict, styles: dict) -> KeepTogether:
     image_path = Path(_text(media.get("caminho_arquivo")))
     file_name = image_path.name if _text(media.get("caminho_arquivo")) else "-"
     rows = [
-        ["Comentario", _text(media.get("comentario")) or _text(media.get("legenda"))],
+        ["Comentário", _text(media.get("comentario")) or _text(media.get("legenda"))],
         ["Arquivo", file_name],
         ["Latitude", _number(media.get("latitude"))],
         ["Longitude", _number(media.get("longitude"))],

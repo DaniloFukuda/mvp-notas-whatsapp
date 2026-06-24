@@ -278,6 +278,34 @@ def test_pdf_visita_por_id_envia_pdf_individual():
         api_whatsapp.send_whatsapp_document = original_sender
 
 
+def test_pdf_visita_sem_id_lista_visitas_sem_gerar_pdf():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
+            visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "pdf visita")
+
+            assert "Escolha uma pelo ID" in reply
+            assert f"#{visita['id']} - Fazenda Imperial" in reply
+            assert f"relatório visita {visita['id']}" in reply
+            assert sent == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
 def test_relatorio_visita_sem_id_com_multiplas_visitas_lista_opcoes():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -779,7 +807,7 @@ def test_visita_preencher_campos():
             _, visitas, sender = _install_services(temp_dir)
 
             api_whatsapp.handle_rdv_text_message(sender, "visita")
-            assert "proprietario" in api_whatsapp.handle_rdv_text_message(
+            assert "proprietário" in api_whatsapp.handle_rdv_text_message(
                 sender, "Fazenda Imperial"
             ).lower()
             assert "telefone" in api_whatsapp.handle_rdv_text_message(
@@ -789,25 +817,153 @@ def test_visita_preencher_campos():
             api_whatsapp.handle_rdv_text_message(sender, "Paulo Silva")
             api_whatsapp.handle_rdv_text_message(sender, "nao informado")
             descricao = api_whatsapp.handle_rdv_text_message(sender, "Talhao 3")
-            assert "Descricao da visita" in descricao
+            assert "Descrição da visita" in descricao
             obs = api_whatsapp.handle_rdv_text_message(
                 sender, "Apresentacao de produtos ao cliente"
             )
-            assert "Observacoes gerais" in obs
+            assert "Observações gerais" in obs
             api_whatsapp.handle_rdv_text_message(sender, "Pedido de 300T")
             final = api_whatsapp.handle_rdv_text_message(sender, "finalizar observacoes")
 
             visita = visitas.obter_visita_aberta(sender)
-            assert "Observacoes salvas" in final
+            assert "Observações salvas" in final
             assert visita["estado_fluxo"] == "visita_aberta"
             assert visita["fazenda"] == "Fazenda Imperial"
             assert visita["proprietario"] == "Alexander Duarte Paniago"
-            assert visita["telefone_proprietario"] == "(61) 99999-8888"
+            assert visita["telefone_proprietario"] == "61999998888"
             assert visita["gerente"] == "Paulo Silva"
-            assert visita["telefone_gerente"] == "Nao informado"
+            assert visita["telefone_gerente"] == "Não informado"
             assert visita["area"] == "Talhao 3"
             assert visita["descricao_visita"] == "Apresentacao de produtos ao cliente"
             assert "Pedido de 300T" in visita["observacoes_gerais"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_valida_telefone_invalido_e_pede_correcao():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda Imperial")
+            api_whatsapp.handle_rdv_text_message(sender, "João da Silva")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "12345")
+
+            visita = visitas.obter_visita_aberta(sender)
+            assert "Telefone inválido" in reply
+            assert "62999998888" in reply
+            assert visita["estado_fluxo"] == "aguardando_telefone_proprietario"
+            assert not visita["telefone_proprietario"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_descricao_curta_pede_mais_detalhes():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda Imperial")
+            api_whatsapp.handle_rdv_text_message(sender, "João da Silva")
+            api_whatsapp.handle_rdv_text_message(sender, "61999998888")
+            api_whatsapp.handle_rdv_text_message(sender, "Paulo Silva")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "Talhão 3")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "curta")
+
+            visita = visitas.obter_visita_aberta(sender)
+            assert "descrição ficou muito curta" in reply
+            assert visita["estado_fluxo"] == "aguardando_descricao_visita"
+            assert not visita["descricao_visita"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_pular_funciona_em_campos_opcionais():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda Imperial")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+
+            visita = visitas.obter_visita_aberta(sender)
+            assert visita["proprietario"] == "Não informado"
+            assert visita["telefone_proprietario"] == "Não informado"
+            assert visita["gerente"] == "Não informado"
+            assert visita["telefone_gerente"] == "Não informado"
+            assert visita["estado_fluxo"] == "aguardando_area"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_aceita_nomes_validos_com_acentos():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda São José")
+            api_whatsapp.handle_rdv_text_message(sender, "José Antônio")
+
+            visita = visitas.obter_visita_aberta(sender)
+            assert visita["fazenda"] == "Fazenda São José"
+            assert visita["proprietario"] == "José Antônio"
+            assert visita["estado_fluxo"] == "aguardando_telefone_proprietario"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_rejeita_texto_claramente_invalido():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "jfadlojasd")
+
+            visita = visitas.obter_visita_aberta(sender)
+            assert "Não consegui entender" in reply
+            assert visita["estado_fluxo"] == "aguardando_fazenda"
+            assert not visita["fazenda"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_comando_global_cancelar_continua_funcionando():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar")
+
+            assert reply == "Visita cancelada com sucesso."
+            assert visitas.obter_visita_aberta(sender) is None
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -827,7 +983,7 @@ def test_visita_observacoes_gerais_multiplas():
             reply = api_whatsapp.handle_rdv_text_message(sender, "pronto")
 
             saved = visitas.obter_visita_aberta(sender)
-            assert "Observacoes salvas" in reply
+            assert "Observações salvas" in reply
             assert saved["estado_fluxo"] == "visita_aberta"
             assert saved["observacoes_gerais"].splitlines() == [
                 "Primeira observacao",
@@ -945,7 +1101,7 @@ def test_visita_resumo_final_mostra_comentarios_das_fotos():
 
             assert "Fotos da visita" in reply
             assert "Foto 1" in reply
-            assert "Comentario: Vazamento no registro" in reply
+            assert "Comentário: Vazamento no registro" in reply
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -963,11 +1119,11 @@ def test_visita_fechar():
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
             saved = visitas.obter_visita(visita["id"])
 
-            assert "Resumo da visita tecnica" in reply
+            assert "Resumo da visita técnica" in reply
             assert "Dados da propriedade" in reply
-            assert "Descricao da visita" in reply
+            assert "Descrição da visita" in reply
             assert "Tipo" not in reply
-            assert "Finalizar relatorio" in reply
+            assert "Finalizar relatório" in reply
             assert saved["status"] == "aberta"
             assert saved["estado_fluxo"] == "aguardando_revisao_final"
 
