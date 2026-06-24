@@ -25,7 +25,17 @@ from services.rdv_excel_service import (
     build_monthly_rdv_workbook,
     build_weekly_rdv_workbook,
 )
+from services.rdv_pdf_service import (
+    build_monthly_rdv_pdf,
+    build_weekly_rdv_pdf,
+)
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
+from services.report_catalog import (
+    interactive_report_commands,
+    parse_rdv_report_command,
+    report_aliases,
+    report_menu_sections,
+)
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
 from services.visitas_service import VisitasTecnicasService
@@ -47,11 +57,16 @@ WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
 RDV_MONTHLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_mensal.xlsx"
 RDV_WEEKLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
+RDV_MONTHLY_PDF_FILENAME = "rdv_ciclus_relatorio_mensal.pdf"
+RDV_WEEKLY_PDF_FILENAME = "rdv_ciclus_relatorio_semanal.pdf"
 RDV_EXCEL_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+RDV_PDF_MIME_TYPE = "application/pdf"
 RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
 RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
+RDV_MONTHLY_PDF_CAPTION = "Segue o relatorio mensal em PDF do RDV da Ciclus Agro."
+RDV_WEEKLY_PDF_CAPTION = "Segue o relatorio semanal em PDF do RDV da Ciclus Agro."
 VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
 VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas técnicas da Ciclus Agro."
 VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
@@ -144,14 +159,8 @@ VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
 INTERACTIVE_COMMAND_IDS = {
     "menu_rdv_receipt": "rdv",
-    "menu_rdv_summary": "resumo",
-    "menu_rdv_excel": "planilha",
-    "menu_weekly_summary": "resumo semanal",
-    "menu_weekly_excel": "planilha semanal",
     "menu_km": "km",
     "menu_visit_start": "visita",
-    "menu_visit_list": "visitas",
-    "menu_visit_excel": "planilha visitas",
     "menu_reports": "relatorios",
     "menu_help": "menu",
     "confirm_clear_km": "confirmar limpar km",
@@ -159,6 +168,7 @@ INTERACTIVE_COMMAND_IDS = {
     "confirm_visit_close": "confirmar",
     "cancel_visit_review": "cancelar",
 }
+INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
 MAIN_MENU_MESSAGE = "\n".join(
     [
         "Olá! Sou o assistente da Ciclus Agro.",
@@ -172,8 +182,10 @@ MAIN_MENU_MESSAGE = "\n".join(
         "* Envie uma foto/PDF do comprovante",
         "* resumo — mostra o resumo mensal do RDV",
         "* planilha — envia a planilha mensal do RDV",
+        "* pdf — envia o relatorio mensal do RDV em PDF",
         "* resumo semanal — mostra o resumo da semana",
         "* planilha semanal — envia a planilha da semana",
+        "* pdf semanal — envia o relatorio semanal do RDV em PDF",
         "",
         "🚗 KM / Viagens",
         "Registra deslocamentos com KM inicial, origem, destino e KM final.",
@@ -215,8 +227,10 @@ REPORTS_MENU_MESSAGE = "\n".join(
         "",
         "* resumo — resumo mensal de despesas",
         "* planilha — planilha mensal de despesas",
+        "* pdf — relatorio mensal em PDF",
         "* resumo semanal — resumo semanal de despesas",
         "* planilha semanal — planilha semanal de despesas",
+        "* pdf semanal — relatorio semanal em PDF",
         "",
         "🌱 Visitas técnicas",
         "",
@@ -555,48 +569,7 @@ def send_reports_menu_interactive(to: str) -> None:
         header="Relatorios",
         body="Escolha qual relatorio deseja receber.",
         button_text="Ver relatorios",
-        sections=[
-            {
-                "title": "RDV",
-                "rows": [
-                    {
-                        "id": "menu_rdv_summary",
-                        "title": "Resumo RDV",
-                        "description": "Resumo mensal de despesas",
-                    },
-                    {
-                        "id": "menu_rdv_excel",
-                        "title": "Planilha RDV",
-                        "description": "Excel mensal de despesas",
-                    },
-                    {
-                        "id": "menu_weekly_summary",
-                        "title": "Resumo semanal",
-                        "description": "Resumo semanal de despesas",
-                    },
-                    {
-                        "id": "menu_weekly_excel",
-                        "title": "Planilha semanal",
-                        "description": "Excel semanal de despesas",
-                    },
-                ],
-            },
-            {
-                "title": "Visitas",
-                "rows": [
-                    {
-                        "id": "menu_visit_list",
-                        "title": "Listar visitas",
-                        "description": "Ver visitas/fazendas",
-                    },
-                    {
-                        "id": "menu_visit_excel",
-                        "title": "Planilha visitas",
-                        "description": "Excel de visitas tecnicas",
-                    },
-                ],
-            },
-        ],
+        sections=report_menu_sections(),
         fallback_text=REPORTS_MENU_MESSAGE,
     )
 
@@ -1758,13 +1731,7 @@ def _visita_localizacoes_message(visita_id: int) -> str:
 
 
 def _is_listar_visitas_command(normalized_text: str) -> bool:
-    return normalized_text in {
-        "visitas",
-        "listar visitas",
-        "visitas hoje",
-        "visitas abertas",
-        "fazendas",
-    }
+    return normalized_text in report_aliases(handler="visit_list")
 
 
 def _listar_visitas_message(normalized_text: str) -> str:
@@ -1816,7 +1783,7 @@ def _format_visita_list_item(visita: dict, detailed: bool = False) -> list[str]:
 
 
 def _is_planilha_visitas_command(normalized_text: str) -> bool:
-    if normalized_text == "fazendas visitadas":
+    if normalized_text in report_aliases(report_id="menu_visit_excel"):
         return True
     return re.fullmatch(r"planilha visitas(?:\s+.+)?", normalized_text) is not None
 
@@ -2157,6 +2124,11 @@ def _is_rdv_excel_command(text: str) -> bool:
     return request is not None and request["kind"] == "excel"
 
 
+def _is_rdv_pdf_command(text: str) -> bool:
+    request = _parse_rdv_report_command(_normalize_caption(text))
+    return request is not None and request["kind"] == "pdf"
+
+
 def _handle_global_rdv_command(
     sender_phone: str,
     collaborator: dict,
@@ -2184,6 +2156,21 @@ def _handle_global_rdv_command(
                 _safe_exception_summary(exc),
             )
             return True, _rdv_excel_fallback_message()
+        return True, None
+
+    if report_request is not None and report_request["kind"] == "pdf":
+        try:
+            if report_request["period"] == "week":
+                _send_weekly_rdv_pdf(sender_phone, week=report_request["reference"])
+            else:
+                _send_monthly_rdv_pdf(sender_phone, month=report_request["reference"])
+        except Exception as exc:
+            logger.exception(
+                "Falha ao enviar PDF RDV pelo WhatsApp: to=%s erro=%s",
+                _mask_phone(sender_phone),
+                _safe_exception_summary(exc),
+            )
+            return True, _rdv_document_fallback_message()
         return True, None
 
     km_command = _parse_km_command(normalized_text)
@@ -2246,60 +2233,7 @@ def _is_standalone_number(text: str) -> bool:
 
 
 def _parse_rdv_report_command(normalized_text: str) -> dict | None:
-    text = str(normalized_text or "").strip()
-    match = re.fullmatch(r"(resumo|planilha|relatorio|excel)(?:\s+(.+))?", text)
-    if match is None:
-        return None
-
-    command = match.group(1)
-    argument = str(match.group(2) or "").strip()
-    kind = "summary" if command == "resumo" else "excel"
-
-    if re.fullmatch(r"\d{4}-W\d{2}", argument, flags=re.IGNORECASE):
-        return {
-            "kind": kind,
-            "period": "week",
-            "reference": argument.upper(),
-            "scope": "all",
-        }
-    if re.fullmatch(r"\d{4}-\d{2}", argument):
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": argument,
-            "scope": "all",
-        }
-    if argument in {"semanal", "semana"}:
-        return {
-            "kind": kind,
-            "period": "week",
-            "reference": calculate_week_reference(date.today()),
-            "scope": "all",
-        }
-    if argument in {"anterior", "mes anterior"}:
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": _previous_month_reference(date.today()),
-            "scope": "all",
-        }
-    if argument in {"", "mensal", "mes"}:
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": calculate_month_reference(date.today()),
-            "scope": "all",
-        }
-    return None
-
-
-def _previous_month_reference(today: date) -> str:
-    year = today.year
-    month = today.month - 1
-    if month == 0:
-        year -= 1
-        month = 12
-    return f"{year:04d}-{month:02d}"
+    return parse_rdv_report_command(normalized_text, today=date.today())
 
 
 def _send_monthly_rdv_excel(sender_phone: str, month: str = "") -> None:
@@ -2330,6 +2264,32 @@ def _send_weekly_rdv_excel(sender_phone: str, week: str = "") -> None:
     )
 
 
+def _send_monthly_rdv_pdf(sender_phone: str, month: str = "") -> None:
+    selected_month = month or calculate_month_reference(date.today())
+    report_data = rdv_service.monthly_report_data(month=selected_month)
+    content = build_monthly_rdv_pdf(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_MONTHLY_PDF_FILENAME,
+        caption=RDV_MONTHLY_PDF_CAPTION,
+        mime_type=RDV_PDF_MIME_TYPE,
+    )
+
+
+def _send_weekly_rdv_pdf(sender_phone: str, week: str = "") -> None:
+    selected_week = week or calculate_week_reference(date.today())
+    report_data = rdv_service.weekly_report_data(week=selected_week)
+    content = build_weekly_rdv_pdf(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_WEEKLY_PDF_FILENAME,
+        caption=RDV_WEEKLY_PDF_CAPTION,
+        mime_type=RDV_PDF_MIME_TYPE,
+    )
+
+
 def _rdv_excel_fallback_message() -> str:
     public_url = _base_public_url()
     if public_url:
@@ -2338,6 +2298,13 @@ def _rdv_excel_fallback_message() -> str:
             "Nao consegui enviar o arquivo agora. "
             f"Voce pode baixar pelo painel: {download_url}"
         )
+    return (
+        "Nao consegui enviar o arquivo agora. "
+        "Tente novamente mais tarde ou baixe pelo painel."
+    )
+
+
+def _rdv_document_fallback_message() -> str:
     return (
         "Nao consegui enviar o arquivo agora. "
         "Tente novamente mais tarde ou baixe pelo painel."

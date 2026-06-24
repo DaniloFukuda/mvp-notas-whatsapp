@@ -7,6 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import api_whatsapp
+from services.report_catalog import (
+    REPORT_DEFINITIONS,
+    parse_rdv_report_command,
+    report_menu_sections,
+)
 from services.rdv_service import RDVService
 from services.visitas_service import VisitasTecnicasService
 
@@ -350,13 +355,62 @@ def test_payload_menu_relatorios_interativo():
         assert {row["id"] for row in rows} >= {
             "menu_rdv_summary",
             "menu_rdv_excel",
+            "menu_rdv_pdf",
             "menu_weekly_summary",
             "menu_weekly_excel",
+            "menu_weekly_pdf",
             "menu_visit_list",
             "menu_visit_excel",
         }
+        assert {
+            (row["title"], row["description"])
+            for row in rows
+        } >= {
+            ("PDF RDV", "Relatório mensal em PDF"),
+            ("PDF semanal", "Relatório semanal em PDF"),
+        }
     finally:
         api_whatsapp.send_whatsapp_list_message = original_sender
+
+
+def test_menu_relatorios_e_ids_interativos_usam_catalogo_unico():
+    report_commands = {
+        report.report_id: report.aliases[0]
+        for report in REPORT_DEFINITIONS
+        if report.aliases
+    }
+    menu_rows = [
+        row
+        for section in report_menu_sections()
+        for row in section["rows"]
+    ]
+
+    assert {row["id"] for row in menu_rows} == set(report_commands)
+    for report_id, command in report_commands.items():
+        assert api_whatsapp.INTERACTIVE_COMMAND_IDS[report_id] == command
+
+
+def test_aliases_de_relatorios_usam_catalogo_unico():
+    for report in REPORT_DEFINITIONS:
+        if report.period == "visitas":
+            continue
+        for alias in report.aliases:
+            request = parse_rdv_report_command(alias, today=api_whatsapp.date(2026, 6, 24))
+            assert request is not None
+            assert request["id"] == report.report_id
+
+    assert all(
+        api_whatsapp._is_listar_visitas_command(alias)
+        for report in REPORT_DEFINITIONS
+        if report.handler == "visit_list"
+        for alias in report.aliases
+    )
+    assert all(
+        api_whatsapp._is_planilha_visitas_command(alias)
+        for report in REPORT_DEFINITIONS
+        if report.report_id == "menu_visit_excel"
+        for alias in report.aliases
+    )
 
 
 def test_payload_botoes_confirmacao():
@@ -467,8 +521,10 @@ def test_ids_interativos_mapeiam_para_comandos_antigos():
         "menu_rdv_receipt": "rdv",
         "menu_rdv_summary": "resumo",
         "menu_rdv_excel": "planilha",
+        "menu_rdv_pdf": "pdf",
         "menu_weekly_summary": "resumo semanal",
         "menu_weekly_excel": "planilha semanal",
+        "menu_weekly_pdf": "pdf semanal",
         "menu_km": "km",
         "menu_visit_start": "visita",
         "menu_visit_list": "visitas",
