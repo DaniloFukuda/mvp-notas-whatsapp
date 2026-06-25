@@ -31,7 +31,7 @@ def main() -> int:
     if shutil.which("ffmpeg") is None:
         print("Aviso: ffmpeg nao encontrado no PATH. O Whisper pode falhar ao ler o audio.")
 
-    model_name = args.model or os.getenv("WHISPER_MODEL", "").strip() or "base"
+    model_name = args.model or os.getenv("WHISPER_MODEL", "").strip() or "tiny"
     language = args.language or os.getenv("WHISPER_LANGUAGE", "").strip() or "pt"
 
     started = time.perf_counter()
@@ -65,7 +65,7 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Transcreve um audio local usando Whisper.")
     parser.add_argument("--audio", required=True, help="Caminho do arquivo de audio.")
-    parser.add_argument("--model", default="", help="Modelo Whisper. Default: WHISPER_MODEL ou base.")
+    parser.add_argument("--model", default="", help="Modelo Whisper. Default: WHISPER_MODEL ou tiny.")
     parser.add_argument("--language", default="", help="Idioma. Default: WHISPER_LANGUAGE ou pt.")
     parser.add_argument("--keep-audio", action="store_true", help="Compatibilidade: nao remove audio local.")
     parser.add_argument("--output", default="", help="Arquivo .txt opcional para salvar a transcricao.")

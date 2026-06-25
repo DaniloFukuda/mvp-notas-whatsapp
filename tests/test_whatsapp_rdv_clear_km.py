@@ -72,7 +72,7 @@ def test_open_km_state_is_not_cancelled_until_explicit_cancel():
             )
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "km")
-            assert reply == api_whatsapp.KM_HELP_MESSAGE
+            assert reply == api_whatsapp.KM_MENU_MESSAGE
             assert service.get_expense(legacy["id"])["status_fluxo"] == "aguardando_km_fim"
             assert api_whatsapp.handle_rdv_text_message(
                 sender, "cancelar km"

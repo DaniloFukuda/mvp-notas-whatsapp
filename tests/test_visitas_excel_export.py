@@ -116,3 +116,62 @@ def test_planilha_visitas_global():
         ]
         assert "Fazenda Imperial" in fazendas
         assert "Fazenda Boi Dourado 3J" in fazendas
+
+
+def test_visita_planilha_exporta_abas_e_link_gps():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001", tecnico_nome="Danilo")
+        service.atualizar_campo(visita["id"], "data_visita", "2026-06-17")
+        service.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+        service.atualizar_campo(visita["id"], "proprietario", "Joao")
+        service.atualizar_campo(visita["id"], "telefone_proprietario", "(61) 99999-8888")
+        service.atualizar_campo(visita["id"], "gerente", "Carlos")
+        service.atualizar_campo(visita["id"], "telefone_gerente", "(61) 98888-7777")
+        service.atualizar_campo(visita["id"], "area", "Talhao 3")
+        service.atualizar_campo(visita["id"], "descricao_visita", "Vistoria tecnica")
+        service.adicionar_observacao_geral(visita["id"], "Vazamento identificado")
+        service.adicionar_localizacao(visita["id"], -15.0019124, -50.7714295)
+        media = service.adicionar_midia(
+            visita["id"],
+            "foto",
+            media_id_whatsapp="wamid.foto",
+            caminho_arquivo="data/documentos/uploads/whatsapp/foto.jpg",
+            legenda="Tanque",
+        )
+        service.salvar_comentario_foto(media["id"], "Tanque com vazamento")
+        service.adicionar_dado_coletado(
+            visita["id"],
+            "tanque",
+            "capacidade 10000 L",
+        )
+
+        content = build_visitas_workbook(service.listar_visitas(mes="2026-06"))
+        workbook = load_workbook(BytesIO(content))
+
+        assert tuple(workbook.sheetnames) == (
+            "Visitas",
+            "Fotos",
+            "Localizações",
+            "Dados coletados",
+        )
+        visitas = workbook["Visitas"]
+        assert visitas.cell(1, 3).value == "Tecnico"
+        assert visitas.cell(1, 7).value == "Telefone do proprietario"
+        assert visitas.cell(1, 10).value == "Area/local visitado"
+        assert visitas.cell(1, 11).value == "Descricao da visita"
+        assert "Tipo" not in [cell.value for cell in visitas[1]]
+        assert visitas.cell(2, 5).value == "Fazenda Imperial"
+        assert visitas.cell(2, 7).value == "(61) 99999-8888"
+        assert visitas.cell(2, 10).value == "Talhao 3"
+        assert visitas.cell(2, 11).value == "Vistoria tecnica"
+        assert visitas.cell(2, 15).value == (
+            "https://maps.google.com/?q=-15.0019124,-50.7714295"
+        )
+        assert workbook["Fotos"].cell(1, 5).value == "Comentario"
+        assert workbook["Fotos"].cell(2, 5).value == "Tanque com vazamento"
+        assert workbook["Fotos"].cell(2, 9).value == "foto.jpg"
+        assert workbook["Localizações"].cell(2, 7).value.startswith(
+            "https://maps.google.com/?q="
+        )
+        assert workbook["Dados coletados"].cell(2, 4).value == "tanque"

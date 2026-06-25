@@ -25,10 +25,25 @@ from services.rdv_excel_service import (
     build_monthly_rdv_workbook,
     build_weekly_rdv_workbook,
 )
+from services.rdv_pdf_service import (
+    build_monthly_rdv_pdf,
+    build_weekly_rdv_pdf,
+)
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
-from services.audio_transcription_service import AudioTranscriptionService
+from services.audio_transcription_service import (
+    AudioTranscriptionService,
+    whisper_enabled_from_env,
+)
+from services.report_catalog import (
+    interactive_report_commands,
+    parse_rdv_report_command,
+    report_aliases,
+    report_menu_sections,
+)
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
+from services.visita_report_commands import parse_visit_report_command
+from services.visita_validation import validate_visit_field
 from services.visitas_service import VisitasTecnicasService, normalize_phone
 
 
@@ -48,11 +63,16 @@ WHATSAPP_UPLOAD_DIR = Path("data/documentos/uploads/whatsapp")
 DEFAULT_GRAPH_API_VERSION = "v21.0"
 RDV_MONTHLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_mensal.xlsx"
 RDV_WEEKLY_EXCEL_FILENAME = "rdv_ciclus_relatorio_semanal.xlsx"
+RDV_MONTHLY_PDF_FILENAME = "rdv_ciclus_relatorio_mensal.pdf"
+RDV_WEEKLY_PDF_FILENAME = "rdv_ciclus_relatorio_semanal.pdf"
 RDV_EXCEL_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+RDV_PDF_MIME_TYPE = "application/pdf"
 RDV_MONTHLY_EXCEL_CAPTION = "Segue a planilha mensal do RDV da Ciclus Agro."
 RDV_WEEKLY_EXCEL_CAPTION = "Segue a planilha semanal do RDV da Ciclus Agro."
+RDV_MONTHLY_PDF_CAPTION = "Segue o relatorio mensal em PDF do RDV da Ciclus Agro."
+RDV_WEEKLY_PDF_CAPTION = "Segue o relatorio semanal em PDF do RDV da Ciclus Agro."
 VISITAS_EXCEL_FILENAME = "visitas_tecnicas_ciclus.xlsx"
 VISITAS_EXCEL_CAPTION = "Segue a planilha de visitas técnicas da Ciclus Agro."
 VISITA_PDF_CAPTION = "Segue o relatório da visita técnica da Ciclus Agro."
@@ -79,7 +99,149 @@ VISITA_FLOW_STEPS = {
     "aguardando_safra": ("safra", "Qual o tipo de visita?"),
     "aguardando_tipo_visita": ("tipo_visita", ""),
 }
+VISITA_FLOW_STEPS = {
+    "aguardando_fazenda": ("fazenda", "Qual o nome do proprietario da fazenda/propriedade?"),
+    "aguardando_proprietario": ("proprietario", "Qual o telefone do proprietario?"),
+    "aguardando_telefone_proprietario": ("telefone_proprietario", "Qual o nome do gerente ou responsavel local pela propriedade?"),
+    "aguardando_gerente": ("gerente", "Qual o telefone do gerente ou responsavel local?"),
+    "aguardando_telefone_gerente": ("telefone_gerente", "Qual area, talhao ou local da propriedade foi visitado?\n\nExemplos:\nSede, Talhao 3, Area de irrigacao, Pasto proximo ao curral, Barracao de maquinas."),
+    "aguardando_area": ("area", ""),
+}
+VISITA_DESCRICAO_MESSAGE = "\n".join(
+    [
+        "Descricao da visita",
+        "",
+        "Faca um breve resumo do motivo desta visita.",
+        "",
+        "Aqui voce deve informar, de forma curta e objetiva, por que a visita esta sendo realizada.",
+        "",
+        "Exemplos:",
+        "",
+        "* Vistoria tecnica da area de plantio",
+        "* Avaliacao de irrigacao",
+        "* Levantamento para orcamento",
+        "* Verificacao de problema informado pelo gerente",
+        "* Acompanhamento da lavoura",
+        "* Coleta de informacoes para aplicacao",
+        "",
+        "Digite agora a descricao da visita:",
+    ]
+)
+VISITA_OBSERVACOES_MESSAGE = "\n".join(
+    [
+        "Observacoes gerais da visita",
+        "",
+        "Agora voce pode enviar as observacoes gerais do relatorio.",
+        "",
+        "Aqui voce pode colocar tudo que percebeu durante a visita, como problemas encontrados, informacoes passadas pelo proprietario ou gerente, pontos de atencao, recomendacoes e qualquer detalhe importante.",
+        "",
+        "Voce pode mandar quantas mensagens quiser.",
+        "Cada mensagem sera salva como uma observacao separada no relatorio.",
+        "",
+        "Quando terminar todas as observacoes, envie o comando:",
+        "",
+        "finalizar observacoes",
+    ]
+)
+VISITA_OBSERVACOES_FINALIZADAS_MESSAGE = "\n".join(
+    [
+        "Observacoes salvas.",
+        "",
+        "Agora voce pode enviar fotos da visita.",
+        "Cada foto podera receber um comentario proprio no relatorio.",
+        "",
+        "Quando terminar a visita, envie: fechar visita",
+    ]
+)
+VISITA_FLOW_STEPS = {
+    "aguardando_fazenda": ("fazenda", "Qual o nome do proprietário da fazenda/propriedade?"),
+    "aguardando_proprietario": ("proprietario", "Qual o telefone do proprietário?"),
+    "aguardando_telefone_proprietario": ("telefone_proprietario", "Qual o nome do gerente ou responsável local pela propriedade?"),
+    "aguardando_gerente": ("gerente", "Qual o telefone do gerente ou responsável local?"),
+    "aguardando_telefone_gerente": ("telefone_gerente", "Qual área, talhão ou local da propriedade foi visitado?\n\nExemplos:\nSede, Talhão 3, Área de irrigação, Pasto próximo ao curral, Barracão de máquinas."),
+    "aguardando_area": ("area", ""),
+}
+VISITA_DESCRICAO_MESSAGE = "\n".join(
+    [
+        "Descrição da visita",
+        "",
+        "Faça um breve resumo do motivo desta visita.",
+        "",
+        "Aqui você deve informar, de forma curta e objetiva, por que a visita está sendo realizada.",
+        "",
+        "Exemplos:",
+        "",
+        "* Vistoria técnica da área de plantio",
+        "* Avaliação de irrigação",
+        "* Levantamento para orçamento",
+        "* Verificação de problema informado pelo gerente",
+        "* Acompanhamento da lavoura",
+        "* Coleta de informações para aplicação",
+        "",
+        "Digite agora a descrição da visita:",
+    ]
+)
+VISITA_OBSERVACOES_MESSAGE = "\n".join(
+    [
+        "Observações gerais da visita",
+        "",
+        "Agora você pode enviar as observações gerais do relatório.",
+        "",
+        "Aqui você pode colocar tudo que percebeu durante a visita, como problemas encontrados, informações passadas pelo proprietário ou gerente, pontos de atenção, recomendações e qualquer detalhe importante.",
+        "",
+        "Você pode mandar quantas mensagens quiser.",
+        "Cada mensagem será salva como uma observação separada no relatório.",
+        "",
+        "Quando terminar todas as observações, envie o comando:",
+        "",
+        "finalizar observações",
+    ]
+)
+VISITA_OBSERVACOES_FINALIZADAS_MESSAGE = "\n".join(
+    [
+        "Observações salvas.",
+        "",
+        "Agora você pode enviar fotos da visita.",
+        "Cada foto poderá receber um comentário próprio no relatório.",
+        "",
+        "Quando terminar a visita, envie: fechar visita",
+    ]
+)
+VISITA_FOTO_PENDENTE_MESSAGE = "\n".join(
+    [
+        "Antes de fechar a visita, preciso concluir os comentarios das fotos adicionadas.",
+        "",
+        "Ainda existem fotos aguardando confirmacao de comentario.",
+        "",
+        "Responda 1 para comentar ou 2 para seguir sem comentario na foto atual.",
+    ]
+)
+VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
+    "finalizar observacoes",
+    "finalizar observacao",
+    "finalizar observacoes gerais",
+    "fim observacoes",
+    "fim observacao",
+    "concluir observacoes",
+    "concluir observacao",
+    "pronto",
+    "terminei",
+}
+VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
+VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
+INTERACTIVE_COMMAND_IDS = {
+    "menu_rdv_receipt": "rdv",
+    "menu_km": "km",
+    "menu_visit_start": "visita",
+    "menu_reports": "relatorios",
+    "menu_help": "menu",
+    "confirm_clear_km": "confirmar limpar km",
+    "cancel_action": "menu",
+    "confirm_visit_close": "confirmar",
+    "cancel_visit_review": "cancelar",
+}
+INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
 MAIN_MENU_MESSAGE = "\n".join(
     [
         "Olá! Sou o assistente da Ciclus Agro.",
@@ -93,8 +255,10 @@ MAIN_MENU_MESSAGE = "\n".join(
         "* Envie uma foto/PDF do comprovante",
         "* resumo — mostra o resumo mensal do RDV",
         "* planilha — envia a planilha mensal do RDV",
+        "* pdf — envia o relatorio mensal do RDV em PDF",
         "* resumo semanal — mostra o resumo da semana",
         "* planilha semanal — envia a planilha da semana",
+        "* pdf semanal — envia o relatorio semanal do RDV em PDF",
         "",
         "🚗 KM / Viagens",
         "Registra deslocamentos com KM inicial, origem, destino e KM final.",
@@ -140,8 +304,10 @@ REPORTS_MENU_MESSAGE = "\n".join(
         "",
         "* resumo — resumo mensal de despesas",
         "* planilha — planilha mensal de despesas",
+        "* pdf — relatorio mensal em PDF",
         "* resumo semanal — resumo semanal de despesas",
         "* planilha semanal — planilha semanal de despesas",
+        "* pdf semanal — relatorio semanal em PDF",
         "",
         "🌱 Visitas técnicas",
         "",
@@ -193,6 +359,16 @@ KM_HELP_MESSAGE = "\n".join(
         "km termino 120500",
     ]
 )
+KM_MENU_MESSAGE = "\n".join(
+    [
+        "Registro de KM",
+        "",
+        "Voce quer iniciar ou finalizar uma viagem?",
+        "",
+        "1 - Iniciar viagem",
+        "2 - Finalizar viagem",
+    ]
+)
 KM_CLEAR_REQUEST_COMMANDS = {
     "limpar km",
     "limpar quilometragem",
@@ -227,6 +403,7 @@ visita_edit_states: dict[str, int] = {}
 visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
 rdv_comment_states: dict[str, dict] = {}
+_audio_transcription_service: AudioTranscriptionService | None = None
 
 
 @router.get("/webhook/whatsapp")
@@ -376,6 +553,231 @@ def send_whatsapp_text(to: str, message: str) -> None:
     )
 
 
+def send_whatsapp_list_message(
+    to: str,
+    header: str,
+    body: str,
+    button_text: str,
+    sections: list[dict],
+    fallback_text: str,
+) -> None:
+    payload = _build_whatsapp_list_payload(
+        to=to,
+        header=header,
+        body=body,
+        button_text=button_text,
+        sections=sections,
+    )
+    try:
+        _post_whatsapp_message_payload(payload, to, "interactive.list")
+    except Exception:
+        logger.exception(
+            "Falha ao enviar lista interativa; usando fallback texto para %s",
+            _mask_phone(to),
+        )
+        send_whatsapp_text(to, fallback_text)
+
+
+def send_whatsapp_button_message(
+    to: str,
+    body: str,
+    buttons: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> None:
+    payload = _build_whatsapp_button_payload(
+        to=to,
+        body=body,
+        buttons=buttons,
+        header=header,
+        footer=footer,
+    )
+    _post_whatsapp_message_payload(payload, to, "interactive.button")
+
+
+def send_main_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="🌱 Ciclus Agro",
+        body="Escolha uma opção para continuar:",
+        button_text="Abrir menu",
+        sections=[
+            {
+                "title": "Menu principal",
+                "rows": [
+                    {
+                        "id": "menu_rdv_receipt",
+                        "title": "🧾 Lançar comprovante",
+                        "description": "Enviar foto ou PDF",
+                    },
+                    {
+                        "id": "menu_km",
+                        "title": "🚗 Registrar KM",
+                        "description": "Iniciar ou finalizar viagem",
+                    },
+                    {
+                        "id": "menu_visit_start",
+                        "title": "🌱 Nova visita técnica",
+                        "description": "Registrar fazenda visitada",
+                    },
+                    {
+                        "id": "menu_rdv_summary",
+                        "title": "📊 Resumo RDV",
+                        "description": "Ver resumo mensal",
+                    },
+                    {
+                        "id": "menu_rdv_excel",
+                        "title": "📎 Planilha RDV",
+                        "description": "Receber Excel mensal",
+                    },
+                    {
+                        "id": "menu_reports",
+                        "title": "📋 Relatórios",
+                        "description": "Ver relatórios disponíveis",
+                    },
+                    {
+                        "id": "menu_help",
+                        "title": "❓ Ajuda",
+                        "description": "Ver comandos e orientações",
+                    },
+                ],
+            },
+        ],
+        fallback_text=MAIN_MENU_MESSAGE,
+    )
+
+
+def send_reports_menu_interactive(to: str) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Relatorios",
+        body="Escolha qual relatorio deseja receber.",
+        button_text="Ver relatorios",
+        sections=report_menu_sections(),
+        fallback_text=REPORTS_MENU_MESSAGE,
+    )
+
+
+def send_confirmation_buttons(
+    to: str,
+    body: str,
+    confirm_id: str,
+    confirm_title: str = "Confirmar",
+    cancel_id: str = "cancel_action",
+    cancel_title: str = "Cancelar",
+) -> None:
+    send_whatsapp_button_message(
+        to=to,
+        body=body,
+        buttons=[
+            {"id": confirm_id, "title": confirm_title},
+            {"id": cancel_id, "title": cancel_title},
+        ],
+    )
+
+
+def _build_whatsapp_list_payload(
+    to: str,
+    body: str,
+    button_text: str,
+    sections: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> dict:
+    recipient = str(to or "").strip()
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
+
+    interactive: dict = {
+        "type": "list",
+        "body": {"text": str(body or "").strip()},
+        "action": {
+            "button": str(button_text or "Ver opcoes").strip()[:20],
+            "sections": sections,
+        },
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": str(header).strip()[:60]}
+    if footer:
+        interactive["footer"] = {"text": str(footer).strip()}
+    return {
+        "messaging_product": "whatsapp",
+        "to": recipient,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+
+def _build_whatsapp_button_payload(
+    to: str,
+    body: str,
+    buttons: list[dict],
+    header: str = "",
+    footer: str = "",
+) -> dict:
+    recipient = str(to or "").strip()
+    if not recipient:
+        raise RuntimeError("Destinatario WhatsApp nao informado.")
+
+    action_buttons = [
+        {
+            "type": "reply",
+            "reply": {
+                "id": str(button.get("id") or "").strip(),
+                "title": str(button.get("title") or "").strip()[:20],
+            },
+        }
+        for button in buttons[:3]
+    ]
+    interactive: dict = {
+        "type": "button",
+        "body": {"text": str(body or "").strip()},
+        "action": {"buttons": action_buttons},
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": str(header).strip()[:60]}
+    if footer:
+        interactive["footer"] = {"text": str(footer).strip()}
+    return {
+        "messaging_product": "whatsapp",
+        "to": recipient,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+
+def _post_whatsapp_message_payload(payload: dict, recipient: str, message_type: str) -> None:
+    requests = _requests_module()
+    token = _whatsapp_access_token()
+    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
+    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        logger.error(
+            "Erro da Meta ao enviar mensagem interativa: status_code=%s to=%s type=%s body=%s",
+            response.status_code,
+            _mask_phone(recipient),
+            message_type,
+            _safe_response_body(response),
+        )
+        response.raise_for_status()
+
+    logger.info(
+        "Mensagem interativa WhatsApp enviada: status_code=%s to=%s type=%s",
+        response.status_code,
+        _mask_phone(recipient),
+        message_type,
+    )
+
+
 def upload_whatsapp_document(
     content: bytes,
     filename: str = RDV_MONTHLY_EXCEL_FILENAME,
@@ -470,7 +872,7 @@ def _handle_whatsapp_message(message: dict) -> None:
     message_type = str(message.get("type") or "")
     text = _extract_text(message)
     caption = _extract_caption(message, message_type)
-    media = message.get(message_type) if message_type in ("image", "document", "audio") else {}
+    media = message.get(message_type) if message_type in ("image", "document", "audio", "voice") else {}
     media_id = str((media or {}).get("id") or "")
     image_sha256 = str((media or {}).get("sha256") or "") if message_type == "image" else ""
     mime_type = str((media or {}).get("mime_type") or "")
@@ -505,10 +907,10 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    if message_type == "text":
+    if message_type in {"text", "interactive"}:
         reply = handle_rdv_text_message(sender_phone, text)
         if reply:
-            _safe_send_text(sender_phone, reply)
+            _send_rdv_reply(sender_phone, text, reply)
         return
 
     if message_type == "location":
@@ -517,8 +919,8 @@ def _handle_whatsapp_message(message: dict) -> None:
             _safe_send_text(sender_phone, reply)
             return
 
-    if message_type == "audio":
-        reply = handle_rdv_audio_comment_message(
+    if message_type in {"audio", "voice"}:
+        reply = handle_whatsapp_audio_message(
             sender_phone=sender_phone,
             media_id=media_id,
             mime_type=mime_type,
@@ -534,8 +936,16 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    active_visit = _get_active_visita_for_phone(sender_phone)
-    if active_visit is not None and active_visit.get("estado_fluxo") == "visita_aberta":
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    if open_visit is not None and open_visit.get("estado_fluxo") in {
+        "visita_aberta",
+        "aguardando_revisao_final",
+        "corrigindo_dados_propriedade",
+        "corrigindo_observacoes",
+        "corrigindo_comentario_foto",
+        "aguardando_decisao_comentario_foto",
+        "aguardando_texto_comentario_foto",
+    }:
         destination = _build_media_destination(
             sender_phone=sender_phone,
             media_id=media_id,
@@ -666,31 +1076,16 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
     if global_command_handled:
         return global_reply
 
-    comment_handled, comment_reply = handle_rdv_comment_text_message(
-        sender_phone,
-        text,
-        normalized,
-    )
-    if comment_handled:
-        return comment_reply
-
     if normalized in MENU_OPEN_COMMANDS:
-        return _open_main_menu(sender_phone)
+        send_main_menu_interactive(sender_phone)
+        return None
 
     if normalized == "relatorios":
-        return REPORTS_MENU_MESSAGE
+        send_reports_menu_interactive(sender_phone)
+        return None
 
     open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
-
-    visita_handled, visita_reply = handle_visitas_text_message(
-        sender_phone,
-        text,
-        collaborator,
-        normalized,
-    )
-    if visita_handled:
-        return visita_reply
 
     if normalized in KM_CLEAR_REQUEST_COMMANDS:
         return KM_CLEAR_WARNING
@@ -710,25 +1105,28 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         rdv_service.cancel_km_launch(open_km["id"])
         return "Viagem cancelada com sucesso."
 
-    if open_km is not None and pending is None:
-        km_state = open_km.get("status_fluxo")
-        if km_state == "aguardando_km_origem":
-            saved = rdv_service.save_km_origin(open_km["id"], text)
-            return "\n".join(
-                [
-                    f"Origem registrada: {saved['cidade_origem']}.",
-                    "Qual a cidade/local de destino?",
-                ]
-            )
-        if km_state == "aguardando_km_destino":
-            saved = rdv_service.save_km_destination(open_km["id"], text)
-            return "\n".join(
-                [
-                    f"Destino registrado: {saved['cidade_destino']}.",
-                    "Quando terminar, envie:",
-                    "km termino 120500",
-                ]
-            )
+    km_flow_reply = _route_km_message(sender_phone, collaborator, text, normalized, open_km)
+    if km_flow_reply is not None:
+        return km_flow_reply
+
+    open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+
+    visita_handled, visita_reply = handle_visitas_text_message(
+        sender_phone,
+        text,
+        collaborator,
+        normalized,
+    )
+    if visita_handled:
+        return visita_reply
+
+    comment_handled, comment_reply = handle_rdv_comment_text_message(
+        sender_phone,
+        text,
+        normalized,
+    )
+    if comment_handled:
+        return comment_reply
 
     if pending is None:
         if normalized in {"meu resumo", "meuresumo", "individual"}:
@@ -926,6 +1324,48 @@ def handle_rdv_audio_comment_message(
     return _rdv_transcription_confirmation_message(transcription)
 
 
+def handle_whatsapp_audio_message(
+    sender_phone: str,
+    media_id: str,
+    mime_type: str = "",
+) -> str:
+    if _get_rdv_comment_state(sender_phone) is not None:
+        return handle_rdv_audio_comment_message(sender_phone, media_id, mime_type)
+
+    if not _audio_transcription_enabled():
+        return "Recebi seu audio, mas a transcricao esta desativada. Pode digitar a informacao?"
+
+    if not media_id:
+        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+
+    destination = _build_audio_transcription_destination(
+        sender_phone=sender_phone,
+        media_id=media_id,
+        mime_type=mime_type,
+    )
+    downloaded_path = destination
+    try:
+        downloaded_path = download_media(media_id, destination)
+        transcription = _transcribe_audio_file(downloaded_path)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao transcrever audio WhatsApp: media_id=%s status_code=%s erro=%s",
+            _mask_media_id(media_id),
+            _http_status_from_exception(exc) or "-",
+            _safe_exception_summary(exc),
+        )
+        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+    finally:
+        if not _keep_audio_after_transcription():
+            _safe_unlink(downloaded_path)
+
+    if not transcription:
+        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+
+    reply = handle_rdv_text_message(sender_phone, transcription)
+    return reply or "Audio transcrito e registrado."
+
+
 def _start_rdv_comment_state(sender_phone: str, expense_id: int) -> None:
     phone = normalize_phone(sender_phone)
     if not phone:
@@ -941,7 +1381,17 @@ def _get_rdv_comment_state(sender_phone: str) -> dict | None:
     phone = normalize_phone(sender_phone)
     if not phone:
         return None
-    return rdv_comment_states.get(phone)
+    state = rdv_comment_states.get(phone)
+    if state is None:
+        return None
+    try:
+        expense_id = int(state.get("expense_id") or 0)
+    except (TypeError, ValueError):
+        expense_id = 0
+    if expense_id <= 0 or rdv_service.get_expense(expense_id) is None:
+        rdv_comment_states.pop(phone, None)
+        return None
+    return state
 
 
 def _clear_rdv_comment_state(sender_phone: str) -> None:
@@ -986,7 +1436,7 @@ def _safe_text_for_message(text: str, limit: int = 1200) -> str:
 
 
 def _audio_transcription_enabled() -> bool:
-    return _env_flag_enabled("AUDIO_TRANSCRIPTION_ENABLED")
+    return whisper_enabled_from_env()
 
 
 def _keep_audio_after_transcription() -> bool:
@@ -998,14 +1448,13 @@ def _env_flag_enabled(name: str) -> bool:
 
 
 def _transcribe_audio_file(audio_path: Path) -> str:
+    global _audio_transcription_service
     provider = os.getenv("AUDIO_TRANSCRIPTION_PROVIDER", "whisper_local").strip()
     if provider != "whisper_local":
         raise RuntimeError(f"Provider de transcricao nao suportado: {provider}")
-    service = AudioTranscriptionService(
-        model_name=os.getenv("WHISPER_MODEL", "base").strip() or "base",
-        language=os.getenv("WHISPER_LANGUAGE", "pt").strip() or "pt",
-    )
-    return service.transcrever(str(audio_path))
+    if _audio_transcription_service is None:
+        _audio_transcription_service = AudioTranscriptionService.from_env()
+    return _audio_transcription_service.transcrever(str(audio_path))
 
 
 def _build_audio_transcription_destination(
@@ -1078,7 +1527,7 @@ def handle_visitas_text_message(
         return True, "\n".join(
             [
                 "Vamos iniciar uma visita técnica.",
-                "Qual o nome da fazenda?",
+                "Qual o nome da fazenda ou propriedade visitada?",
             ]
         )
 
@@ -1127,9 +1576,14 @@ def handle_visitas_text_message(
     if normalized_text == "fechar visita":
         if open_visit is None:
             return True, NO_OPEN_VISITA_MESSAGE
-        closed = visitas_service.fechar_visita(open_visit["id"])
-        _clear_active_visita(sender_phone, open_visit["id"])
-        return True, _visita_fechada_message(closed)
+        if _is_legacy_quick_visit(open_visit):
+            closed = visitas_service.fechar_visita(open_visit["id"])
+            _clear_active_visita(sender_phone, open_visit["id"])
+            return True, _visita_fechada_message(closed)
+        if visitas_service.existem_fotos_pendentes(open_visit["id"]):
+            return True, VISITA_FOTO_PENDENTE_MESSAGE
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
 
     if normalized_text == "cancelar visita":
         if open_visit is None:
@@ -1141,19 +1595,180 @@ def handle_visitas_text_message(
     if open_visit is None:
         return False, None
 
+    if normalized_text in {"cancelar", "sair"}:
+        visitas_service.cancelar_visita(open_visit["id"])
+        _clear_active_visita(sender_phone, open_visit["id"])
+        return True, "Visita cancelada com sucesso."
+
     state = str(open_visit.get("estado_fluxo") or "")
+    if state == "aguardando_descricao_visita":
+        validation = validate_visit_field("descricao_visita", text)
+        if not validation.ok:
+            return True, validation.error
+        saved = visitas_service.atualizar_campo(open_visit["id"], "descricao_visita", validation.value)
+        visitas_service.atualizar_campo(saved["id"], "estado_fluxo", "aguardando_observacoes_gerais")
+        return True, VISITA_OBSERVACOES_MESSAGE
+
+    if state == "aguardando_observacoes_gerais":
+        if normalized_text in VISITA_FINALIZAR_OBSERVACOES_COMMANDS:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+            return True, VISITA_OBSERVACOES_FINALIZADAS_MESSAGE
+        validation = validate_visit_field("observacoes_gerais", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.adicionar_observacao_geral(open_visit["id"], validation.value)
+        return True, "Observação salva. Envie outra observação ou finalize com: finalizar observações"
+
+    if state == "aguardando_decisao_comentario_foto":
+        pending = visitas_service.proxima_foto_pendente(open_visit["id"])
+        if pending is None:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+            return True, "Fotos salvas no relatorio."
+        if normalized_text in VISITA_FOTO_COMENTAR_COMMANDS:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_texto_comentario_foto")
+            return True, f"Digite o comentario da Foto {pending.get('indice') or 1}:"
+        if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
+            visitas_service.salvar_comentario_foto(pending["id"], "Sem comentario informado.")
+            return True, _visita_proxima_foto_ou_finaliza(open_visit["id"])
+        return True, "Responda 1 para comentar ou 2 para continuar sem comentario nesta foto."
+
+    if state == "aguardando_texto_comentario_foto":
+        pending = visitas_service.proxima_foto_pendente(open_visit["id"])
+        if pending is None:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+            return True, "Fotos salvas no relatorio."
+        validation = validate_visit_field("comentario_foto", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.salvar_comentario_foto(pending["id"], validation.value)
+        return True, _visita_proxima_foto_ou_finaliza(open_visit["id"])
+
+    if state == "aguardando_revisao_final":
+        if normalized_text == "1":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_dados_propriedade")
+            return True, _visita_corrigir_dados_message()
+        if normalized_text == "2":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_edicao_descricao")
+            return True, "Digite a nova descricao da visita:"
+        if normalized_text == "3":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_observacoes")
+            return True, _visita_corrigir_observacoes_message()
+        if normalized_text == "4":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_comentario_foto")
+            return True, _visita_corrigir_fotos_message(open_visit["id"])
+        if normalized_text == "5":
+            closed = visitas_service.fechar_visita(open_visit["id"])
+            return True, _visita_fechada_message(closed)
+        return True, _visita_resumo_final_message(open_visit["id"])
+
+    if state == "corrigindo_dados_propriedade":
+        fields = {
+            "1": ("fazenda", "Digite a nova fazenda/propriedade:"),
+            "2": ("proprietario", "Digite o novo proprietario:"),
+            "3": ("telefone_proprietario", "Digite o novo telefone do proprietario:"),
+            "4": ("gerente", "Digite o novo gerente/responsavel local:"),
+            "5": ("telefone_gerente", "Digite o novo telefone do gerente:"),
+            "6": ("area", "Digite a nova area/local visitado:"),
+        }
+        if normalized_text == "7":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_resumo_final_message(open_visit["id"])
+        if normalized_text in fields:
+            field, question = fields[normalized_text]
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", f"aguardando_edicao_campo:{field}")
+            return True, question
+        return True, _visita_corrigir_dados_message()
+
+    if state.startswith("aguardando_edicao_campo:"):
+        field = state.split(":", 1)[1]
+        validation = validate_visit_field(field, text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.atualizar_campo(open_visit["id"], field, validation.value)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
+
+    if state == "aguardando_edicao_descricao":
+        validation = validate_visit_field("descricao_visita", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.atualizar_campo(open_visit["id"], "descricao_visita", validation.value)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
+
+    if state == "corrigindo_observacoes":
+        if normalized_text == "1":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_adicao_observacao")
+            return True, "Digite a nova observacao geral:"
+        if normalized_text == "2":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_remocao_observacao")
+            return True, _visita_listar_observacoes_para_remover(open_visit)
+        if normalized_text == "3":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_reescrita_observacoes")
+            return True, "Digite todas as observacoes gerais. Cada linha sera salva como uma observacao separada:"
+        if normalized_text == "4":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_corrigir_observacoes_message()
+
+    if state == "aguardando_adicao_observacao":
+        validation = validate_visit_field("observacoes_gerais", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.adicionar_observacao_geral(open_visit["id"], validation.value)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
+
+    if state == "aguardando_remocao_observacao":
+        observacoes = visitas_service.observacoes_gerais_lista(open_visit)
+        try:
+            index = int(normalized_text) - 1
+        except ValueError:
+            index = -1
+        if 0 <= index < len(observacoes):
+            observacoes.pop(index)
+            visitas_service.substituir_observacoes_gerais(open_visit["id"], observacoes)
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_listar_observacoes_para_remover(open_visit)
+
+    if state == "aguardando_reescrita_observacoes":
+        visitas_service.substituir_observacoes_gerais(open_visit["id"], text.splitlines())
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
+
+    if state == "corrigindo_comentario_foto":
+        if normalized_text == "0":
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_resumo_final_message(open_visit["id"])
+        media = _visita_media_por_indice(open_visit["id"], normalized_text)
+        if media is None:
+            return True, _visita_corrigir_fotos_message(open_visit["id"])
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", f"aguardando_edicao_comentario_foto:{media['id']}")
+        return True, f"Digite o novo comentario da Foto {media.get('indice') or 1}:"
+
+    if state.startswith("aguardando_edicao_comentario_foto:"):
+        media_id = int(state.split(":", 1)[1])
+        validation = validate_visit_field("comentario_foto", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.salvar_comentario_foto(media_id, validation.value)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_resumo_final_message(open_visit["id"])
     if state in VISITA_FLOW_STEPS:
         field, next_question = VISITA_FLOW_STEPS[state]
-        value = _parse_visita_area(text) if field == "area_hectares" else text
-        updates = {field: value}
-        if field == "area_hectares" and _mentions_alqueires(text):
-            updates = {"area_alqueires": value}
+        validation = validate_visit_field(field, text)
+        if not validation.ok:
+            return True, validation.error
+        updates = {field: validation.value}
         next_state = _next_visita_state(state)
         updates["estado_fluxo"] = next_state
         saved = open_visit
         for update_field, update_value in updates.items():
             saved = visitas_service.atualizar_campo(saved["id"], update_field, update_value)
         visita_active_states[phone] = int(saved["id"])
+        if next_state == "aguardando_descricao_visita":
+            return True, VISITA_DESCRICAO_MESSAGE
         if next_state == "visita_aberta":
             return True, "\n".join(
                 [
@@ -1213,19 +1828,43 @@ def handle_visitas_media_message(
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
         return "Nenhuma visita em andamento encontrada."
-    visitas_service.adicionar_midia(
+    media = visitas_service.adicionar_midia(
         open_visit["id"],
         tipo="foto" if message_type == "image" else message_type,
         media_id_whatsapp=media_id,
         caminho_arquivo=file_path,
         legenda=caption,
     )
+    if message_type == "image":
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_decisao_comentario_foto")
+        pending = visitas_service.proxima_foto_pendente(open_visit["id"]) or media
+        fazenda = open_visit.get("fazenda") or "visita em andamento"
+        return "\n\n".join(
+            [
+                f"Foto salva na visita {fazenda}.",
+                _visita_foto_comentario_message(pending),
+            ]
+        )
     fazenda = open_visit.get("fazenda") or "visita em andamento"
     return "\n".join(
         [
             f"Foto salva na visita {fazenda}.",
             "Envie outra foto, observação, localização ou \"fechar visita\".",
         ]
+    )
+
+
+def _is_legacy_quick_visit(visita: dict) -> bool:
+    if not str(visita.get("fazenda") or "").strip():
+        return False
+    return not any(
+        str(visita.get(field) or "").strip()
+        for field in (
+            "descricao_visita",
+            "objetivo",
+            "observacoes",
+            "observacoes_gerais",
+        )
     )
 
 
@@ -1240,7 +1879,6 @@ def _handle_visita_direct_command(
         ("proprietario", "proprietario"),
         ("gerente", "gerente"),
         ("safra", "safra"),
-        ("tipo_visita", "tipo"),
         ("area_hectares", "hectares"),
         ("area_alqueires", "alqueires"),
         ("area_hectares", "area"),
@@ -1279,10 +1917,11 @@ def _next_visita_state(state: str) -> str:
     order = (
         "aguardando_fazenda",
         "aguardando_proprietario",
+        "aguardando_telefone_proprietario",
         "aguardando_gerente",
+        "aguardando_telefone_gerente",
         "aguardando_area",
-        "aguardando_safra",
-        "aguardando_tipo_visita",
+        "aguardando_descricao_visita",
     )
     try:
         index = order.index(state)
@@ -1291,6 +1930,44 @@ def _next_visita_state(state: str) -> str:
     if index + 1 >= len(order):
         return "visita_aberta"
     return order[index + 1]
+
+
+def _normalize_optional_visit_value(value: str) -> str:
+    normalized = _normalize_caption(value)
+    if normalized in {"nao informado", "nao sei", "sem telefone", "nao tem"}:
+        return "Nao informado"
+    return str(value or "").strip()
+
+
+def _visita_foto_comentario_message(media: dict) -> str:
+    index = media.get("indice") or 1
+    return "\n".join(
+        [
+            f"Foto {index} adicionada ao relatorio.",
+            "",
+            "Deseja adicionar um comentario para esta foto?",
+            "",
+            "1 - Sim, quero comentar",
+            "2 - Nao, continuar sem comentario",
+        ]
+    )
+
+
+def _visita_proxima_foto_ou_finaliza(visita_id: int) -> str:
+    pending = visitas_service.proxima_foto_pendente(visita_id)
+    if pending is not None:
+        visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_decisao_comentario_foto")
+        return _visita_foto_comentario_message(pending)
+    visitas_service.atualizar_campo(visita_id, "estado_fluxo", "visita_aberta")
+    return "\n".join(
+        [
+            "Fotos salvas no relatorio.",
+            "",
+            "Voce pode continuar enviando fotos, adicionar mais informacoes ou finalizar a visita.",
+            "",
+            "Para finalizar, envie: fechar visita",
+        ]
+    )
 
 
 def _parse_visita_area(text: str) -> float | None:
@@ -1693,6 +2370,162 @@ def _visita_fechada_message(visita: dict) -> str:
     )
 
 
+def _visita_status_message(visita: dict) -> str:
+    return "\n".join(
+        [
+            "Visita em andamento.",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Proprietário: {visita.get('proprietario') or '-'}",
+            f"Gerente: {visita.get('gerente') or '-'}",
+            f"Área/local: {visita.get('area') or '-'}",
+            f"Descrição da visita: {visitas_service.descricao_da_visita(visita) or '-'}",
+        ]
+    )
+
+
+def _visita_resumo_final_message(visita_id: int) -> str:
+    resumo = visitas_service.obter_visita_completa(visita_id) or visitas_service.obter_visita(visita_id) or {}
+    observacoes = visitas_service.observacoes_gerais_lista(resumo)
+    midias = resumo.get("midias") or []
+    lines = [
+        "Resumo da visita técnica",
+        "",
+        "Dados da propriedade",
+        f"Fazenda/propriedade: {resumo.get('fazenda') or '-'}",
+        f"Proprietário: {resumo.get('proprietario') or '-'}",
+        f"Telefone do proprietário: {resumo.get('telefone_proprietario') or '-'}",
+        f"Gerente/responsável local: {resumo.get('gerente') or '-'}",
+        f"Telefone do gerente: {resumo.get('telefone_gerente') or '-'}",
+        f"Área/local visitado: {resumo.get('area') or '-'}",
+        "",
+        "Descrição da visita",
+        visitas_service.descricao_da_visita(resumo) or "-",
+        "",
+        "Observações gerais",
+    ]
+    if observacoes:
+        lines.extend(f"{index}. {item}" for index, item in enumerate(observacoes, start=1))
+    else:
+        lines.append("-")
+    lines.extend(["", "Fotos da visita"])
+    fotos = [media for media in midias if media.get("tipo") == "foto"]
+    if fotos:
+        for media in fotos:
+            index = media.get("indice") or 1
+            lines.extend(
+                [
+                    f"Foto {index}",
+                    f"Comentário: {media.get('comentario') or 'Sem comentário informado.'}",
+                    "",
+                ]
+            )
+    else:
+        lines.append("-")
+    lines.extend(
+        [
+            "",
+            "Deseja corrigir alguma informação antes de finalizar?",
+            "",
+            "1 - Corrigir dados da propriedade",
+            "2 - Corrigir descrição da visita",
+            "3 - Corrigir observações gerais",
+            "4 - Corrigir comentários das fotos",
+            "5 - Finalizar relatório",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _visita_corrigir_dados_message() -> str:
+    return "\n".join(
+        [
+            "Qual informação deseja corrigir?",
+            "",
+            "1 - Fazenda/propriedade",
+            "2 - Proprietário",
+            "3 - Telefone do proprietário",
+            "4 - Gerente/responsável local",
+            "5 - Telefone do gerente",
+            "6 - Área/local visitado",
+            "7 - Voltar",
+        ]
+    )
+
+
+def _visita_corrigir_observacoes_message() -> str:
+    return "\n".join(
+        [
+            "Como deseja corrigir as observações?",
+            "",
+            "1 - Adicionar nova observação",
+            "2 - Remover uma observação",
+            "3 - Reescrever todas as observações",
+            "4 - Voltar",
+        ]
+    )
+
+
+def _visita_listar_observacoes_para_remover(visita: dict) -> str:
+    observacoes = visitas_service.observacoes_gerais_lista(visita)
+    lines = ["Qual observação deseja remover?", ""]
+    if observacoes:
+        lines.extend(f"{index} - {item}" for index, item in enumerate(observacoes, start=1))
+    else:
+        lines.append("Nenhuma observação geral registrada.")
+    return "\n".join(lines)
+
+
+def _visita_corrigir_fotos_message(visita_id: int) -> str:
+    resumo = visitas_service.obter_visita_completa(visita_id) or {}
+    fotos = [media for media in resumo.get("midias") or [] if media.get("tipo") == "foto"]
+    lines = ["Qual comentário de foto deseja corrigir?", ""]
+    if fotos:
+        for media in fotos:
+            comment = media.get("comentario") or "Sem comentário informado."
+            lines.append(f"{media.get('indice') or 1} - Foto {media.get('indice') or 1} - {comment}")
+    else:
+        lines.append("Nenhuma foto registrada.")
+    lines.append("0 - Voltar")
+    return "\n".join(lines)
+
+
+def _visita_media_por_indice(visita_id: int, indice_texto: str) -> dict | None:
+    if indice_texto == "0":
+        visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_revisao_final")
+        return None
+    try:
+        indice = int(indice_texto)
+    except ValueError:
+        return None
+    resumo = visitas_service.obter_visita_completa(visita_id) or {}
+    for media in resumo.get("midias") or []:
+        if media.get("tipo") == "foto" and int(media.get("indice") or 0) == indice:
+            return media
+    return None
+
+
+def _visita_fechada_message(visita: dict) -> str:
+    resumo = visitas_service.visita_resumo(visita["id"])
+    fotos = len(resumo.get("midias") or [])
+    localizacoes = len(resumo.get("localizacoes") or [])
+    return "\n".join(
+        [
+            "Visita fechada com sucesso.",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Proprietario: {visita.get('proprietario') or '-'}",
+            f"Gerente: {visita.get('gerente') or '-'}",
+            f"Area/local: {visita.get('area') or '-'}",
+            f"Fotos: {fotos}",
+            f"Localizacoes: {localizacoes}",
+            "",
+            "Comandos disponiveis:",
+            "relatorio visita",
+            "planilha visitas",
+            "localizacao visita",
+        ]
+    )
+
+
 def _visita_localizacoes_message(visita_id: int) -> str:
     resumo = visitas_service.visita_resumo(visita_id)
     locations = resumo.get("localizacoes") or []
@@ -1715,13 +2548,7 @@ def _visita_localizacoes_message(visita_id: int) -> str:
 
 
 def _is_listar_visitas_command(normalized_text: str) -> bool:
-    return normalized_text in {
-        "visitas",
-        "listar visitas",
-        "visitas hoje",
-        "visitas abertas",
-        "fazendas",
-    }
+    return normalized_text in report_aliases(handler="visit_list")
 
 
 def _listar_visitas_message(normalized_text: str) -> str:
@@ -1746,9 +2573,13 @@ def _listar_visitas_message(normalized_text: str) -> str:
         lines.append("")
     lines.extend(
         [
-            "Para gerar relatório, envie:",
+            "Para gerar PDF individual de uma visita, envie:",
             f"relatório visita {visitas[0]['id']}",
             "",
+        ]
+    )
+    lines.extend(
+        [
             "Para buscar por fazenda, envie:",
             f"relatório fazenda {visitas[0].get('fazenda') or 'Nome da Fazenda'}",
         ]
@@ -1773,16 +2604,13 @@ def _format_visita_list_item(visita: dict, detailed: bool = False) -> list[str]:
 
 
 def _is_planilha_visitas_command(normalized_text: str) -> bool:
-    if normalized_text == "fazendas visitadas":
+    if normalized_text in report_aliases(report_id="menu_visit_excel"):
         return True
     return re.fullmatch(r"planilha visitas(?:\s+.+)?", normalized_text) is not None
 
 
 def _is_relatorio_visita_command(normalized_text: str) -> bool:
-    return (
-        re.fullmatch(r"relatorio visitas?(?:\s+\d+)?", normalized_text) is not None
-        or re.fullmatch(r"relatorio fazenda\s+.+", normalized_text) is not None
-    )
+    return parse_visit_report_command(normalized_text) is not None
 
 
 def _is_localizacao_visita_command(normalized_text: str) -> bool:
@@ -1806,7 +2634,10 @@ def _send_visitas_excel(sender_phone: str, normalized_text: str = "") -> None:
 
 
 def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
-    visita = _select_visita_for_pdf(normalized_text)
+    command = parse_visit_report_command(normalized_text)
+    if command is None or command.kind != "by_id" or command.visita_id is None:
+        return False
+    visita = _select_visita_for_pdf(command.visita_id)
     if visita is None:
         return False
     _send_visita_pdf_data(sender_phone, visita)
@@ -1825,9 +2656,12 @@ def _send_visita_pdf_data(sender_phone: str, visita: dict) -> None:
 
 
 def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str) -> str | None:
-    fazenda_match = re.fullmatch(r"relatorio fazenda\s+(.+)", normalized_text)
-    if fazenda_match is not None:
-        query = _extract_relatorio_fazenda_query(text)
+    command = parse_visit_report_command(normalized_text, text)
+    if command is None:
+        return None
+
+    if command.kind == "by_fazenda":
+        query = command.fazenda_query
         data = visitas_service.buscar_visitas_por_fazenda(query)
         visitas = data.get("visitas") or []
         if not visitas:
@@ -1843,9 +2677,8 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
         _send_visita_pdf_data(sender_phone, visita)
         return None
 
-    id_match = re.fullmatch(r"relatorio visitas?\s+(\d+)", normalized_text)
-    if id_match is not None:
-        visita = _select_visita_for_pdf(normalized_text)
+    if command.kind == "by_id" and command.visita_id is not None:
+        visita = _select_visita_for_pdf(command.visita_id)
         if visita is None:
             return (
                 "Não encontrei essa visita técnica.\n"
@@ -1858,48 +2691,29 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
     visitas = data.get("visitas") or []
     if not visitas:
         return NO_VALID_VISITA_MESSAGE
-    if len(visitas) == 1:
-        visita = visitas_service.obter_visita_completa(visitas[0]["id"])
-        if visita is None:
-            return NO_VALID_VISITA_MESSAGE
-        _send_visita_pdf_data(sender_phone, visita)
-        return None
     return _multiple_visitas_report_message(visitas)
 
 
-def _select_visita_for_pdf(normalized_text: str) -> dict | None:
-    match = re.fullmatch(r"relatorio visitas?(?:\s+(\d+))?", normalized_text)
-    if match is not None and match.group(1):
-        visita_id = int(match.group(1))
-        raw_visita = visitas_service.obter_visita_por_id(visita_id)
-        if raw_visita is None:
-            return None
-        if raw_visita.get("status") == "cancelada":
-            raise ValueError("visita_cancelada")
-        visita = visitas_service.obter_visita_completa(visita_id)
-        if visita is None:
-            return None
-        if visita.get("status") not in {"aberta", "fechada"}:
-            return None
-        return visita
-    return visitas_service.obter_ultima_visita()
-
-
-def _extract_relatorio_fazenda_query(text: str) -> str:
-    match = re.match(r"(?is)\s*relat[oó]rio\s+fazenda\s+(.+?)\s*$", str(text or ""))
-    if match is not None:
-        return match.group(1).strip()
-    return re.sub(r"(?i)^relatorio\s+fazenda\s+", "", _normalize_caption(text)).strip()
+def _select_visita_for_pdf(visita_id: int) -> dict | None:
+    raw_visita = visitas_service.obter_visita_por_id(visita_id)
+    if raw_visita is None:
+        return None
+    if raw_visita.get("status") == "cancelada":
+        raise ValueError("visita_cancelada")
+    visita = visitas_service.obter_visita_completa(visita_id)
+    if visita is None:
+        return None
+    if visita.get("status") not in {"aberta", "fechada"}:
+        return None
+    return visita
 
 
 def _multiple_fazenda_visitas_message(query: str, visitas: list[dict]) -> str:
     lines = [f'Encontrei mais de uma visita para "{query}":', ""]
     for visita in visitas[:10]:
-        lines.append(
-            f"#{visita.get('id')} - {visita.get('fazenda') or '-'} - "
-            f"{_format_date_br(visita.get('data_visita'))} - {visita.get('status') or '-'}"
-        )
-    lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
+        lines.extend(_format_visita_list_item(visita, detailed=True))
+        lines.append("")
+    lines.extend(["Escolha uma pelo ID:", f"relatório visita {visitas[0]['id']}"])
     return "\n".join(lines)
 
 
@@ -1910,7 +2724,8 @@ def _multiple_visitas_report_message(visitas: list[dict]) -> str:
         "",
     ]
     for visita in visitas[:10]:
-        lines.extend(_format_visita_list_item(visita))
+        lines.extend(_format_visita_list_item(visita, detailed=True))
+        lines.append("")
     lines.extend(["", "Envie:", f"relatório visita {visitas[0]['id']}"])
     return "\n".join(lines)
 
@@ -2013,9 +2828,113 @@ def _open_trip_message(expense: dict) -> str:
     return "\n".join(lines)
 
 
+def _route_km_message(
+    sender_phone: str,
+    collaborator: dict,
+    text: str,
+    normalized_text: str,
+    open_km: dict | None,
+) -> str | None:
+    menu_state = whatsapp_menu_states.get(sender_phone)
+    if menu_state == "km_menu":
+        if normalized_text in {"1", "iniciar", "iniciar viagem", "inicio", "km inicio"}:
+            whatsapp_menu_states[sender_phone] = "km_waiting_start"
+            return "Informe o KM inicial do veiculo:"
+        if normalized_text in {"2", "finalizar", "finalizar viagem", "fim", "termino", "km termino"}:
+            whatsapp_menu_states[sender_phone] = "km_waiting_end"
+            return "Informe o KM final do veiculo:"
+        return KM_MENU_MESSAGE
+
+    if menu_state == "km_waiting_start":
+        km_value = _parse_km_value(text)
+        if km_value is None:
+            return "Quilometragem invalida. Informe somente o KM inicial."
+        whatsapp_menu_states.pop(sender_phone, None)
+        return _start_km_trip(sender_phone, collaborator, km_value)
+
+    if menu_state == "km_waiting_end":
+        km_value = _parse_km_value(text)
+        if km_value is None:
+            return "Quilometragem invalida. Informe somente o KM final."
+        whatsapp_menu_states.pop(sender_phone, None)
+        return _finish_km_trip(sender_phone, km_value)
+
+    if open_km is None:
+        return None
+
+    km_state = open_km.get("status_fluxo")
+    if km_state == "aguardando_km_origem":
+        saved = rdv_service.save_km_origin(open_km["id"], text)
+        return "\n".join(
+            [
+                f"Origem registrada: {saved['cidade_origem']}.",
+                "Qual a cidade/local de destino?",
+            ]
+        )
+    if km_state == "aguardando_km_destino":
+        saved = rdv_service.save_km_destination(open_km["id"], text)
+        return "\n".join(
+            [
+                f"Destino registrado: {saved['cidade_destino']}.",
+                "Quando terminar, envie:",
+                "km termino 120500",
+            ]
+        )
+    return None
+
+
+def _start_km_trip(sender_phone: str, collaborator: dict, km_value: float) -> str:
+    open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+    if open_km is not None:
+        return _open_trip_message(open_km)
+    started = rdv_service.create_whatsapp_km_launch(
+        collaborator_id=collaborator["id"],
+        phone=sender_phone,
+        km_start=km_value,
+    )
+    return "\n".join(
+        [
+            f"KM inicial: {_format_km_text(started['km_inicio'])}",
+            "Qual a cidade/local de origem?",
+        ]
+    )
+
+
+def _finish_km_trip(sender_phone: str, km_value: float) -> str:
+    open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+    if open_km is None:
+        return _no_open_trip_message()
+    if open_km.get("status_fluxo") == "aguardando_km_origem":
+        return "Antes de finalizar, informe a cidade/local de origem da viagem."
+    if open_km.get("status_fluxo") == "aguardando_km_destino":
+        return "Antes de finalizar, informe a cidade/local de destino da viagem."
+    km_start = float(open_km.get("km_inicio") or 0)
+    if km_value <= km_start:
+        return (
+            "A quilometragem final deve ser maior que a inicial. "
+            "A viagem continua em andamento."
+        )
+    completed = rdv_service.complete_km_end(open_km["id"], km_value)
+    return "\n".join(
+        [
+            "Viagem finalizada com sucesso.",
+            f"Origem: {completed.get('cidade_origem') or '-'}",
+            f"Destino: {completed.get('cidade_destino') or '-'}",
+            f"KM inicial: {_format_km_text(completed['km_inicio'])}",
+            f"KM final: {_format_km_text(completed['km_fim'])}",
+            f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
+        ]
+    )
+
+
 def _is_rdv_excel_command(text: str) -> bool:
     request = _parse_rdv_report_command(_normalize_caption(text))
     return request is not None and request["kind"] == "excel"
+
+
+def _is_rdv_pdf_command(text: str) -> bool:
+    request = _parse_rdv_report_command(_normalize_caption(text))
+    return request is not None and request["kind"] == "pdf"
 
 
 def _handle_global_rdv_command(
@@ -2047,11 +2966,33 @@ def _handle_global_rdv_command(
             return True, _rdv_excel_fallback_message()
         return True, None
 
+    if report_request is not None and report_request["kind"] == "pdf":
+        try:
+            if report_request["period"] == "week":
+                _send_weekly_rdv_pdf(sender_phone, week=report_request["reference"])
+            else:
+                _send_monthly_rdv_pdf(sender_phone, month=report_request["reference"])
+        except Exception as exc:
+            logger.exception(
+                "Falha ao enviar PDF RDV pelo WhatsApp: to=%s erro=%s",
+                _mask_phone(sender_phone),
+                _safe_exception_summary(exc),
+            )
+            return True, _rdv_document_fallback_message()
+        return True, None
+
     km_command = _parse_km_command(normalized_text)
     if km_command is not None:
         action, raw_value = km_command
-        if action == "help":
-            return True, KM_HELP_MESSAGE
+        if action == "menu":
+            whatsapp_menu_states[sender_phone] = "km_menu"
+            return True, KM_MENU_MESSAGE
+        if action == "start_prompt":
+            whatsapp_menu_states[sender_phone] = "km_waiting_start"
+            return True, "Informe o KM inicial do veiculo:"
+        if action == "end_prompt":
+            whatsapp_menu_states[sender_phone] = "km_waiting_end"
+            return True, "Informe o KM final do veiculo:"
         if not raw_value:
             example_action = "inicio" if action == "start" else "termino"
             example_value = "120350" if action == "start" else "120500"
@@ -2068,59 +3009,25 @@ def _handle_global_rdv_command(
             return True, (
                 "Quilometragem invalida. Informe um numero junto com o comando."
             )
-        open_km = rdv_service.get_open_km_launch_by_phone(sender_phone)
+        whatsapp_menu_states.pop(sender_phone, None)
         if action == "start":
-            if open_km is not None:
-                return True, _open_trip_message(open_km)
-            started = rdv_service.create_whatsapp_km_launch(
-                collaborator_id=collaborator["id"],
-                phone=sender_phone,
-                km_start=km_value,
-            )
-            return True, "\n".join(
-                [
-                    f"KM inicial: {_format_km_text(started['km_inicio'])}",
-                    "Qual a cidade/local de origem?",
-                ]
-            )
-        if open_km is None:
-            return True, _no_open_trip_message()
-        if open_km.get("status_fluxo") == "aguardando_km_origem":
-            return True, (
-                "Antes de finalizar, informe a cidade/local de origem da viagem."
-            )
-        if open_km.get("status_fluxo") == "aguardando_km_destino":
-            return True, (
-                "Antes de finalizar, informe a cidade/local de destino da viagem."
-            )
-        km_start = float(open_km.get("km_inicio") or 0)
-        if km_value <= km_start:
-            return True, (
-                "A quilometragem final deve ser maior que a inicial. "
-                "A viagem continua em andamento."
-            )
-        completed = rdv_service.complete_km_end(open_km["id"], km_value)
-        return True, "\n".join(
-            [
-                "Viagem finalizada com sucesso.",
-                f"Origem: {completed.get('cidade_origem') or '-'}",
-                f"Destino: {completed.get('cidade_destino') or '-'}",
-                f"KM inicial: {_format_km_text(completed['km_inicio'])}",
-                f"KM final: {_format_km_text(completed['km_fim'])}",
-                f"KM rodado: {_format_km_text(completed['km_rodado'])} km",
-            ]
-        )
+            return True, _start_km_trip(sender_phone, collaborator, km_value)
+        return True, _finish_km_trip(sender_phone, km_value)
 
     return False, None
 
 
 def _parse_km_command(normalized_text: str) -> tuple[str, str] | None:
-    if normalized_text == "km":
-        return "help", ""
+    if normalized_text in {"km", "registrar km", "odometro"}:
+        return "menu", ""
+    if normalized_text in {"iniciar viagem"}:
+        return "start_prompt", ""
+    if normalized_text in {"finalizar viagem"}:
+        return "end_prompt", ""
 
     patterns = (
-        ("start", r"^(?:km inicio|inicio km|iniciar km)(?:\s+(.*))?$"),
-        ("end", r"^(?:km termino|km fim|km final|fim km|finalizar km)(?:\s+(.*))?$"),
+        ("start", r"^(?:km inicio|km inicial|inicio km|iniciar km|iniciar viagem|odometro)(?:\s+(.*))?$"),
+        ("end", r"^(?:km termino|km fim|km final|fim km|finalizar km|finalizar viagem)(?:\s+(.*))?$"),
     )
     for action, pattern in patterns:
         match = re.fullmatch(pattern, normalized_text)
@@ -2134,60 +3041,7 @@ def _is_standalone_number(text: str) -> bool:
 
 
 def _parse_rdv_report_command(normalized_text: str) -> dict | None:
-    text = str(normalized_text or "").strip()
-    match = re.fullmatch(r"(resumo|planilha|relatorio|excel)(?:\s+(.+))?", text)
-    if match is None:
-        return None
-
-    command = match.group(1)
-    argument = str(match.group(2) or "").strip()
-    kind = "summary" if command == "resumo" else "excel"
-
-    if re.fullmatch(r"\d{4}-W\d{2}", argument, flags=re.IGNORECASE):
-        return {
-            "kind": kind,
-            "period": "week",
-            "reference": argument.upper(),
-            "scope": "all",
-        }
-    if re.fullmatch(r"\d{4}-\d{2}", argument):
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": argument,
-            "scope": "all",
-        }
-    if argument in {"semanal", "semana"}:
-        return {
-            "kind": kind,
-            "period": "week",
-            "reference": calculate_week_reference(date.today()),
-            "scope": "all",
-        }
-    if argument in {"anterior", "mes anterior"}:
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": _previous_month_reference(date.today()),
-            "scope": "all",
-        }
-    if argument in {"", "mensal", "mes"}:
-        return {
-            "kind": kind,
-            "period": "month",
-            "reference": calculate_month_reference(date.today()),
-            "scope": "all",
-        }
-    return None
-
-
-def _previous_month_reference(today: date) -> str:
-    year = today.year
-    month = today.month - 1
-    if month == 0:
-        year -= 1
-        month = 12
-    return f"{year:04d}-{month:02d}"
+    return parse_rdv_report_command(normalized_text, today=date.today())
 
 
 def _send_monthly_rdv_excel(sender_phone: str, month: str = "") -> None:
@@ -2218,6 +3072,32 @@ def _send_weekly_rdv_excel(sender_phone: str, week: str = "") -> None:
     )
 
 
+def _send_monthly_rdv_pdf(sender_phone: str, month: str = "") -> None:
+    selected_month = month or calculate_month_reference(date.today())
+    report_data = rdv_service.monthly_report_data(month=selected_month)
+    content = build_monthly_rdv_pdf(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_MONTHLY_PDF_FILENAME,
+        caption=RDV_MONTHLY_PDF_CAPTION,
+        mime_type=RDV_PDF_MIME_TYPE,
+    )
+
+
+def _send_weekly_rdv_pdf(sender_phone: str, week: str = "") -> None:
+    selected_week = week or calculate_week_reference(date.today())
+    report_data = rdv_service.weekly_report_data(week=selected_week)
+    content = build_weekly_rdv_pdf(report_data)
+    send_whatsapp_document(
+        sender_phone,
+        content,
+        filename=RDV_WEEKLY_PDF_FILENAME,
+        caption=RDV_WEEKLY_PDF_CAPTION,
+        mime_type=RDV_PDF_MIME_TYPE,
+    )
+
+
 def _rdv_excel_fallback_message() -> str:
     public_url = _base_public_url()
     if public_url:
@@ -2226,6 +3106,13 @@ def _rdv_excel_fallback_message() -> str:
             "Nao consegui enviar o arquivo agora. "
             f"Voce pode baixar pelo painel: {download_url}"
         )
+    return (
+        "Nao consegui enviar o arquivo agora. "
+        "Tente novamente mais tarde ou baixe pelo painel."
+    )
+
+
+def _rdv_document_fallback_message() -> str:
     return (
         "Nao consegui enviar o arquivo agora. "
         "Tente novamente mais tarde ou baixe pelo painel."
@@ -2554,8 +3441,43 @@ def _log_whatsapp_webhook_summary(payload: dict) -> None:
 
 
 def _extract_text(message: dict) -> str:
+    if str(message.get("type") or "") == "interactive":
+        return _extract_interactive_command(message)
     text = message.get("text") or {}
     return str(text.get("body") or "").strip()
+
+
+def _extract_interactive_command(message: dict) -> str:
+    reply_id = _extract_interactive_reply_id(message)
+    if reply_id in INTERACTIVE_COMMAND_IDS:
+        return INTERACTIVE_COMMAND_IDS[reply_id]
+
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return ""
+    reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+    if not isinstance(reply, dict):
+        return ""
+    title = str(reply.get("title") or "").strip()
+    return title
+
+
+def _extract_interactive_reply_id(message: dict) -> str:
+    interactive = message.get("interactive") or {}
+    if not isinstance(interactive, dict):
+        return ""
+
+    button_reply = interactive.get("button_reply") or {}
+    if isinstance(button_reply, dict):
+        reply_id = str(button_reply.get("id") or "").strip()
+        if reply_id:
+            return reply_id
+
+    list_reply = interactive.get("list_reply") or {}
+    if isinstance(list_reply, dict):
+        return str(list_reply.get("id") or "").strip()
+
+    return ""
 
 
 def _extract_caption(message: dict, message_type: str) -> str:
@@ -2895,6 +3817,32 @@ def _safe_send_text(to: str, message: str) -> None:
         send_whatsapp_text(to, message)
     except Exception:
         logger.exception("Erro ao enviar resposta de WhatsApp para %s", _mask_phone(to))
+
+
+def _send_rdv_reply(to: str, command_text: str, reply: str) -> None:
+    normalized = _normalize_caption(command_text)
+    try:
+        if normalized in MENU_OPEN_COMMANDS and reply == MAIN_MENU_MESSAGE:
+            send_main_menu_interactive(to)
+            return
+        if normalized == "relatorios" and reply == REPORTS_MENU_MESSAGE:
+            send_reports_menu_interactive(to)
+            return
+        if normalized in KM_CLEAR_REQUEST_COMMANDS and reply == KM_CLEAR_WARNING:
+            send_confirmation_buttons(
+                to,
+                KM_CLEAR_WARNING,
+                confirm_id="confirm_clear_km",
+                confirm_title="Limpar KM",
+            )
+            return
+    except Exception:
+        logger.exception(
+            "Falha ao enviar mensagem interativa; usando fallback texto para %s",
+            _mask_phone(to),
+        )
+
+    _safe_send_text(to, reply)
 
 
 def _safe_payload_for_log(payload: dict) -> str:

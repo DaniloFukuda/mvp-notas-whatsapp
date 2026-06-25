@@ -24,11 +24,11 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
 
             assert api_whatsapp.handle_rdv_text_message(
                 sender, "km"
-            ) == api_whatsapp.KM_HELP_MESSAGE
+            ) == api_whatsapp.KM_MENU_MESSAGE
             assert service.get_open_km_launch_by_phone(sender) is None
 
             loose_number = api_whatsapp.handle_rdv_text_message(sender, "1200")
-            assert loose_number == api_whatsapp.MENU_NUMBER_MESSAGE
+            assert loose_number == api_whatsapp.KM_MENU_MESSAGE
             assert service.list_launches() == []
 
             empty_summary = api_whatsapp.handle_rdv_text_message(sender, "resumo")
@@ -153,6 +153,7 @@ def test_explicit_km_flow_does_not_capture_regular_messages():
         api_whatsapp.rdv_service = original_service
         api_whatsapp._send_weekly_rdv_excel = original_excel_sender
         api_whatsapp._send_monthly_rdv_excel = original_monthly_excel_sender
+        api_whatsapp.whatsapp_menu_states.clear()
 
 
 def test_loose_number_outside_manual_value_state_does_not_create_launch():
@@ -350,6 +351,9 @@ def test_manual_value_then_manual_date_and_category_completes_rdv():
 
 
 def test_supported_command_aliases():
+    assert api_whatsapp._parse_km_command("registrar km") == ("menu", "")
+    assert api_whatsapp._parse_km_command("iniciar viagem") == ("start_prompt", "")
+    assert api_whatsapp._parse_km_command("finalizar viagem") == ("end_prompt", "")
     assert api_whatsapp._parse_km_command("inicio km 120350") == (
         "start",
         "120350",
@@ -364,3 +368,76 @@ def test_supported_command_aliases():
         "120500",
     )
     assert api_whatsapp._parse_km_command("km final 120500") == ("end", "120500")
+
+
+def test_km_menu_flow_has_priority_over_rdv_receipt_state():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            api_whatsapp.whatsapp_menu_states.clear()
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_data_comprovante",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "registrar km")
+            assert reply == api_whatsapp.KM_MENU_MESSAGE
+
+            start_reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+            assert "KM inicial" in start_reply
+            assert "comprovante" not in start_reply.lower()
+
+            km_reply = api_whatsapp.handle_rdv_text_message(sender, "36988")
+            assert "Qual a cidade/local de origem?" in km_reply
+            assert "comprovante" not in km_reply.lower()
+
+            origin_reply = api_whatsapp.handle_rdv_text_message(sender, "Mozarlandia GO")
+            assert "Qual a cidade/local de destino?" in origin_reply
+            assert "comprovante" not in origin_reply.lower()
+
+            destination_reply = api_whatsapp.handle_rdv_text_message(sender, "Fazenda Modelo")
+            assert "km termino 120500" in destination_reply
+            assert "data do comprovante" not in destination_reply.lower()
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+
+
+def test_open_km_state_has_priority_over_pending_receipt_date():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            service.register_whatsapp_expense(
+                colaborador_id=collaborator["id"],
+                colaborador=collaborator["nome"],
+                telefone_origem=sender,
+                tipo_entrada="imagem",
+                categoria="outro",
+                status_fluxo="aguardando_data_comprovante",
+                caminho_arquivo="comprovante.jpg",
+            )
+
+            started = api_whatsapp.handle_rdv_text_message(sender, "km inicio 36988")
+            assert "Qual a cidade/local de origem?" in started
+
+            origin_reply = api_whatsapp.handle_rdv_text_message(sender, "Mozarlandia GO")
+            date_like_reply = api_whatsapp.handle_rdv_text_message(sender, "19/06/2026")
+
+            assert "comprovante" not in origin_reply.lower()
+            assert "data do comprovante" not in date_like_reply.lower()
+            assert "Destino registrado" in date_like_reply
+    finally:
+        api_whatsapp.rdv_service = original_service

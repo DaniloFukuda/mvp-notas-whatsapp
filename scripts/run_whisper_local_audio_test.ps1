@@ -6,13 +6,13 @@ Transcreve um audio ficticio localmente com Whisper, sem WhatsApp, Meta API ou s
 Caminho do arquivo de audio ficticio.
 
 .PARAMETER Model
-Modelo Whisper. Default: base.
+Modelo Whisper. Default: tiny.
 
 .PARAMETER Language
 Idioma da transcricao. Default: pt.
 
 .PARAMETER Output
-Arquivo .txt opcional para salvar a transcricao.
+Arquivo .txt para salvar a transcricao. Default: output/transcricao_teste.txt.
 
 .PARAMETER KeepAudio
 Parametro de compatibilidade repassado ao script Python.
@@ -21,9 +21,9 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Audio,
 
-    [string]$Model = "base",
+    [string]$Model = "tiny",
     [string]$Language = "pt",
-    [string]$Output = "",
+    [string]$Output = "output/transcricao_teste.txt",
     [switch]$KeepAudio
 )
 
@@ -80,12 +80,24 @@ $arguments = @(
     "--language", $Language
 )
 
-if ($Output.Trim()) {
-    $arguments += @("--output", $Output)
+$outputPath = $Output.Trim()
+if ($outputPath) {
+    $arguments += @("--output", $outputPath)
 }
 
 if ($KeepAudio) {
     $arguments += "--keep-audio"
 }
 
+$exitCode = 0
 python @arguments
+$exitCode = $LASTEXITCODE
+
+if ($exitCode -eq 0 -and $outputPath -and (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+    Write-Host ""
+    Write-Host "Transcricao salva em: $outputPath"
+    Write-Host "Conteudo:"
+    Get-Content -LiteralPath $outputPath
+}
+
+exit $exitCode

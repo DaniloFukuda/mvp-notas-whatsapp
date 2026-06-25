@@ -8,6 +8,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import api_whatsapp
 from services.rdv_service import RDVService
+from services.visitas_service import VisitasTecnicasService
 
 
 def _install_service(temp_dir: str):
@@ -112,6 +113,63 @@ def test_audio_transcription_enabled_saves_pending_comment_and_removes_temp_file
         api_whatsapp.download_media = original_download
         api_whatsapp._transcribe_audio_file = original_transcriber
         api_whatsapp.rdv_comment_states.clear()
+
+
+def test_audio_without_pending_rdv_comment_flows_as_text_message(monkeypatch, tmp_path):
+    original_sender = api_whatsapp.send_whatsapp_text
+    original_download = api_whatsapp.download_media
+    original_transcriber = api_whatsapp._transcribe_audio_file
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rdv = RDVService(Path(temp_dir) / "rdv.db")
+            visitas = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+            api_whatsapp.rdv_service = rdv
+            api_whatsapp.visitas_service = visitas
+            api_whatsapp.rdv_comment_states.clear()
+            api_whatsapp.visita_active_states.clear()
+            collaborator = rdv.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            sent = []
+            created_paths = []
+            api_whatsapp.send_whatsapp_text = lambda to, message: sent.append((to, message))
+            monkeypatch.setenv("WHISPER_ENABLED", "true")
+            monkeypatch.setenv("WHISPER_KEEP_AUDIO", "false")
+            monkeypatch.setenv("WHISPER_TMP_DIR", str(tmp_path))
+
+            def fake_download(media_id, destination):
+                path = Path(destination)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fake-audio")
+                created_paths.append(path)
+                return path
+
+            api_whatsapp.download_media = fake_download
+            api_whatsapp._transcribe_audio_file = lambda path: "visita"
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.audio.generic",
+                    "timestamp": "1781900000",
+                    "type": "audio",
+                    "audio": {"id": "media-audio-3", "mime_type": "audio/ogg"},
+                }
+            )
+
+            assert sent
+            assert "Vamos iniciar uma visita" in sent[-1][1]
+            assert visitas.obter_visita_aberta(sender)["estado_fluxo"] == "aguardando_fazenda"
+            assert created_paths and not created_paths[0].exists()
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_text = original_sender
+        api_whatsapp.download_media = original_download
+        api_whatsapp._transcribe_audio_file = original_transcriber
+        api_whatsapp.rdv_comment_states.clear()
+        api_whatsapp.visita_active_states.clear()
 
 
 def test_confirming_transcribed_audio_saves_observation():
