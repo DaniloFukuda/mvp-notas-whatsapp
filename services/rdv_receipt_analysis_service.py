@@ -69,12 +69,16 @@ class RDVReceiptAnalysisService:
             reasons.append("url_fiscal_encontrada")
         if access_key:
             reasons.append("chave_acesso_encontrada")
+        if _has_receipt_marker(content):
+            reasons.append("marcador_comprovante_encontrado")
 
         confidence = 0.0
         if value is not None:
             confidence = 0.95 if source == "qr_code" else 0.85
         elif any((detected_date, supplier, url, access_key)):
             confidence = 0.5
+        elif "marcador_comprovante_encontrado" in reasons:
+            confidence = 0.35
 
         return RDVReceiptAnalysisResult(
             valor_detectado=value,
@@ -479,6 +483,21 @@ def _has_precise_context_value(text: str) -> bool:
             r"\b(?:VALOR\s+TOTAL|VALOR\s+PAGO|V?ALOR\s+INFOR?MADO)\b"
             r"[^\d\r\n]{0,60}\d{1,9}(?:\.\d{3})*[.,]\d{2}\b",
             text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _has_receipt_marker(text: str) -> bool:
+    normalized = _strip_accents(text).lower()
+    return bool(
+        re.search(
+            r"\b("
+            r"valor|total|r\s*\$|cnpj|cpf/cnpj|cupom|nota\s+fiscal|"
+            r"nf-?c-?e|danfe|comprovante|recibo|pix|debito|credito|"
+            r"pagamento|emitente"
+            r")\b",
+            normalized,
             flags=re.IGNORECASE,
         )
     )

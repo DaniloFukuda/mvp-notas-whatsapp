@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import api_whatsapp
+from services.rdv_receipt_analysis_service import RDVReceiptAnalysisResult
 from services.rdv_service import RDVService
 
 
@@ -305,6 +306,206 @@ def test_received_receipt_with_value_without_date_asks_for_receipt_date():
     )
 
 
+def test_invalid_image_receipt_replies_error_and_keeps_waiting_state():
+    original_service = api_whatsapp.rdv_service
+    original_download = api_whatsapp.download_media
+    original_sender = api_whatsapp.send_whatsapp_text
+    original_analyzer = api_whatsapp.rdv_receipt_analysis_service
+    original_message_check = api_whatsapp._was_whatsapp_message_processed
+    original_image_check = api_whatsapp._was_whatsapp_image_processed_for_sender
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            sent_messages = []
+            downloaded = Path(temp_dir) / "post-futebol.jpg"
+            downloaded.write_bytes(b"not a receipt")
+
+            api_whatsapp.download_media = lambda media_id, destino: downloaded
+            api_whatsapp.send_whatsapp_text = lambda phone, text: sent_messages.append(
+                (phone, text)
+            )
+            api_whatsapp.rdv_receipt_analysis_service = _InvalidReceiptAnalyzer()
+            api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
+            api_whatsapp._was_whatsapp_image_processed_for_sender = (
+                lambda image_sha256, phone: False
+            )
+
+            menu_reply = api_whatsapp.handle_rdv_text_message(sender, "rdv")
+            assert "Envie uma foto ou documento do comprovante" in menu_reply
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.RDV_WAITING_RECEIPT_STATE
+            )
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.invalid.image",
+                    "type": "image",
+                    "timestamp": "1780000000",
+                    "image": {
+                        "id": "media-invalid-image",
+                        "sha256": "invalid-image-sha",
+                        "mime_type": "image/jpeg",
+                    },
+                }
+            )
+
+            assert sent_messages == [
+                (sender, api_whatsapp.INVALID_RDV_RECEIPT_MESSAGE)
+            ]
+            assert service.list_launches() == []
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.RDV_WAITING_RECEIPT_STATE
+            )
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.send_whatsapp_text = original_sender
+        api_whatsapp.rdv_receipt_analysis_service = original_analyzer
+        api_whatsapp._was_whatsapp_message_processed = original_message_check
+        api_whatsapp._was_whatsapp_image_processed_for_sender = original_image_check
+        api_whatsapp.whatsapp_menu_states.clear()
+
+
+def test_invalid_document_receipt_does_not_create_launch():
+    original_service = api_whatsapp.rdv_service
+    original_download = api_whatsapp.download_media
+    original_sender = api_whatsapp.send_whatsapp_text
+    original_analyzer = api_whatsapp.rdv_receipt_analysis_service
+    original_message_check = api_whatsapp._was_whatsapp_message_processed
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            sent_messages = []
+            downloaded = Path(temp_dir) / "arquivo-aleatorio.pdf"
+            downloaded.write_bytes(b"%PDF-1.4")
+
+            api_whatsapp.download_media = lambda media_id, destino: downloaded
+            api_whatsapp.send_whatsapp_text = lambda phone, text: sent_messages.append(
+                (phone, text)
+            )
+            api_whatsapp.rdv_receipt_analysis_service = _InvalidReceiptAnalyzer()
+            api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.invalid.document",
+                    "type": "document",
+                    "timestamp": "1780000000",
+                    "document": {
+                        "id": "media-invalid-document",
+                        "mime_type": "application/pdf",
+                    },
+                }
+            )
+
+            assert sent_messages[-1] == (
+                sender,
+                api_whatsapp.INVALID_RDV_RECEIPT_MESSAGE,
+            )
+            assert service.list_launches() == []
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.RDV_WAITING_RECEIPT_STATE
+            )
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.send_whatsapp_text = original_sender
+        api_whatsapp.rdv_receipt_analysis_service = original_analyzer
+        api_whatsapp._was_whatsapp_message_processed = original_message_check
+        api_whatsapp.whatsapp_menu_states.clear()
+
+
+def test_valid_receipt_after_invalid_file_continues_flow():
+    original_service = api_whatsapp.rdv_service
+    original_download = api_whatsapp.download_media
+    original_sender = api_whatsapp.send_whatsapp_text
+    original_analyzer = api_whatsapp.rdv_receipt_analysis_service
+    original_message_check = api_whatsapp._was_whatsapp_message_processed
+    original_image_check = api_whatsapp._was_whatsapp_image_processed_for_sender
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            sent_messages = []
+            downloaded = Path(temp_dir) / "comprovante.jpg"
+            downloaded.write_bytes(b"receipt")
+
+            api_whatsapp.download_media = lambda media_id, destino: downloaded
+            api_whatsapp.send_whatsapp_text = lambda phone, text: sent_messages.append(
+                (phone, text)
+            )
+            api_whatsapp.rdv_receipt_analysis_service = _ValidReceiptAnalyzer()
+            api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
+            api_whatsapp._was_whatsapp_image_processed_for_sender = (
+                lambda image_sha256, phone: False
+            )
+            api_whatsapp.whatsapp_menu_states[sender] = (
+                api_whatsapp.RDV_WAITING_RECEIPT_STATE
+            )
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.valid.after.invalid",
+                    "type": "image",
+                    "timestamp": "1780000000",
+                    "image": {
+                        "id": "media-valid-image",
+                        "sha256": "valid-image-sha",
+                        "mime_type": "image/jpeg",
+                    },
+                }
+            )
+
+            launches = service.list_launches()
+            assert len(launches) == 1
+            assert launches[0]["status_fluxo"] == "aguardando_categoria"
+            assert launches[0]["valor"] == 80
+            assert sender not in api_whatsapp.whatsapp_menu_states
+            assert "Comprovante recebido." in sent_messages[-1][1]
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.send_whatsapp_text = original_sender
+        api_whatsapp.rdv_receipt_analysis_service = original_analyzer
+        api_whatsapp._was_whatsapp_message_processed = original_message_check
+        api_whatsapp._was_whatsapp_image_processed_for_sender = original_image_check
+        api_whatsapp.whatsapp_menu_states.clear()
+
+
+def test_cancelar_clears_waiting_receipt_state():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+
+            api_whatsapp.handle_rdv_text_message(sender, "rdv")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "cancelar")
+
+            assert reply == api_whatsapp.RDV_RECEIPT_CANCEL_MESSAGE
+            assert sender not in api_whatsapp.whatsapp_menu_states
+            assert service.list_launches() == []
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+
+
 def test_manual_value_then_manual_date_and_category_completes_rdv():
     original_service = api_whatsapp.rdv_service
     try:
@@ -441,3 +642,25 @@ def test_open_km_state_has_priority_over_pending_receipt_date():
             assert "Destino registrado" in date_like_reply
     finally:
         api_whatsapp.rdv_service = original_service
+
+
+class _InvalidReceiptAnalyzer:
+    def analyze_file(self, file_path: str) -> RDVReceiptAnalysisResult:
+        return RDVReceiptAnalysisResult(reasons=["texto_ocr_nao_detectado"])
+
+
+class _ValidReceiptAnalyzer:
+    def analyze_file(self, file_path: str) -> RDVReceiptAnalysisResult:
+        return RDVReceiptAnalysisResult(
+            valor_detectado=80,
+            data_detectada="2026-06-14",
+            fornecedor_detectado="Mercado Pago",
+            origem_valor="ocr",
+            confidence=0.85,
+            reasons=[
+                "valor_encontrado_ocr",
+                "data_encontrada",
+                "fornecedor_encontrado",
+                "marcador_comprovante_encontrado",
+            ],
+        )

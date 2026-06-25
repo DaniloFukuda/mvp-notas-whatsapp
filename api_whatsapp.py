@@ -360,6 +360,13 @@ KM_CLEAR_WARNING = (
 KM_CLEAR_SUCCESS = (
     "Quilometragens limpas com sucesso. Nenhuma viagem está em aberto."
 )
+RDV_WAITING_RECEIPT_STATE = "rdv_waiting_receipt"
+INVALID_RDV_RECEIPT_MESSAGE = (
+    "Não consegui identificar esse arquivo como comprovante.\n\n"
+    "Envie uma foto ou PDF legível de nota, cupom, recibo ou comprovante.\n"
+    "Se preferir cancelar, digite cancelar."
+)
+RDV_RECEIPT_CANCEL_MESSAGE = "Lançamento de comprovante cancelado."
 RDV_MENU = "\n".join(
     [
         "Ciclus Agro - RDV por WhatsApp",
@@ -994,12 +1001,24 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     try:
+        analysis = _analyze_rdv_receipt_file(str(downloaded_path), message_id)
+        if not _analysis_has_receipt_evidence(analysis):
+            whatsapp_menu_states[sender_phone] = RDV_WAITING_RECEIPT_STATE
+            logger.info(
+                "Midia RDV rejeitada por falta de evidencias de comprovante: from=%s message_id=%s reasons=%s",
+                _mask_phone(sender_phone),
+                _mask_message_id(message_id),
+                analysis.get("reasons"),
+            )
+            _safe_send_text(sender_phone, INVALID_RDV_RECEIPT_MESSAGE)
+            return
         rdv_expense = _register_received_media_as_rdv(
             sender_phone=sender_phone,
             caminho_arquivo=str(downloaded_path),
             whatsapp_message_id=message_id,
             message_type=message_type,
             received_at=data_hora_recebimento,
+            analysis=analysis,
         )
     except Exception:
         logger.exception(
@@ -1017,6 +1036,7 @@ def _handle_whatsapp_message(message: dict) -> None:
         _mask_message_id(message_id),
         rdv_expense.get("id"),
     )
+    whatsapp_menu_states.pop(sender_phone, None)
     _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
 
 
@@ -1029,6 +1049,13 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         )
 
     normalized = _normalize_caption(text)
+    if (
+        whatsapp_menu_states.get(sender_phone) == RDV_WAITING_RECEIPT_STATE
+        and normalized in {"cancelar", "sair"}
+    ):
+        whatsapp_menu_states.pop(sender_phone, None)
+        return RDV_RECEIPT_CANCEL_MESSAGE
+
     rdv_service.cancel_legacy_km_launches_by_phone(sender_phone)
     global_command_handled, global_reply = _handle_global_rdv_command(
         sender_phone,
@@ -1086,6 +1113,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         if normalized in {"meu resumo", "meuresumo", "individual"}:
             return _monthly_summary_message(collaborator["id"])
         if normalized in {"rdv", "despesa"}:
+            whatsapp_menu_states[sender_phone] = RDV_WAITING_RECEIPT_STATE
             return f"Ola, {collaborator['nome']}.\n\n{RDV_MENU}"
         if _is_standalone_number(normalized):
             return MENU_NUMBER_MESSAGE
@@ -2387,6 +2415,7 @@ def _register_received_media_as_rdv(
     whatsapp_message_id: str,
     message_type: str = "document",
     received_at: str | datetime | None = None,
+    analysis: dict | None = None,
 ) -> dict:
     existing = rdv_service.get_by_whatsapp_message_id(whatsapp_message_id)
     if existing is not None:
@@ -2398,14 +2427,7 @@ def _register_received_media_as_rdv(
 
     input_type = message_type if message_type in {"image", "document"} else "document"
     input_type = {"image": "imagem", "document": "documento"}[input_type]
-    try:
-        analysis = rdv_receipt_analysis_service.analyze_file(caminho_arquivo).to_dict()
-    except Exception:
-        logger.exception(
-            "Falha controlada ao analisar comprovante RDV: message_id=%s",
-            _mask_message_id(whatsapp_message_id),
-        )
-        analysis = {}
+    analysis = analysis or _analyze_rdv_receipt_file(caminho_arquivo, whatsapp_message_id)
     pending = rdv_service.get_open_launch_by_phone(sender_phone)
     if pending is not None and pending.get("status_fluxo") == "aguardando_valor":
         retried = rdv_service.retry_whatsapp_receipt(
@@ -2432,6 +2454,43 @@ def _register_received_media_as_rdv(
         if existing is not None:
             return existing
         raise
+
+
+def _analyze_rdv_receipt_file(caminho_arquivo: str, whatsapp_message_id: str = "") -> dict:
+    try:
+        return rdv_receipt_analysis_service.analyze_file(caminho_arquivo).to_dict()
+    except Exception:
+        logger.exception(
+            "Falha controlada ao analisar comprovante RDV: message_id=%s",
+            _mask_message_id(whatsapp_message_id),
+        )
+        return {}
+
+
+def _analysis_has_receipt_evidence(analysis: dict | None) -> bool:
+    analysis = analysis or {}
+    if any(
+        str(analysis.get(field) or "").strip()
+        for field in ("qr_code_text", "qr_code_url", "chave_acesso")
+    ):
+        return True
+    if analysis.get("valor_detectado") not in (None, ""):
+        return True
+    if any(
+        str(analysis.get(field) or "").strip()
+        for field in ("data_detectada", "fornecedor_detectado")
+    ):
+        return True
+    reasons = {str(reason or "").strip() for reason in analysis.get("reasons") or []}
+    return bool(
+        reasons
+        & {
+            "qr_code_detectado",
+            "url_fiscal_encontrada",
+            "chave_acesso_encontrada",
+            "marcador_comprovante_encontrado",
+        }
+    )
 
 
 def _rdv_received_message(expense: dict) -> str:
