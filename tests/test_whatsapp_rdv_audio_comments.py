@@ -196,7 +196,8 @@ def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_whatsapp,
         "handle_rdv_text_message",
-        lambda phone, text: received.append((phone, text)) or "fluxo continuou",
+        lambda phone, text, **kwargs: received.append((phone, text))
+        or "fluxo continuou",
     )
     downloaded.write_bytes(b"fake-audio")
 

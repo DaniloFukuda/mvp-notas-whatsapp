@@ -47,6 +47,10 @@ WHISPER_MAX_AUDIO_SECONDS=1800
 WHISPER_CHUNK_SECONDS=60
 WHISPER_KEEP_AUDIO=false
 WHISPER_TMP_DIR=tmp/audio_transcriptions
+VISITA_DESCRICAO_MAX_CHARS=5000
+VISITA_OBSERVACAO_MAX_CHARS=20000
+VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000
+FOTO_COMENTARIO_MAX_CHARS=2000
 ```
 
 Comportamento:
@@ -60,6 +64,15 @@ Comportamento:
 - `WHISPER_CHUNK_SECONDS=60`: divide audios longos em partes temporarias.
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
 - `WHISPER_TMP_DIR`: diretorio usado para baixar audio temporario da Meta.
+- `VISITA_DESCRICAO_MAX_CHARS=5000`: limite da descrição principal da visita.
+- `VISITA_OBSERVACAO_MAX_CHARS=20000`: limite de cada observação geral.
+- `VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000`: teto de segurança de uma transcrição enviada para observações.
+- `FOTO_COMENTARIO_MAX_CHARS=2000`: limite do comentário individual de foto.
+
+Áudios longos podem produzir texto maior que uma única observação. Nesse caso, a
+transcrição é dividida em observações de até `VISITA_OBSERVACAO_MAX_CHARS`,
+preservando a ordem. O fluxo informa quantas observações foram salvas. O teto
+total continua finito; acima dele, o usuário deve dividir o áudio em partes menores.
 
 ## Teste local isolado
 

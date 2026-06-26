@@ -46,7 +46,11 @@ from services.report_catalog import (
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
 from services.visita_report_commands import parse_visit_report_command
-from services.visita_validation import validate_visit_field
+from services.visita_validation import (
+    split_visit_observation,
+    validate_visit_field,
+    visita_observacao_total_max_chars,
+)
 from services.visitas_service import VisitasTecnicasService, normalize_phone
 
 
@@ -1089,7 +1093,12 @@ def _handle_whatsapp_message(message: dict) -> None:
     _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
 
 
-def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
+def handle_rdv_text_message(
+    sender_phone: str,
+    text: str,
+    *,
+    is_audio_transcription: bool = False,
+) -> str | None:
     collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
     if collaborator is None:
         return (
@@ -1154,6 +1163,7 @@ def handle_rdv_text_message(sender_phone: str, text: str) -> str | None:
         text,
         collaborator,
         normalized,
+        is_audio_transcription=is_audio_transcription,
     )
     if visita_handled:
         return visita_reply
@@ -1402,7 +1412,11 @@ def handle_whatsapp_audio_message(
     if not transcription:
         return TRANSCRIPTION_FAILED_MESSAGE
 
-    reply = handle_rdv_text_message(sender_phone, transcription)
+    reply = handle_rdv_text_message(
+        sender_phone,
+        transcription,
+        is_audio_transcription=True,
+    )
     return reply or "Audio transcrito e registrado."
 
 
@@ -1523,11 +1537,45 @@ def _open_main_menu(sender_phone: str) -> str:
     return MAIN_MENU_MESSAGE
 
 
+def _save_visita_observacoes(
+    visita_id: int,
+    text: str,
+    *,
+    is_audio_transcription: bool,
+) -> tuple[int, str]:
+    if not is_audio_transcription:
+        validation = validate_visit_field("observacoes_gerais", text)
+        if not validation.ok:
+            return 0, validation.error
+        visitas_service.adicionar_observacao_geral(visita_id, validation.value)
+        return 1, ""
+
+    normalized_text = " ".join(str(text or "").split())
+    total_limit = visita_observacao_total_max_chars()
+    if len(normalized_text) > total_limit:
+        return (
+            0,
+            "A transcrição ficou muito longa para as observações do relatório. "
+            "Envie o áudio dividido em partes menores.",
+        )
+
+    parts = split_visit_observation(normalized_text)
+    for part in parts:
+        validation = validate_visit_field("observacoes_gerais", part)
+        if not validation.ok:
+            return 0, validation.error
+    for part in parts:
+        visitas_service.adicionar_observacao_geral(visita_id, part)
+    return len(parts), ""
+
+
 def handle_visitas_text_message(
     sender_phone: str,
     text: str,
     collaborator: dict | None = None,
     normalized: str | None = None,
+    *,
+    is_audio_transcription: bool = False,
 ) -> tuple[bool, str | None]:
     normalized_text = normalized if normalized is not None else _normalize_caption(text)
     collaborator = collaborator or rdv_service.get_collaborator_by_phone(sender_phone)
@@ -1653,10 +1701,18 @@ def handle_visitas_text_message(
         if normalized_text in VISITA_FINALIZAR_OBSERVACOES_COMMANDS:
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
             return True, VISITA_OBSERVACOES_FINALIZADAS_MESSAGE
-        validation = validate_visit_field("observacoes_gerais", text)
-        if not validation.ok:
-            return True, validation.error
-        visitas_service.adicionar_observacao_geral(open_visit["id"], validation.value)
+        saved_count, error = _save_visita_observacoes(
+            open_visit["id"],
+            text,
+            is_audio_transcription=is_audio_transcription,
+        )
+        if error:
+            return True, error
+        if is_audio_transcription and saved_count > 1:
+            return (
+                True,
+                f"Áudio transcrito e salvo em {saved_count} observações do relatório.",
+            )
         return True, "Observação salva. Envie outra observação ou finalize com: finalizar observações"
 
     if state == "aguardando_decisao_comentario_foto":
@@ -1752,11 +1808,19 @@ def handle_visitas_text_message(
         return True, _visita_corrigir_observacoes_message()
 
     if state == "aguardando_adicao_observacao":
-        validation = validate_visit_field("observacoes_gerais", text)
-        if not validation.ok:
-            return True, validation.error
-        visitas_service.adicionar_observacao_geral(open_visit["id"], validation.value)
+        saved_count, error = _save_visita_observacoes(
+            open_visit["id"],
+            text,
+            is_audio_transcription=is_audio_transcription,
+        )
+        if error:
+            return True, error
         visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        if is_audio_transcription and saved_count > 1:
+            return (
+                True,
+                f"Áudio transcrito e salvo em {saved_count} observações do relatório.",
+            )
         return True, _visita_resumo_final_message(open_visit["id"])
 
     if state == "aguardando_remocao_observacao":

@@ -1356,6 +1356,189 @@ def test_visita_observacoes_gerais_multiplas():
         api_whatsapp.visitas_service = original_visitas
 
 
+def test_visita_observacao_digitada_curta_continua_funcionando():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_observacoes_gerais"
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender, "Aplicação acompanhada sem intercorrências."
+            )
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert "Observação salva" in reply
+            assert saved["observacoes_gerais"] == (
+                "Aplicação acompanhada sem intercorrências."
+            )
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_observacao_de_audio_acima_de_1000_caracteres_e_aceita():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_observacoes_gerais"
+            )
+            transcription = ("manejo observado durante a visita " * 45).strip()
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                transcription,
+                is_audio_transcription=True,
+            )
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert len(transcription) > 1000
+            assert "Observação salva" in reply
+            assert saved["observacoes_gerais"] == transcription
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_observacao_longa_de_audio_e_dividida_em_ordem(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_observacoes_gerais"
+            )
+            monkeypatch.setenv("VISITA_OBSERVACAO_MAX_CHARS", "100")
+            monkeypatch.setenv("VISITA_OBSERVACAO_TOTAL_MAX_CHARS", "500")
+            transcription = " ".join(f"item-{index:02d}" for index in range(40))
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                transcription,
+                is_audio_transcription=True,
+            )
+
+            saved = visitas.obter_visita_aberta(sender)
+            parts = saved["observacoes_gerais"].splitlines()
+            assert reply == (
+                f"Áudio transcrito e salvo em {len(parts)} observações do relatório."
+            )
+            assert len(parts) > 1
+            assert all(len(part) <= 100 for part in parts)
+            assert " ".join(parts) == transcription
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_observacao_de_audio_acima_do_teto_total_e_rejeitada(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_observacoes_gerais"
+            )
+            monkeypatch.setenv("VISITA_OBSERVACAO_MAX_CHARS", "100")
+            monkeypatch.setenv("VISITA_OBSERVACAO_TOTAL_MAX_CHARS", "200")
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "texto de campo " * 30,
+                is_audio_transcription=True,
+            )
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert "dividido em partes menores" in reply
+            assert not saved["observacoes_gerais"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_descricao_aceita_mais_de_1000_caracteres():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_descricao_visita"
+            )
+            description = ("Descrição técnica detalhada da lavoura. " * 35).strip()
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, description)
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert len(description) > 1000
+            assert "Observações gerais" in reply
+            assert saved["descricao_visita"] == description
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_descricao_acima_do_limite_configurado_tem_erro_amigavel(
+    monkeypatch,
+):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(
+                visita["id"], "estado_fluxo", "aguardando_descricao_visita"
+            )
+            monkeypatch.setenv("VISITA_DESCRICAO_MAX_CHARS", "100")
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender, "descrição detalhada " * 10
+            )
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert reply == (
+                "A descrição ficou muito longa. "
+                "Envie um resumo menor ou divida em partes."
+            )
+            assert not saved["descricao_visita"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_campo_curto_continua_rejeitando_texto_absurdo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "F" * 121)
+
+            saved = visitas.obter_visita_aberta(sender)
+            assert "no máximo 120 caracteres" in reply
+            assert saved["estado_fluxo"] == "aguardando_fazenda"
+            assert not saved["fazenda"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
 def test_visita_foto_com_comentario_individual():
     original_visitas = api_whatsapp.visitas_service
     try:

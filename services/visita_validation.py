@@ -1,3 +1,4 @@
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -16,6 +17,10 @@ SKIP_ALIASES = {
     "não tem",
 }
 SKIPPED_VALUE = "Não informado"
+DEFAULT_VISITA_DESCRICAO_MAX_CHARS = 5000
+DEFAULT_VISITA_OBSERVACAO_MAX_CHARS = 20000
+DEFAULT_VISITA_OBSERVACAO_TOTAL_MAX_CHARS = 80000
+DEFAULT_FOTO_COMENTARIO_MAX_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -74,16 +79,83 @@ def validate_visit_field(field: str, value: str) -> ValidationResult:
         return _validate_text(
             text,
             min_len=10,
-            max_len=1000,
+            max_len=visita_descricao_max_chars(),
             label="descrição da visita",
             error="A descrição ficou muito curta. Envie um resumo com pelo menos 10 caracteres.",
+            too_long_error=(
+                "A descrição ficou muito longa. "
+                "Envie um resumo menor ou divida em partes."
+            ),
             check_random=False,
         )
-    if field in {"observacoes_gerais", "comentario_foto"}:
-        if len(text) > 1000:
-            return ValidationResult(False, error="O texto ficou muito longo. Envie no máximo 1000 caracteres.")
+    if field == "observacoes_gerais":
+        max_chars = visita_observacao_max_chars()
+        if len(text) > max_chars:
+            return ValidationResult(
+                False,
+                error=(
+                    "A observação ficou muito longa. "
+                    f"Envie no máximo {max_chars} caracteres por mensagem."
+                ),
+            )
+        return ValidationResult(True, text)
+    if field == "comentario_foto":
+        max_chars = foto_comentario_max_chars()
+        if len(text) > max_chars:
+            return ValidationResult(
+                False,
+                error=(
+                    "O comentário da foto ficou muito longo. "
+                    f"Envie no máximo {max_chars} caracteres."
+                ),
+            )
         return ValidationResult(True, text)
     return ValidationResult(True, text)
+
+
+def visita_descricao_max_chars() -> int:
+    return _positive_int_from_env(
+        "VISITA_DESCRICAO_MAX_CHARS", DEFAULT_VISITA_DESCRICAO_MAX_CHARS
+    )
+
+
+def visita_observacao_max_chars() -> int:
+    return _positive_int_from_env(
+        "VISITA_OBSERVACAO_MAX_CHARS", DEFAULT_VISITA_OBSERVACAO_MAX_CHARS
+    )
+
+
+def visita_observacao_total_max_chars() -> int:
+    configured = _positive_int_from_env(
+        "VISITA_OBSERVACAO_TOTAL_MAX_CHARS",
+        DEFAULT_VISITA_OBSERVACAO_TOTAL_MAX_CHARS,
+    )
+    return max(configured, visita_observacao_max_chars())
+
+
+def foto_comentario_max_chars() -> int:
+    return _positive_int_from_env(
+        "FOTO_COMENTARIO_MAX_CHARS", DEFAULT_FOTO_COMENTARIO_MAX_CHARS
+    )
+
+
+def split_visit_observation(value: str, max_chars: int | None = None) -> list[str]:
+    text = normalize_spaces(value)
+    limit = max_chars or visita_observacao_max_chars()
+    if not text:
+        return []
+
+    parts: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind(" ", 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+        parts.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        parts.append(remaining)
+    return parts
 
 
 def normalize_spaces(value: str) -> str:
@@ -96,13 +168,18 @@ def _validate_text(
     max_len: int,
     label: str,
     error: str,
+    too_long_error: str = "",
     reject_only_numbers: bool = False,
     check_random: bool = True,
 ) -> ValidationResult:
     if len(text) < min_len:
         return ValidationResult(False, error=error)
     if len(text) > max_len:
-        return ValidationResult(False, error=f"Essa informação ficou muito longa. Envie {label} com no máximo {max_len} caracteres.")
+        return ValidationResult(
+            False,
+            error=too_long_error
+            or f"Essa informação ficou muito longa. Envie {label} com no máximo {max_len} caracteres.",
+        )
     if reject_only_numbers and re.fullmatch(r"\d+", text):
         return ValidationResult(False, error=error)
     if check_random and _looks_random(text):
@@ -135,3 +212,11 @@ def _looks_random(text: str) -> bool:
 def _normalize(value: str) -> str:
     text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
     return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
