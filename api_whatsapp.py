@@ -237,10 +237,31 @@ VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
 VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
 VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
+STANDALONE_TRANSCRIPTION_COMMANDS = {
+    "transcrever audio",
+    "transcricao de audio",
+    "transcricao audio",
+}
+STANDALONE_TRANSCRIPTION_EXIT_COMMANDS = {
+    "cancelar",
+    "sair",
+    "menu",
+    "inicio",
+    "voltar",
+}
+STANDALONE_TRANSCRIPTION_STATE = "audio_transcription_waiting"
+STANDALONE_TRANSCRIPTION_PROMPT = (
+    "Envie um áudio do WhatsApp que eu vou transcrever para texto.\n\n"
+    "Para cancelar, digite cancelar."
+)
+STANDALONE_TRANSCRIPTION_TEXT_PROMPT = (
+    "Envie um áudio para transcrever ou digite menu para voltar."
+)
 INTERACTIVE_COMMAND_IDS = {
     "menu_rdv_receipt": "rdv",
     "menu_km": "km",
     "menu_visit_start": "visita",
+    "menu_audio_transcription": "transcrever audio",
     "menu_reports": "relatorios",
     "menu_help": "menu",
     "confirm_clear_km": "confirmar limpar km",
@@ -299,6 +320,12 @@ MAIN_MENU_MESSAGE = "\n".join(
         "Comando:",
         "",
         "* relatórios",
+        "",
+        "🎙️ Transcrever áudio",
+        "Transforma um áudio do WhatsApp em texto, sem salvar em visita ou RDV.",
+        "Comando:",
+        "",
+        "* transcrever áudio",
         "",
         "Digite qualquer comando acima para começar.",
     ]
@@ -635,6 +662,11 @@ def send_main_menu_interactive(to: str) -> None:
                         "description": "Registrar fazenda visitada",
                     },
                     {
+                        "id": "menu_audio_transcription",
+                        "title": "🎙️ Transcrever áudio",
+                        "description": "Receber a transcrição em texto",
+                    },
+                    {
                         "id": "menu_rdv_summary",
                         "title": "📊 Resumo RDV",
                         "description": "Ver resumo mensal",
@@ -934,13 +966,20 @@ def _handle_whatsapp_message(message: dict) -> None:
             return
 
     if message_type in {"audio", "voice"}:
+        standalone_mode = (
+            whatsapp_menu_states.get(sender_phone)
+            == STANDALONE_TRANSCRIPTION_STATE
+        )
         reply = handle_whatsapp_audio_message(
             sender_phone=sender_phone,
             media_id=media_id,
             mime_type=mime_type,
         )
         if reply:
-            _safe_send_text(sender_phone, reply)
+            if standalone_mode:
+                _safe_send_text_chunks(sender_phone, reply)
+            else:
+                _safe_send_text(sender_phone, reply)
         return
 
     if message_type not in ("image", "document") or not media_id:
@@ -1107,8 +1146,20 @@ def handle_rdv_text_message(
         )
 
     normalized = _normalize_caption(text)
+    menu_state = whatsapp_menu_states.get(sender_phone)
+    if menu_state == STANDALONE_TRANSCRIPTION_STATE:
+        if normalized in STANDALONE_TRANSCRIPTION_EXIT_COMMANDS:
+            whatsapp_menu_states.pop(sender_phone, None)
+            send_main_menu_interactive(sender_phone)
+            return None
+        return STANDALONE_TRANSCRIPTION_TEXT_PROMPT
+
+    if normalized in STANDALONE_TRANSCRIPTION_COMMANDS:
+        whatsapp_menu_states[sender_phone] = STANDALONE_TRANSCRIPTION_STATE
+        return STANDALONE_TRANSCRIPTION_PROMPT
+
     if (
-        whatsapp_menu_states.get(sender_phone) == RDV_WAITING_RECEIPT_STATE
+        menu_state == RDV_WAITING_RECEIPT_STATE
         and normalized in {"cancelar", "sair"}
     ):
         whatsapp_menu_states.pop(sender_phone, None)
@@ -1372,7 +1423,10 @@ def handle_whatsapp_audio_message(
     media_id: str,
     mime_type: str = "",
 ) -> str:
-    if _get_rdv_comment_state(sender_phone) is not None:
+    standalone_mode = (
+        whatsapp_menu_states.get(sender_phone) == STANDALONE_TRANSCRIPTION_STATE
+    )
+    if not standalone_mode and _get_rdv_comment_state(sender_phone) is not None:
         return handle_rdv_audio_comment_message(sender_phone, media_id, mime_type)
 
     if not _audio_transcription_enabled():
@@ -1411,6 +1465,17 @@ def handle_whatsapp_audio_message(
 
     if not transcription:
         return TRANSCRIPTION_FAILED_MESSAGE
+
+    if standalone_mode:
+        return "\n".join(
+            [
+                "🎙️ Transcrição do áudio:",
+                "",
+                transcription,
+                "",
+                "Você pode enviar outro áudio ou digitar menu para voltar.",
+            ]
+        )
 
     reply = handle_rdv_text_message(
         sender_phone,
@@ -3952,6 +4017,21 @@ def _safe_send_text(to: str, message: str) -> None:
         send_whatsapp_text(to, message)
     except Exception:
         logger.exception("Erro ao enviar resposta de WhatsApp para %s", _mask_phone(to))
+
+
+def _safe_send_text_chunks(to: str, message: str, max_chars: int = 4000) -> None:
+    remaining = str(message or "").strip()
+    while remaining:
+        if len(remaining) <= max_chars:
+            _safe_send_text(to, remaining)
+            return
+        split_at = remaining.rfind("\n", 0, max_chars + 1)
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, max_chars + 1)
+        if split_at <= 0:
+            split_at = max_chars
+        _safe_send_text(to, remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
 
 
 def _send_rdv_reply(to: str, command_text: str, reply: str) -> None:

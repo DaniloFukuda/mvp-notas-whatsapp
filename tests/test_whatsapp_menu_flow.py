@@ -330,6 +330,11 @@ def test_payload_menu_principal_interativo():
             "description": "Registrar fazenda visitada",
         },
         {
+            "id": "menu_audio_transcription",
+            "title": "🎙️ Transcrever áudio",
+            "description": "Receber a transcrição em texto",
+        },
+        {
             "id": "menu_rdv_summary",
             "title": "📊 Resumo RDV",
             "description": "Ver resumo mensal",

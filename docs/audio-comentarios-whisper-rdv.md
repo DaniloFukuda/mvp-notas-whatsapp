@@ -74,6 +74,25 @@ transcrição é dividida em observações de até `VISITA_OBSERVACAO_MAX_CHARS`
 preservando a ordem. O fluxo informa quantas observações foram salvas. O teto
 total continua finito; acima dele, o usuário deve dividir o áudio em partes menores.
 
+## Transcrição avulsa pelo menu
+
+O menu principal também oferece `🎙️ Transcrever áudio`. Essa opção é diferente
+do áudio enviado durante uma visita técnica:
+
+- na visita, a transcrição segue o estado atual e pode ser salva como descrição
+  ou observação do relatório;
+- no modo avulso, a transcrição é apenas devolvida como texto no WhatsApp e não
+  cria visita, RDV, comprovante ou PDF.
+
+Também é possível iniciar com o comando `transcrever áudio`. Depois disso, o
+usuário pode enviar vários áudios. Os comandos `cancelar`, `sair`, `menu`,
+`início` e `voltar` encerram o modo e abrem novamente o menu principal.
+Quando a resposta ultrapassa o tamanho seguro de uma mensagem, ela é enviada em
+partes, na ordem, sem alterar ou persistir o conteúdo.
+
+Os limites de tamanho, duração e divisão em chunks do Whisper são os mesmos nos
+dois modos.
+
 ## Teste local isolado
 
 Sem WhatsApp:
