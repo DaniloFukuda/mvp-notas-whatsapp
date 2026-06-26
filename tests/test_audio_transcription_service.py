@@ -5,7 +5,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from services.audio_transcription_service import AudioTranscriptionService, whisper_enabled_from_env
+from services.audio_transcription_service import (
+    AUDIO_TOO_LONG_MESSAGE,
+    AudioLimitExceededError,
+    AudioTranscriptionService,
+    whisper_enabled_from_env,
+)
 
 
 class FakeModel:
@@ -25,6 +30,7 @@ def test_audio_transcription_service_uses_mocked_model(tmp_path):
         model_name="tiny",
         language="pt",
         model_loader=lambda model_name: fake_model,
+        duration_probe=lambda path: 10,
     )
 
     text = service.transcrever(str(audio_path))
@@ -42,6 +48,7 @@ def test_audio_transcription_service_caches_model(tmp_path):
         model_name="tiny",
         language="pt",
         model_loader=lambda model_name: loaded.append(model_name) or fake_model,
+        duration_probe=lambda path: 10,
     )
 
     assert service.transcrever(str(audio_path)) == "comentario transcrito"
@@ -57,12 +64,13 @@ def test_audio_transcription_service_blocks_large_file(tmp_path):
     service = AudioTranscriptionService(
         max_audio_mb=0.000001,
         model_loader=lambda model_name: FakeModel(),
+        duration_probe=lambda path: 10,
     )
 
     try:
         service.transcrever(str(audio_path))
-    except ValueError as exc:
-        assert "excede o limite" in str(exc)
+    except AudioLimitExceededError as exc:
+        assert str(exc) == AUDIO_TOO_LONG_MESSAGE
     else:
         raise AssertionError("esperava ValueError")
 
@@ -76,6 +84,108 @@ def test_audio_transcription_service_missing_file_raises(tmp_path):
         assert "Arquivo de audio nao encontrado" in str(exc)
     else:
         raise AssertionError("esperava FileNotFoundError")
+
+
+def test_long_audio_is_chunked_joined_in_order_and_cleaned(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"fake-audio")
+    extracted = []
+
+    class OrderedModel:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio_path, language="pt", fp16=False):
+            path = Path(audio_path)
+            self.calls.append(path)
+            return {"text": f" parte {int(path.stem.split('_')[1]) + 1} "}
+
+    model = OrderedModel()
+
+    def extract(source, destination, start, duration):
+        path = Path(destination)
+        path.write_bytes(b"chunk")
+        extracted.append((path, start, duration))
+
+    service = AudioTranscriptionService(
+        chunk_seconds=60,
+        duration_probe=lambda path: 125,
+        chunk_extractor=extract,
+        model_loader=lambda name: model,
+    )
+
+    assert service.transcrever(str(audio_path)) == "parte 1 parte 2 parte 3"
+    assert [(start, duration) for _, start, duration in extracted] == [
+        (0, 60),
+        (60, 60),
+        (120, 5),
+    ]
+    assert all(not path.exists() for path, _, _ in extracted)
+    assert len({path.parent for path, _, _ in extracted}) == 1
+    assert not extracted[0][0].parent.exists()
+
+
+def test_audio_over_duration_limit_is_rejected_before_loading_model(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"fake-audio")
+    loaded = []
+    service = AudioTranscriptionService(
+        max_audio_seconds=1800,
+        duration_probe=lambda path: 1800.01,
+        model_loader=lambda name: loaded.append(name) or FakeModel(),
+    )
+
+    try:
+        service.transcrever(str(audio_path))
+    except AudioLimitExceededError as exc:
+        assert str(exc) == AUDIO_TOO_LONG_MESSAGE
+    else:
+        raise AssertionError("esperava AudioLimitExceededError")
+    assert loaded == []
+
+
+def test_chunk_files_are_cleaned_when_transcription_fails(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"fake-audio")
+    extracted = []
+
+    class BrokenModel:
+        def transcribe(self, audio_path, language="pt", fp16=False):
+            raise RuntimeError("falha simulada")
+
+    def extract(source, destination, start, duration):
+        path = Path(destination)
+        path.write_bytes(b"chunk")
+        extracted.append(path)
+
+    service = AudioTranscriptionService(
+        duration_probe=lambda path: 61,
+        chunk_extractor=extract,
+        model_loader=lambda name: BrokenModel(),
+    )
+
+    try:
+        service.transcrever(str(audio_path))
+    except RuntimeError as exc:
+        assert "falha simulada" in str(exc)
+    else:
+        raise AssertionError("esperava RuntimeError")
+    assert extracted and all(not path.exists() for path in extracted)
+    assert not extracted[0].parent.exists()
+
+
+def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
+    monkeypatch.delenv("WHISPER_MAX_AUDIO_MB", raising=False)
+    monkeypatch.delenv("WHISPER_MAX_AUDIO_SECONDS", raising=False)
+    monkeypatch.delenv("WHISPER_CHUNK_SECONDS", raising=False)
+
+    service = AudioTranscriptionService.from_env()
+
+    assert service.max_audio_mb == 50
+    assert service.max_audio_seconds == 1800
+    assert service.chunk_seconds == 60
+    assert service.model_name == "tiny"
+    assert service.language == "pt"
 
 
 def test_whisper_enabled_from_env_defaults_local_on(monkeypatch):

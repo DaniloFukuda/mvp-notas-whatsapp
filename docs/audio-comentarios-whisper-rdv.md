@@ -40,8 +40,11 @@ sudo apt-get install -y ffmpeg
 ```env
 AUDIO_TRANSCRIPTION_ENABLED=false
 AUDIO_TRANSCRIPTION_PROVIDER=whisper_local
-WHISPER_MODEL=base
+WHISPER_MODEL=tiny
 WHISPER_LANGUAGE=pt
+WHISPER_MAX_AUDIO_MB=50
+WHISPER_MAX_AUDIO_SECONDS=1800
+WHISPER_CHUNK_SECONDS=60
 WHISPER_KEEP_AUDIO=false
 WHISPER_TMP_DIR=tmp/audio_transcriptions
 ```
@@ -50,8 +53,11 @@ Comportamento:
 
 - `AUDIO_TRANSCRIPTION_ENABLED=false`: audio recebido nao tenta transcrever.
 - `AUDIO_TRANSCRIPTION_PROVIDER=whisper_local`: usa Whisper local.
-- `WHISPER_MODEL=base`: modelo carregado sob demanda.
+- `WHISPER_MODEL=tiny`: modelo carregado sob demanda e reutilizado.
 - `WHISPER_LANGUAGE=pt`: idioma padrao da transcricao.
+- `WHISPER_MAX_AUDIO_MB=50`: limite de tamanho do arquivo.
+- `WHISPER_MAX_AUDIO_SECONDS=1800`: limite de duracao (30 minutos).
+- `WHISPER_CHUNK_SECONDS=60`: divide audios longos em partes temporarias.
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
 - `WHISPER_TMP_DIR`: diretorio usado para baixar audio temporario da Meta.
 

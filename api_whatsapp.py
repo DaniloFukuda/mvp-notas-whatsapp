@@ -31,6 +31,9 @@ from services.rdv_pdf_service import (
 )
 from services.rdv_receipt_analysis_service import RDVReceiptAnalysisService
 from services.audio_transcription_service import (
+    AUDIO_TOO_LONG_MESSAGE,
+    TRANSCRIPTION_FAILED_MESSAGE,
+    AudioLimitExceededError,
     AudioTranscriptionService,
     whisper_enabled_from_env,
 )
@@ -1016,6 +1019,14 @@ def _handle_whatsapp_message(message: dict) -> None:
 
     try:
         downloaded_path = download_media(media_id, destination)
+    except AudioLimitExceededError as exc:
+        logger.warning(
+            "Audio RDV acima do limite: media_id=%s erro=%s",
+            _mask_media_id(media_id),
+            _safe_exception_summary(exc),
+        )
+        state["state"] = "awaiting_correction"
+        return AUDIO_TOO_LONG_MESSAGE
     except Exception as exc:
         logger.exception(
             "Falha ao baixar midia do WhatsApp: media_id=%s status_code=%s erro=%s",
@@ -1332,20 +1343,14 @@ def handle_rdv_audio_comment_message(
             _safe_exception_summary(exc),
         )
         state["state"] = "awaiting_correction"
-        return (
-            "Nao consegui transcrever esse audio com seguranca.\n"
-            "Voce pode digitar o comentario?"
-        )
+        return TRANSCRIPTION_FAILED_MESSAGE
     finally:
         if not _keep_audio_after_transcription():
             _safe_unlink(destination)
 
     if not transcription:
         state["state"] = "awaiting_correction"
-        return (
-            "Nao consegui transcrever esse audio com seguranca.\n"
-            "Voce pode digitar o comentario?"
-        )
+        return TRANSCRIPTION_FAILED_MESSAGE
 
     state["state"] = "awaiting_audio_confirmation"
     state["text"] = transcription
@@ -1375,6 +1380,13 @@ def handle_whatsapp_audio_message(
     try:
         downloaded_path = download_media(media_id, destination)
         transcription = _transcribe_audio_file(downloaded_path)
+    except AudioLimitExceededError as exc:
+        logger.warning(
+            "Audio WhatsApp acima do limite: media_id=%s erro=%s",
+            _mask_media_id(media_id),
+            _safe_exception_summary(exc),
+        )
+        return AUDIO_TOO_LONG_MESSAGE
     except Exception as exc:
         logger.exception(
             "Falha ao transcrever audio WhatsApp: media_id=%s status_code=%s erro=%s",
@@ -1382,13 +1394,13 @@ def handle_whatsapp_audio_message(
             _http_status_from_exception(exc) or "-",
             _safe_exception_summary(exc),
         )
-        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+        return TRANSCRIPTION_FAILED_MESSAGE
     finally:
         if not _keep_audio_after_transcription():
             _safe_unlink(downloaded_path)
 
     if not transcription:
-        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+        return TRANSCRIPTION_FAILED_MESSAGE
 
     reply = handle_rdv_text_message(sender_phone, transcription)
     return reply or "Audio transcrito e registrado."

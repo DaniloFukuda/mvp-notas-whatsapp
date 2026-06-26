@@ -7,6 +7,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import api_whatsapp
+from services.audio_transcription_service import (
+    AUDIO_TOO_LONG_MESSAGE,
+    TRANSCRIPTION_FAILED_MESSAGE,
+    AudioLimitExceededError,
+)
 from services.rdv_service import RDVService
 from services.visitas_service import VisitasTecnicasService
 
@@ -170,6 +175,86 @@ def test_audio_without_pending_rdv_comment_flows_as_text_message(monkeypatch, tm
         api_whatsapp._transcribe_audio_file = original_transcriber
         api_whatsapp.rdv_comment_states.clear()
         api_whatsapp.visita_active_states.clear()
+
+
+def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
+    sender = "5500000000001"
+    downloaded = tmp_path / "long.ogg"
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setenv("WHISPER_KEEP_AUDIO", "false")
+    monkeypatch.setattr(
+        api_whatsapp,
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_file",
+        lambda path: "primeiro chunk segundo chunk terceiro chunk",
+    )
+    received = []
+    monkeypatch.setattr(
+        api_whatsapp,
+        "handle_rdv_text_message",
+        lambda phone, text: received.append((phone, text)) or "fluxo continuou",
+    )
+    downloaded.write_bytes(b"fake-audio")
+
+    reply = api_whatsapp.handle_whatsapp_audio_message(
+        sender, "media-long", "audio/ogg"
+    )
+
+    assert reply == "fluxo continuou"
+    assert received == [
+        (sender, "primeiro chunk segundo chunk terceiro chunk")
+    ]
+    assert not downloaded.exists()
+
+
+def test_audio_over_limit_returns_friendly_message_without_breaking(monkeypatch, tmp_path):
+    downloaded = tmp_path / "too-long.ogg"
+    downloaded.write_bytes(b"fake-audio")
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setattr(
+        api_whatsapp,
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_file",
+        lambda path: (_ for _ in ()).throw(
+            AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
+        ),
+    )
+
+    reply = api_whatsapp.handle_whatsapp_audio_message(
+        "5500000000001", "media-too-long", "audio/ogg"
+    )
+
+    assert reply == AUDIO_TOO_LONG_MESSAGE
+
+
+def test_transcription_error_returns_friendly_message(monkeypatch, tmp_path):
+    downloaded = tmp_path / "broken.ogg"
+    downloaded.write_bytes(b"fake-audio")
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setattr(
+        api_whatsapp,
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_file",
+        lambda path: (_ for _ in ()).throw(RuntimeError("falha simulada")),
+    )
+
+    reply = api_whatsapp.handle_whatsapp_audio_message(
+        "5500000000001", "media-broken", "audio/ogg"
+    )
+
+    assert reply == TRANSCRIPTION_FAILED_MESSAGE
 
 
 def test_confirming_transcribed_audio_saves_observation():

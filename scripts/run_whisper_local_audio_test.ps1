@@ -28,7 +28,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$MaxAudioBytes = 25MB
+$MaxAudioBytes = 50MB
 $AllowedExtensions = @(".ogg", ".opus", ".mp3", ".m4a", ".wav")
 
 function Test-CommandAvailable {
@@ -50,12 +50,24 @@ if ($AllowedExtensions -notcontains $extension) {
 
 if ($audioItem.Length -gt $MaxAudioBytes) {
     $sizeMb = [Math]::Round($audioItem.Length / 1MB, 2)
-    Write-Error "Arquivo muito grande ($sizeMb MB). Use audio ficticio de ate 25 MB."
+    Write-Error "Arquivo muito grande ($sizeMb MB). Use audio ficticio de ate 50 MB."
     exit 1
 }
 
-if (-not (Test-CommandAvailable "ffmpeg")) {
-    Write-Error "ffmpeg nao encontrado no PATH. Instale com: winget install Gyan.FFmpeg"
+if (-not (Test-CommandAvailable "ffmpeg") -or -not (Test-CommandAvailable "ffprobe")) {
+    Write-Error "ffmpeg/ffprobe nao encontrados no PATH. Instale com: winget install Gyan.FFmpeg"
+    exit 1
+}
+
+$durationText = (& ffprobe -v error -show_entries format=duration -of "default=noprint_wrappers=1:nokey=1" $audioItem.FullName).Trim()
+$durationSeconds = 0.0
+if ($LASTEXITCODE -ne 0 -or -not [double]::TryParse(
+    $durationText,
+    [Globalization.NumberStyles]::Float,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [ref]$durationSeconds
+)) {
+    Write-Error "Nao foi possivel determinar a duracao do audio com ffprobe."
     exit 1
 }
 
@@ -65,6 +77,11 @@ Write-Host "- Use apenas audio ficticio."
 Write-Host "- Nao use cliente real."
 Write-Host "- Nao use CPF, valor sensivel, nome completo, nem dados reais de fazenda ou obra."
 Write-Host "- Este teste nao chama WhatsApp, nao chama Meta API e nao altera .env."
+Write-Host ""
+Write-Host "Arquivo: $($audioItem.FullName)"
+Write-Host "Tamanho: $([Math]::Round($audioItem.Length / 1MB, 2)) MB"
+Write-Host "Duracao: $([Math]::Round($durationSeconds, 2)) segundos"
+Write-Host "Modelo: $Model"
 Write-Host ""
 
 $confirmation = Read-Host "Digite TESTAR para transcrever este audio localmente"
