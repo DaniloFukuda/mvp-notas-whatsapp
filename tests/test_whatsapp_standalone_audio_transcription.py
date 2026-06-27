@@ -2,6 +2,7 @@ import tempfile
 import sys
 from pathlib import Path
 
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -31,6 +32,7 @@ def _restore_services(original_rdv, original_visitas):
     api_whatsapp.rdv_service = original_rdv
     api_whatsapp.visitas_service = original_visitas
     api_whatsapp.whatsapp_menu_states.clear()
+    api_whatsapp.standalone_transcription_modes.clear()
     api_whatsapp.rdv_comment_states.clear()
     api_whatsapp.visita_active_states.clear()
 
@@ -49,7 +51,7 @@ def test_escolher_transcricao_avulsa_coloca_sessao_aguardando_audio():
             assert reply == api_whatsapp.STANDALONE_TRANSCRIPTION_PROMPT
             assert (
                 api_whatsapp.whatsapp_menu_states[sender]
-                == api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
+                == api_whatsapp.STANDALONE_TRANSCRIPTION_MODE_STATE
             )
         finally:
             _restore_services(original_rdv, original_visitas)
@@ -71,6 +73,62 @@ def test_texto_normal_no_modo_avulso_pede_audio():
             _restore_services(original_rdv, original_visitas)
 
 
+@pytest.mark.parametrize(
+    ("option", "mode"),
+    [("1", "literal"), ("2", "revisada"), ("3", "codex"), ("4", "relatorio")],
+)
+def test_escolher_modo_salva_sessao(option, mode):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, _, sender, original_rdv, original_visitas = _install_services(temp_dir)
+        try:
+            api_whatsapp.handle_rdv_text_message(sender, "transcrever áudio")
+            reply = api_whatsapp.handle_rdv_text_message(sender, option)
+
+            assert reply == api_whatsapp.STANDALONE_TRANSCRIPTION_AUDIO_PROMPT
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
+            )
+            assert api_whatsapp.standalone_transcription_modes[sender] == mode
+        finally:
+            _restore_services(original_rdv, original_visitas)
+
+
+@pytest.mark.parametrize(
+    ("mode", "heading"),
+    [
+        ("literal", "🎙️ Transcrição do áudio:"),
+        ("revisada", "📝 Transcrição revisada:"),
+        ("codex", "🤖 Prompt organizado para Codex:"),
+        ("relatorio", "📄 Texto organizado para relatório:"),
+    ],
+)
+def test_audio_avulso_usa_titulo_do_modo(monkeypatch, tmp_path, mode, heading):
+    downloaded = tmp_path / f"{mode}.ogg"
+    downloaded.write_bytes(b"audio")
+    sender = "5500000000001"
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setattr(
+        api_whatsapp, "download_media", lambda media_id, destination: downloaded
+    )
+    monkeypatch.setattr(
+        api_whatsapp, "_transcribe_audio_file", lambda path: "usar cadax nos botes"
+    )
+    api_whatsapp.whatsapp_menu_states[
+        sender
+    ] = api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
+    api_whatsapp.standalone_transcription_modes[sender] = mode
+    try:
+        reply = api_whatsapp.handle_whatsapp_audio_message(
+            sender, f"media-{mode}", "audio/ogg"
+        )
+
+        assert reply.startswith(heading)
+    finally:
+        api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.standalone_transcription_modes.clear()
+
+
 def test_cancelar_ou_menu_sai_do_modo_avulso(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         _, _, sender, original_rdv, original_visitas = _install_services(temp_dir)
@@ -79,7 +137,7 @@ def test_cancelar_ou_menu_sai_do_modo_avulso(monkeypatch):
             api_whatsapp, "send_main_menu_interactive", lambda phone: sent.append(phone)
         )
         try:
-            for command in ("cancelar", "menu"):
+            for command in ("cancelar", "menu", "sair", "voltar"):
                 api_whatsapp.whatsapp_menu_states[
                     sender
                 ] = api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
@@ -88,7 +146,7 @@ def test_cancelar_ou_menu_sai_do_modo_avulso(monkeypatch):
 
                 assert reply is None
                 assert sender not in api_whatsapp.whatsapp_menu_states
-            assert sent == [sender, sender]
+            assert sent == [sender, sender, sender, sender]
         finally:
             _restore_services(original_rdv, original_visitas)
 
@@ -120,7 +178,7 @@ def test_audio_avulso_retorna_transcricao_sem_salvar_visita_ou_rdv(
             )
 
             assert reply == (
-                "🎙️ Transcrição revisada do áudio:\n\n"
+                "📝 Transcrição revisada:\n\n"
                 "Relatório falado transcrito com sucesso.\n\n"
                 "Você pode enviar outro áudio ou digitar menu para voltar."
             )

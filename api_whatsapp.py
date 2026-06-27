@@ -40,7 +40,11 @@ from services.audio_transcription_service import (
 from services.audio_transcription_review_service import (
     AudioTranscriptionReviewService,
     ReviewedTranscription,
-    transcription_review_enabled,
+)
+from services.audio_transcription_intelligence_service import (
+    AudioTranscriptionIntelligenceService,
+    IntelligentTranscriptionResult,
+    transcription_review_default_mode,
 )
 from services.report_catalog import (
     interactive_report_commands,
@@ -255,7 +259,20 @@ STANDALONE_TRANSCRIPTION_EXIT_COMMANDS = {
     "voltar",
 }
 STANDALONE_TRANSCRIPTION_STATE = "audio_transcription_waiting"
-STANDALONE_TRANSCRIPTION_PROMPT = (
+STANDALONE_TRANSCRIPTION_MODE_STATE = "audio_transcription_select_mode"
+STANDALONE_TRANSCRIPTION_PROMPT = "\n".join(
+    [
+        "Como você quer receber a transcrição?",
+        "",
+        "1. Literal",
+        "2. Revisada",
+        "3. Organizar para Codex",
+        "4. Relatório",
+        "",
+        "Digite o número da opção.",
+    ]
+)
+STANDALONE_TRANSCRIPTION_AUDIO_PROMPT = (
     "Envie um áudio do WhatsApp que eu vou transcrever para texto.\n\n"
     "Para cancelar, digite cancelar."
 )
@@ -451,6 +468,10 @@ visita_new_visit_states: set[str] = set()
 rdv_comment_states: dict[str, dict] = {}
 _audio_transcription_service: AudioTranscriptionService | None = None
 _audio_transcription_review_service = AudioTranscriptionReviewService()
+_audio_transcription_intelligence_service = AudioTranscriptionIntelligenceService(
+    local_reviewer=_audio_transcription_review_service
+)
+standalone_transcription_modes: dict[str, str] = {}
 
 
 @router.get("/webhook/whatsapp")
@@ -972,10 +993,7 @@ def _handle_whatsapp_message(message: dict) -> None:
             return
 
     if message_type in {"audio", "voice"}:
-        standalone_mode = (
-            whatsapp_menu_states.get(sender_phone)
-            == STANDALONE_TRANSCRIPTION_STATE
-        )
+        standalone_mode = _is_standalone_transcription_session(sender_phone)
         reply = handle_whatsapp_audio_message(
             sender_phone=sender_phone,
             media_id=media_id,
@@ -1153,15 +1171,37 @@ def handle_rdv_text_message(
 
     normalized = _normalize_caption(text)
     menu_state = whatsapp_menu_states.get(sender_phone)
-    if menu_state == STANDALONE_TRANSCRIPTION_STATE:
+    if menu_state in {
+        STANDALONE_TRANSCRIPTION_MODE_STATE,
+        STANDALONE_TRANSCRIPTION_STATE,
+    }:
         if normalized in STANDALONE_TRANSCRIPTION_EXIT_COMMANDS:
             whatsapp_menu_states.pop(sender_phone, None)
+            standalone_transcription_modes.pop(sender_phone, None)
             send_main_menu_interactive(sender_phone)
             return None
+        if menu_state == STANDALONE_TRANSCRIPTION_MODE_STATE:
+            selected_mode = {
+                "1": "literal",
+                "literal": "literal",
+                "2": "revisada",
+                "revisada": "revisada",
+                "3": "codex",
+                "codex": "codex",
+                "organizar para codex": "codex",
+                "4": "relatorio",
+                "relatorio": "relatorio",
+            }.get(normalized)
+            if selected_mode is None:
+                return STANDALONE_TRANSCRIPTION_PROMPT
+            standalone_transcription_modes[sender_phone] = selected_mode
+            whatsapp_menu_states[sender_phone] = STANDALONE_TRANSCRIPTION_STATE
+            return STANDALONE_TRANSCRIPTION_AUDIO_PROMPT
         return STANDALONE_TRANSCRIPTION_TEXT_PROMPT
 
     if normalized in STANDALONE_TRANSCRIPTION_COMMANDS:
-        whatsapp_menu_states[sender_phone] = STANDALONE_TRANSCRIPTION_STATE
+        whatsapp_menu_states[sender_phone] = STANDALONE_TRANSCRIPTION_MODE_STATE
+        standalone_transcription_modes.pop(sender_phone, None)
         return STANDALONE_TRANSCRIPTION_PROMPT
 
     if (
@@ -1432,9 +1472,10 @@ def handle_whatsapp_audio_message(
     media_id: str,
     mime_type: str = "",
 ) -> str:
-    standalone_mode = (
-        whatsapp_menu_states.get(sender_phone) == STANDALONE_TRANSCRIPTION_STATE
-    )
+    menu_state = whatsapp_menu_states.get(sender_phone)
+    standalone_mode = menu_state == STANDALONE_TRANSCRIPTION_STATE
+    if menu_state == STANDALONE_TRANSCRIPTION_MODE_STATE:
+        return STANDALONE_TRANSCRIPTION_PROMPT
     if not standalone_mode and _get_rdv_comment_state(sender_phone) is not None:
         return handle_rdv_audio_comment_message(sender_phone, media_id, mime_type)
 
@@ -1475,14 +1516,21 @@ def handle_whatsapp_audio_message(
     if not transcription:
         return TRANSCRIPTION_FAILED_MESSAGE
 
-    context = "standalone" if standalone_mode else _transcription_context_for_sender(
-        sender_phone
-    )
-    reviewed = _review_transcription(transcription, context=context)
-    final_text = reviewed.reviewed_text or transcription
-
     if standalone_mode:
-        return _standalone_transcription_message(reviewed, final_text)
+        mode = standalone_transcription_modes.get(
+            sender_phone, transcription_review_default_mode()
+        )
+        intelligent = _audio_transcription_intelligence_service.process(
+            transcription,
+            mode=mode,
+        )
+        return _standalone_transcription_message(intelligent)
+
+    reviewed = _review_transcription(
+        transcription,
+        context=_transcription_context_for_sender(sender_phone),
+    )
+    final_text = reviewed.reviewed_text or transcription
 
     reply = handle_rdv_text_message(
         sender_phone,
@@ -1592,18 +1640,26 @@ def _transcription_context_for_sender(sender_phone: str) -> str:
     return "relatorio_campo"
 
 
+def _is_standalone_transcription_session(sender_phone: str) -> bool:
+    return whatsapp_menu_states.get(sender_phone) in {
+        STANDALONE_TRANSCRIPTION_MODE_STATE,
+        STANDALONE_TRANSCRIPTION_STATE,
+    }
+
+
 def _standalone_transcription_message(
-    reviewed: ReviewedTranscription,
-    final_text: str,
+    result: IntelligentTranscriptionResult,
 ) -> str:
-    heading = (
-        "🎙️ Transcrição revisada do áudio:"
-        if transcription_review_enabled()
-        else "🎙️ Transcrição do áudio:"
-    )
-    parts = [heading, "", final_text]
-    if "substantial_review" in reviewed.warnings:
-        parts.extend(["", "Texto revisado automaticamente a partir do áudio."])
+    headings = {
+        "literal": "🎙️ Transcrição do áudio:",
+        "revisada": "📝 Transcrição revisada:",
+        "codex": "🤖 Prompt organizado para Codex:",
+        "relatorio": "📄 Texto organizado para relatório:",
+    }
+    heading = headings.get(result.mode, headings["revisada"])
+    parts = [heading, "", result.output_text or result.raw_text]
+    if result.used_fallback:
+        parts.extend(["", "Revisão local aplicada como fallback."])
     parts.extend(["", "Você pode enviar outro áudio ou digitar menu para voltar."])
     return "\n".join(parts)
 
@@ -3012,6 +3068,7 @@ def _format_optional_number(value: object) -> str:
 def clear_rdv_sessions() -> None:
     """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
     whatsapp_menu_states.clear()
+    standalone_transcription_modes.clear()
     visita_edit_states.clear()
     visita_active_states.clear()
     visita_new_visit_states.clear()

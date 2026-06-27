@@ -105,7 +105,7 @@ def test_audio_avulso_indica_transcricao_revisada(monkeypatch, tmp_path):
             sender, "media-standalone", "audio/ogg"
         )
 
-        assert reply.startswith("🎙️ Transcrição revisada do áudio:")
+        assert reply.startswith("📝 Transcrição revisada:")
         assert "Codex" in reply
     finally:
         api_whatsapp.whatsapp_menu_states.clear()

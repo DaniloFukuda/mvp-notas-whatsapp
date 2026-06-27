@@ -48,6 +48,8 @@ WHISPER_CHUNK_SECONDS=60
 WHISPER_KEEP_AUDIO=false
 WHISPER_TMP_DIR=tmp/audio_transcriptions
 TRANSCRIPTION_REVIEW_ENABLED=true
+TRANSCRIPTION_REVIEW_PROVIDER=local
+TRANSCRIPTION_REVIEW_MODE_DEFAULT=revisada
 VISITA_DESCRICAO_MAX_CHARS=5000
 VISITA_OBSERVACAO_MAX_CHARS=20000
 VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000
@@ -66,6 +68,11 @@ Comportamento:
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
 - `WHISPER_TMP_DIR`: diretorio usado para baixar audio temporario da Meta.
 - `TRANSCRIPTION_REVIEW_ENABLED=true`: aplica revisão local antes de responder ou salvar. Quando `false`, usa somente a transcrição bruta.
+- `TRANSCRIPTION_REVIEW_PROVIDER=local`: seleciona a camada local. Valores futuros
+  como `openai` e `gemini` só funcionam quando um provider for configurado e
+  injetado explicitamente; não há chamada externa nesta versão.
+- `TRANSCRIPTION_REVIEW_MODE_DEFAULT=revisada`: modo usado em sessões antigas ou
+  sem seleção válida.
 - `VISITA_DESCRICAO_MAX_CHARS=5000`: limite da descrição principal da visita.
 - `VISITA_OBSERVACAO_MAX_CHARS=20000`: limite de cada observação geral.
 - `VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000`: teto de segurança de uma transcrição enviada para observações.
@@ -181,6 +188,45 @@ Uma futura implementação poderá trocar o mecanismo interno por LLM
 (Gemini/OpenAI ou outro), mantendo o mesmo contrato e fallback, desde que haja
 validação de privacidade, custo, latência e uma instrução explícita para não
 inventar fatos.
+
+## Modos da transcrição avulsa
+
+Ao escolher `🎙️ Transcrever áudio`, o usuário seleciona como quer receber o
+resultado:
+
+```text
+Como você quer receber a transcrição?
+
+1. Literal
+2. Revisada
+3. Organizar para Codex
+4. Relatório
+
+Digite o número da opção.
+```
+
+- **Literal**: mantém o texto próximo da fala, aplicando somente a revisão local
+  conservadora. Responde com `🎙️ Transcrição do áudio:`.
+- **Revisada**: corrige português, pontuação e termos do glossário sem resumir o
+  conteúdo. Responde com `📝 Transcrição revisada:`.
+- **Codex**: organiza o conteúdo em ajustes, comportamentos de erro e critérios
+  de aceite, preservando números, limites, ferramentas e entidades citadas.
+  Responde com `🤖 Prompt organizado para Codex:`.
+- **Relatório**: prepara texto corrido revisado para uso em relatório de campo.
+  Responde com `📄 Texto organizado para relatório:`.
+
+O serviço `AudioTranscriptionIntelligenceService` mantém um contrato estruturado
+com modo, provider, erro e indicação de fallback. O provider `local` é o único
+ativo nesta versão e não transmite texto para terceiros. A interface aceita
+providers externos injetados no futuro; se estiverem ausentes, falharem ou
+retornarem texto vazio, o processamento cai automaticamente para a revisão
+local e o fluxo continua.
+
+Enviar áudio ou transcrição a um LLM externo pode expor dados pessoais,
+informações comerciais e conteúdo de visitas. Antes de habilitar qualquer
+provider externo, é necessário revisar LGPD, base legal, retenção, região de
+processamento, termos do fornecedor, custo, latência e política de logs. Chaves
+jamais devem ser versionadas ou incluídas em prompts.
 
 ## Fluxo no WhatsApp
 
