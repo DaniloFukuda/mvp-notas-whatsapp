@@ -120,7 +120,7 @@ def test_audio_avulso_retorna_transcricao_sem_salvar_visita_ou_rdv(
             )
 
             assert reply == (
-                "🎙️ Transcrição do áudio:\n\n"
+                "🎙️ Transcrição revisada do áudio:\n\n"
                 "Relatório falado transcrito com sucesso.\n\n"
                 "Você pode enviar outro áudio ou digitar menu para voltar."
             )
@@ -153,8 +153,8 @@ def test_audio_longo_avulso_retorna_texto_unido(monkeypatch, tmp_path):
             sender, "media-long", "audio/ogg"
         )
 
-        assert "parte um parte dois parte três" in reply
-        assert reply.count("parte um") == 1
+        assert "parte um parte dois parte três" in reply.lower()
+        assert reply.lower().count("parte um") == 1
     finally:
         api_whatsapp.whatsapp_menu_states.clear()
 

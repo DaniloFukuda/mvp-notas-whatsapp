@@ -47,6 +47,7 @@ WHISPER_MAX_AUDIO_SECONDS=1800
 WHISPER_CHUNK_SECONDS=60
 WHISPER_KEEP_AUDIO=false
 WHISPER_TMP_DIR=tmp/audio_transcriptions
+TRANSCRIPTION_REVIEW_ENABLED=true
 VISITA_DESCRICAO_MAX_CHARS=5000
 VISITA_OBSERVACAO_MAX_CHARS=20000
 VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000
@@ -64,6 +65,7 @@ Comportamento:
 - `WHISPER_CHUNK_SECONDS=60`: divide audios longos em partes temporarias.
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
 - `WHISPER_TMP_DIR`: diretorio usado para baixar audio temporario da Meta.
+- `TRANSCRIPTION_REVIEW_ENABLED=true`: aplica revisão local antes de responder ou salvar. Quando `false`, usa somente a transcrição bruta.
 - `VISITA_DESCRICAO_MAX_CHARS=5000`: limite da descrição principal da visita.
 - `VISITA_OBSERVACAO_MAX_CHARS=20000`: limite de cada observação geral.
 - `VISITA_OBSERVACAO_TOTAL_MAX_CHARS=80000`: teto de segurança de uma transcrição enviada para observações.
@@ -140,6 +142,45 @@ bash scripts/run_whisper_local_audio_test.sh --audio "/caminho/audio-ficticio.og
 Esses testes locais nao enviam nada para WhatsApp, nao chamam Meta API, nao alteram RDV e nao ativam feature flag. Eles servem apenas para medir qualidade e velocidade da transcricao local com Whisper.
 
 Para producao, ainda e necessario homologar o fluxo WhatsApp completo, validar privacidade/LGPD, definir retencao de audio e manter plano de rollback com `AUDIO_TRANSCRIPTION_ENABLED=false`.
+
+## Transcrição bruta e transcrição revisada
+
+O Whisper continua produzindo a **transcrição bruta**. Em seguida,
+`AudioTranscriptionReviewService` cria uma **transcrição revisada**, preservando
+ambas no retorno estruturado (`raw_text` e `reviewed_text`). O texto revisado é o
+que aparece no modo avulso e o que segue para descrição, observação de visita ou
+comentário de RDV.
+
+A revisão atual é local e baseada em regras. Ela:
+
+- normaliza espaços e pontuação básica;
+- remove repetições consecutivas óbvias;
+- corrige variantes conhecidas, como `cadax` → `Codex`, `botes` → `botões` e
+  `contitor` → `contentor`;
+- usa contexto (`standalone`, `visita_observacao`, `visita_descricao`,
+  `codex_prompt` ou `relatorio_campo`) para limitar correções ambíguas;
+- preserva comandos do fluxo, números, datas, telefones e valores monetários.
+
+O glossário inicial inclui Codex, WhatsApp, botões, listas, Sim, Não, contentor,
+contentores, entrega, recolha, operador, alugado, disponível, indisponível,
+relatório, visita técnica, fazenda, aplicação, serviço, PDF, RDV e comprovante.
+O serviço também aceita glossário opcional por chamada.
+
+Se a revisão lançar erro ou produzir texto vazio, o fluxo usa a transcrição
+bruta. No comentário de RDV, o estado interno mantém também `raw_text`. No modo
+avulso, a resposta começa com `🎙️ Transcrição revisada do áudio:` e textos com
+alteração substancial recebem um aviso curto. Respostas continuam divididas em
+mensagens de até 4.000 caracteres.
+
+### Riscos e evolução
+
+As heurísticas não entendem intenção como um revisor semântico: podem deixar
+passar nomes próprios, regionalismos e erros fonéticos não cadastrados. Por
+serem conservadoras, preferem manter um trecho duvidoso a inventar conteúdo.
+Uma futura implementação poderá trocar o mecanismo interno por LLM
+(Gemini/OpenAI ou outro), mantendo o mesmo contrato e fallback, desde que haja
+validação de privacidade, custo, latência e uma instrução explícita para não
+inventar fatos.
 
 ## Fluxo no WhatsApp
 

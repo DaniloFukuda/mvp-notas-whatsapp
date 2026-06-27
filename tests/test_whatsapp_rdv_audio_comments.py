@@ -207,7 +207,7 @@ def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
 
     assert reply == "fluxo continuou"
     assert received == [
-        (sender, "primeiro chunk segundo chunk terceiro chunk")
+        (sender, "Primeiro chunk segundo chunk terceiro chunk.")
     ]
     assert not downloaded.exists()
 

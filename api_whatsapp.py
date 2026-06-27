@@ -37,6 +37,11 @@ from services.audio_transcription_service import (
     AudioTranscriptionService,
     whisper_enabled_from_env,
 )
+from services.audio_transcription_review_service import (
+    AudioTranscriptionReviewService,
+    ReviewedTranscription,
+    transcription_review_enabled,
+)
 from services.report_catalog import (
     interactive_report_commands,
     parse_rdv_report_command,
@@ -445,6 +450,7 @@ visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
 rdv_comment_states: dict[str, dict] = {}
 _audio_transcription_service: AudioTranscriptionService | None = None
+_audio_transcription_review_service = AudioTranscriptionReviewService()
 
 
 @router.get("/webhook/whatsapp")
@@ -1413,9 +1419,12 @@ def handle_rdv_audio_comment_message(
         state["state"] = "awaiting_correction"
         return TRANSCRIPTION_FAILED_MESSAGE
 
+    reviewed = _review_transcription(transcription, context="relatorio_campo")
+    final_text = reviewed.reviewed_text or transcription
     state["state"] = "awaiting_audio_confirmation"
-    state["text"] = transcription
-    return _rdv_transcription_confirmation_message(transcription)
+    state["raw_text"] = transcription
+    state["text"] = final_text
+    return _rdv_transcription_confirmation_message(final_text)
 
 
 def handle_whatsapp_audio_message(
@@ -1466,20 +1475,18 @@ def handle_whatsapp_audio_message(
     if not transcription:
         return TRANSCRIPTION_FAILED_MESSAGE
 
+    context = "standalone" if standalone_mode else _transcription_context_for_sender(
+        sender_phone
+    )
+    reviewed = _review_transcription(transcription, context=context)
+    final_text = reviewed.reviewed_text or transcription
+
     if standalone_mode:
-        return "\n".join(
-            [
-                "🎙️ Transcrição do áudio:",
-                "",
-                transcription,
-                "",
-                "Você pode enviar outro áudio ou digitar menu para voltar.",
-            ]
-        )
+        return _standalone_transcription_message(reviewed, final_text)
 
     reply = handle_rdv_text_message(
         sender_phone,
-        transcription,
+        final_text,
         is_audio_transcription=True,
     )
     return reply or "Audio transcrito e registrado."
@@ -1556,6 +1563,49 @@ def _safe_text_for_message(text: str, limit: int = 1200) -> str:
 
 def _audio_transcription_enabled() -> bool:
     return whisper_enabled_from_env()
+
+
+def _review_transcription(raw_text: str, *, context: str) -> ReviewedTranscription:
+    try:
+        return _audio_transcription_review_service.review(raw_text, context=context)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao revisar transcricao; usando texto bruto: contexto=%s erro=%s",
+            context,
+            _safe_exception_summary(exc),
+        )
+        raw = str(raw_text or "").strip()
+        return ReviewedTranscription(raw, raw, False, ["review_failed"])
+
+
+def _transcription_context_for_sender(sender_phone: str) -> str:
+    visit = _get_active_visita_for_phone(sender_phone)
+    state = str((visit or {}).get("estado_fluxo") or "")
+    if state in {"aguardando_descricao_visita", "aguardando_edicao_descricao"}:
+        return "visita_descricao"
+    if state in {
+        "aguardando_observacoes_gerais",
+        "aguardando_adicao_observacao",
+        "aguardando_reescrita_observacoes",
+    }:
+        return "visita_observacao"
+    return "relatorio_campo"
+
+
+def _standalone_transcription_message(
+    reviewed: ReviewedTranscription,
+    final_text: str,
+) -> str:
+    heading = (
+        "🎙️ Transcrição revisada do áudio:"
+        if transcription_review_enabled()
+        else "🎙️ Transcrição do áudio:"
+    )
+    parts = [heading, "", final_text]
+    if "substantial_review" in reviewed.warnings:
+        parts.extend(["", "Texto revisado automaticamente a partir do áudio."])
+    parts.extend(["", "Você pode enviar outro áudio ou digitar menu para voltar."])
+    return "\n".join(parts)
 
 
 def _keep_audio_after_transcription() -> bool:
