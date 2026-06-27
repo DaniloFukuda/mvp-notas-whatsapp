@@ -49,6 +49,10 @@ def test_escolher_transcricao_avulsa_coloca_sessao_aguardando_audio():
             reply = api_whatsapp.handle_rdv_text_message(sender, "transcrever áudio")
 
             assert reply == api_whatsapp.STANDALONE_TRANSCRIPTION_PROMPT
+            assert "1. Literal" in reply
+            assert "2. Revisada" in reply
+            assert "Codex" not in reply
+            assert "Relatório" not in reply
             assert (
                 api_whatsapp.whatsapp_menu_states[sender]
                 == api_whatsapp.STANDALONE_TRANSCRIPTION_MODE_STATE
@@ -75,7 +79,7 @@ def test_texto_normal_no_modo_avulso_pede_audio():
 
 @pytest.mark.parametrize(
     ("option", "mode"),
-    [("1", "literal"), ("2", "revisada"), ("3", "codex"), ("4", "relatorio")],
+    [("1", "literal"), ("2", "revisada")],
 )
 def test_escolher_modo_salva_sessao(option, mode):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -94,13 +98,32 @@ def test_escolher_modo_salva_sessao(option, mode):
             _restore_services(original_rdv, original_visitas)
 
 
+def test_opcao_de_transcricao_invalida_mostra_apenas_modos_publicos():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, _, sender, original_rdv, original_visitas = _install_services(temp_dir)
+        try:
+            api_whatsapp.handle_rdv_text_message(sender, "transcrever áudio")
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "3")
+
+            assert reply == api_whatsapp.STANDALONE_TRANSCRIPTION_INVALID_MODE_PROMPT
+            assert "1. Literal" in reply
+            assert "2. Revisada" in reply
+            assert "Codex" not in reply
+            assert "Relatório" not in reply
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.STANDALONE_TRANSCRIPTION_MODE_STATE
+            )
+        finally:
+            _restore_services(original_rdv, original_visitas)
+
+
 @pytest.mark.parametrize(
     ("mode", "heading"),
     [
-        ("literal", "🎙️ Transcrição do áudio:"),
+        ("literal", "🎙️ Transcrição literal:"),
         ("revisada", "📝 Transcrição revisada:"),
-        ("codex", "🤖 Prompt organizado para Codex:"),
-        ("relatorio", "📄 Texto organizado para relatório:"),
     ],
 )
 def test_audio_avulso_usa_titulo_do_modo(monkeypatch, tmp_path, mode, heading):

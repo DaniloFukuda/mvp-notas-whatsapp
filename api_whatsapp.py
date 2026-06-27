@@ -266,10 +266,17 @@ STANDALONE_TRANSCRIPTION_PROMPT = "\n".join(
         "",
         "1. Literal",
         "2. Revisada",
-        "3. Organizar para Codex",
-        "4. Relatório",
         "",
         "Digite o número da opção.",
+    ]
+)
+STANDALONE_TRANSCRIPTION_INVALID_MODE_PROMPT = "\n".join(
+    [
+        "Escolha uma opção válida:",
+        "",
+        "1. Literal",
+        "",
+        "2. Revisada",
     ]
 )
 STANDALONE_TRANSCRIPTION_AUDIO_PROMPT = (
@@ -1186,14 +1193,9 @@ def handle_rdv_text_message(
                 "literal": "literal",
                 "2": "revisada",
                 "revisada": "revisada",
-                "3": "codex",
-                "codex": "codex",
-                "organizar para codex": "codex",
-                "4": "relatorio",
-                "relatorio": "relatorio",
             }.get(normalized)
             if selected_mode is None:
-                return STANDALONE_TRANSCRIPTION_PROMPT
+                return STANDALONE_TRANSCRIPTION_INVALID_MODE_PROMPT
             standalone_transcription_modes[sender_phone] = selected_mode
             whatsapp_menu_states[sender_phone] = STANDALONE_TRANSCRIPTION_STATE
             return STANDALONE_TRANSCRIPTION_AUDIO_PROMPT
@@ -1651,7 +1653,7 @@ def _standalone_transcription_message(
     result: IntelligentTranscriptionResult,
 ) -> str:
     headings = {
-        "literal": "🎙️ Transcrição do áudio:",
+        "literal": "🎙️ Transcrição literal:",
         "revisada": "📝 Transcrição revisada:",
         "codex": "🤖 Prompt organizado para Codex:",
         "relatorio": "📄 Texto organizado para relatório:",

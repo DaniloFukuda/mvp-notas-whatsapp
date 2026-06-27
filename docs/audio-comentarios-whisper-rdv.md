@@ -199,21 +199,27 @@ Como você quer receber a transcrição?
 
 1. Literal
 2. Revisada
-3. Organizar para Codex
-4. Relatório
 
 Digite o número da opção.
 ```
 
 - **Literal**: mantém o texto próximo da fala, aplicando somente a revisão local
-  conservadora. Responde com `🎙️ Transcrição do áudio:`.
-- **Revisada**: corrige português, pontuação e termos do glossário sem resumir o
-  conteúdo. Responde com `📝 Transcrição revisada:`.
-- **Codex**: organiza o conteúdo em ajustes, comportamentos de erro e critérios
-  de aceite, preservando números, limites, ferramentas e entidades citadas.
-  Responde com `🤖 Prompt organizado para Codex:`.
-- **Relatório**: prepara texto corrido revisado para uso em relatório de campo.
-  Responde com `📄 Texto organizado para relatório:`.
+  conservadora. É indicada para quem deseja a fala quase como foi dita e
+  responde com `🎙️ Transcrição literal:`.
+- **Revisada**: corrige português, pontuação e termos técnicos, melhora a clareza
+  sem inventar fatos nem resumir excessivamente. É adequada para relatório agro,
+  visita técnica, observações de campo e comunicação interna. Responde com
+  `📝 Transcrição revisada:`.
+
+Os modos auxiliares `codex` e `relatorio` permanecem disponíveis somente no
+contrato interno para compatibilidade e evolução técnica. Eles não aparecem no
+menu nem podem ser selecionados pelo usuário final. A opção pública Revisada
+absorve o uso profissional que antes era apresentado como Relatório.
+
+Dentro da criação de relatório ou visita técnica não há menu de escolha. Todo
+áudio é revisado automaticamente antes de salvar descrição ou observação,
+preservando números, datas, valores, nomes, áreas, hectares, culturas e detalhes
+técnicos. Se a revisão falhar, o texto bruto continua sendo usado como fallback.
 
 O serviço `AudioTranscriptionIntelligenceService` mantém um contrato estruturado
 com modo, provider, erro e indicação de fallback. O provider `local` é o único

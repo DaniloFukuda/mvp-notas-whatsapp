@@ -41,7 +41,7 @@ def test_audio_de_visita_salva_versao_revisada(monkeypatch, tmp_path):
             lambda path: "o contitor está alugado e os botes disponíveis",
         )
         try:
-            api_whatsapp.handle_whatsapp_audio_message(
+            reply = api_whatsapp.handle_whatsapp_audio_message(
                 sender, "media-visita", "audio/ogg"
             )
 
@@ -49,6 +49,7 @@ def test_audio_de_visita_salva_versao_revisada(monkeypatch, tmp_path):
             assert saved["observacoes_gerais"] == (
                 "O contentor está alugado e os botões disponíveis."
             )
+            assert "Como você quer receber" not in reply
         finally:
             api_whatsapp.rdv_service, api_whatsapp.visitas_service = original
             api_whatsapp.visita_active_states.clear()
