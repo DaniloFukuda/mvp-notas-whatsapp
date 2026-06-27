@@ -281,3 +281,43 @@ O campo `observacao` ja existe no RDV e ja e exportado nas planilhas semanal e m
 Teste local valida instalacao, modelo e transcricao de arquivo. Producao envolve webhook da Meta, download de midia, permissao de token, processamento em background e impacto no fluxo RDV.
 
 Ative em producao somente depois de validar com audios ficticios e plano de rollback.
+
+## Revisao profissional opcional via OpenAI
+
+A revisao local continua sendo o padrao e funciona com
+`TRANSCRIPTION_REVIEW_PROVIDER=local`. Opcionalmente, o modo **Revisada** e os
+audios de visitas/relatorios podem enviar somente a transcricao em texto para a
+OpenAI. O audio permanece local e nunca e enviado por esse servico. O modo
+**Literal** nunca chama API externa.
+
+```env
+TRANSCRIPTION_LLM_REVIEW_ENABLED=false
+TRANSCRIPTION_LLM_PROVIDER=openai
+TRANSCRIPTION_LLM_MODEL=gpt-5.4-mini
+TRANSCRIPTION_LLM_TIMEOUT_SECONDS=20
+TRANSCRIPTION_LLM_MAX_INPUT_CHARS=12000
+OPENAI_API_KEY=
+```
+
+Para ativar em homologacao, configure `OPENAI_API_KEY` somente no ambiente e
+altere `TRANSCRIPTION_LLM_REVIEW_ENABLED=true`. Para desativar ou fazer rollback
+rapido, volte a flag para `false` e reinicie o servico. Nao e preciso remover o
+Whisper nem mudar `TRANSCRIPTION_REVIEW_PROVIDER=local`.
+
+Sem chave, com provider invalido, timeout, erro HTTP, excecao, resposta vazia ou
+texto acima do limite, o sistema nao interrompe o WhatsApp: aplica a revisao
+local. Se a propria revisao local falhar, preserva a transcricao bruta.
+
+O prompt corrige portugues, pontuacao, clareza e frases quebradas para produzir
+texto profissional de relatorio agro. Ele instrui o modelo a manter o sentido,
+preservar nomes, datas, numeros e unidades, agir conservadoramente em trechos
+ambiguos e nao inventar diagnosticos, fatos ou recomendacoes.
+
+### Privacidade e LGPD na revisao externa
+
+Embora o audio nao saia do servidor, o texto pode conter dados pessoais,
+comerciais ou tecnicos. Nao envie dados sensiveis sem base legal e controles
+adequados. Antes de habilitar, avalie necessidade, consentimento/base legal,
+retencao, regiao de processamento, contrato com o fornecedor, acesso a logs e
+descarte. Use dados ficticios na homologacao e nunca registre ou versione a
+`OPENAI_API_KEY`.

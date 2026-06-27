@@ -1617,7 +1617,15 @@ def _audio_transcription_enabled() -> bool:
 
 def _review_transcription(raw_text: str, *, context: str) -> ReviewedTranscription:
     try:
-        return _audio_transcription_review_service.review(raw_text, context=context)
+        result = _audio_transcription_intelligence_service.process(
+            raw_text,
+            mode="revisada",
+            context=context,
+        )
+        raw = str(raw_text or "").strip()
+        output = result.output_text or raw
+        warnings = ["llm_fallback"] if result.used_fallback else []
+        return ReviewedTranscription(raw, output, output != raw, warnings)
     except Exception as exc:
         logger.exception(
             "Falha ao revisar transcricao; usando texto bruto: contexto=%s erro=%s",

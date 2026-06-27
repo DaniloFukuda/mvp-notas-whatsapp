@@ -11,11 +11,16 @@ from services.audio_transcription_review_service import (
     AudioTranscriptionReviewService,
     transcription_review_enabled,
 )
+from services.transcription_llm_review_service import (
+    LlmReviewResult,
+    review_transcription_with_llm,
+)
 
 
 SUPPORTED_TRANSCRIPTION_MODES = {"literal", "revisada", "codex", "relatorio"}
 DEFAULT_TRANSCRIPTION_MODE = "revisada"
 ExternalProvider = Callable[[str, str], str]
+LlmReviewer = Callable[[str, str], LlmReviewResult]
 
 
 @dataclass(frozen=True)
@@ -52,9 +57,11 @@ class AudioTranscriptionIntelligenceService:
         *,
         local_reviewer: AudioTranscriptionReviewService | None = None,
         external_providers: Mapping[str, ExternalProvider] | None = None,
+        llm_reviewer: LlmReviewer | None = None,
     ) -> None:
         self._local_reviewer = local_reviewer or AudioTranscriptionReviewService()
         self._external_providers = dict(external_providers or {})
+        self._llm_reviewer = llm_reviewer or review_transcription_with_llm
 
     def process(
         self,
@@ -62,6 +69,7 @@ class AudioTranscriptionIntelligenceService:
         *,
         mode: str | None = None,
         provider: str | None = None,
+        context: str | None = None,
     ) -> IntelligentTranscriptionResult:
         raw = str(raw_text or "").strip()
         selected_mode = self._normalize_mode(mode)
@@ -80,6 +88,34 @@ class AudioTranscriptionIntelligenceService:
                 True, raw, raw, selected_mode, "local"
             )
 
+        # O modo literal nunca transmite texto a um provider externo.
+        if selected_mode == "literal":
+            return self._process_local(raw, selected_mode, context=context)
+
+        if selected_mode in {"revisada", "relatorio"}:
+            llm_result = self._llm_reviewer(raw, context or "relatorio_agro")
+            if llm_result.ok and llm_result.output_text.strip():
+                return IntelligentTranscriptionResult(
+                    True,
+                    raw,
+                    llm_result.output_text.strip(),
+                    selected_mode,
+                    llm_result.provider,
+                )
+            local = self._process_local(raw, selected_mode, context=context)
+            if llm_result.used_fallback:
+                return IntelligentTranscriptionResult(
+                    local.ok,
+                    raw,
+                    local.output_text or raw,
+                    selected_mode,
+                    "local",
+                    llm_result.error_message,
+                    True,
+                )
+            if selected_provider == "local":
+                return local
+
         if selected_provider != "local":
             try:
                 external = self._external_providers[selected_provider]
@@ -90,7 +126,7 @@ class AudioTranscriptionIntelligenceService:
                     True, raw, output, selected_mode, selected_provider
                 )
             except Exception as exc:
-                local = self._process_local(raw, selected_mode)
+                local = self._process_local(raw, selected_mode, context=context)
                 return IntelligentTranscriptionResult(
                     local.ok,
                     raw,
@@ -101,16 +137,20 @@ class AudioTranscriptionIntelligenceService:
                     True,
                 )
 
-        return self._process_local(raw, selected_mode)
+        return self._process_local(raw, selected_mode, context=context)
 
     def _process_local(
-        self, raw: str, mode: str
+        self, raw: str, mode: str, *, context: str | None = None
     ) -> IntelligentTranscriptionResult:
         try:
-            context = "codex_prompt" if mode == "codex" else (
-                "relatorio_campo" if mode == "relatorio" else "standalone"
+            review_context = context or (
+                "codex_prompt"
+                if mode == "codex"
+                else ("relatorio_campo" if mode == "relatorio" else "standalone")
             )
-            reviewed = self._local_reviewer.review(raw, context=context).reviewed_text
+            reviewed = self._local_reviewer.review(
+                raw, context=review_context
+            ).reviewed_text
             reviewed = reviewed or raw
             if mode == "codex":
                 output = self._organize_codex(reviewed)
