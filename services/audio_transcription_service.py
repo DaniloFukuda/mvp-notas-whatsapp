@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import subprocess
@@ -5,6 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Protocol
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_WHISPER_MODEL = "base"
 AUDIO_TOO_LONG_MESSAGE = (
@@ -69,10 +72,20 @@ class AudioTranscriptionService:
         if not path.is_file():
             raise FileNotFoundError(f"Arquivo de audio nao encontrado: {path}")
 
-        if path.stat().st_size > int(self.max_audio_mb * 1024 * 1024):
+        size_bytes = path.stat().st_size
+        if size_bytes > int(self.max_audio_mb * 1024 * 1024):
             raise AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
 
         duration = self._duration_probe(str(path))
+        logger.info(
+            "Diagnostico Whisper: arquivo=%s tamanho_bytes=%s duracao_segundos=%.3f modelo=%s idioma=%s chunk_segundos=%.3f",
+            path,
+            size_bytes,
+            duration,
+            self.model_name,
+            self.language,
+            self.chunk_seconds,
+        )
         if duration <= 0:
             raise RuntimeError("Nao foi possivel determinar a duracao do audio.")
         if duration > self.max_audio_seconds:
@@ -89,19 +102,58 @@ class AudioTranscriptionService:
                 chunk_duration = min(self.chunk_seconds, duration - start)
                 chunk_path = Path(temp_dir) / f"chunk_{index:04d}.wav"
                 self._chunk_extractor(str(path), str(chunk_path), start, chunk_duration)
+                chunk_size_bytes = chunk_path.stat().st_size if chunk_path.exists() else 0
+                logger.info(
+                    "Diagnostico Whisper chunk: indice=%s arquivo=%s tamanho_bytes=%s inicio=%.3f duracao_segundos=%.3f modelo=%s",
+                    index,
+                    chunk_path,
+                    chunk_size_bytes,
+                    start,
+                    chunk_duration,
+                    self.model_name,
+                )
                 text = self._transcribe_path(model, chunk_path)
                 if text:
                     texts.append(text)
         return " ".join(texts).strip()
 
     def _transcribe_path(self, model: _WhisperModel, path: Path) -> str:
-        result = model.transcribe(str(path), language=self.language, fp16=False)
-        return " ".join(str((result or {}).get("text") or "").split())
+        size_bytes = path.stat().st_size if path.exists() else 0
+        try:
+            logger.info(
+                "Whisper transcribe iniciado: arquivo=%s tamanho_bytes=%s modelo=%s idioma=%s",
+                path,
+                size_bytes,
+                self.model_name,
+                self.language,
+            )
+            result = model.transcribe(str(path), language=self.language, fp16=False)
+            text = " ".join(str((result or {}).get("text") or "").split())
+            logger.info(
+                "Whisper transcribe concluido: arquivo=%s tamanho_bytes=%s modelo=%s texto_chars=%s texto_vazio=%s",
+                path,
+                size_bytes,
+                self.model_name,
+                len(text),
+                not bool(text),
+            )
+            return text
+        except Exception:
+            logger.exception(
+                "Whisper transcribe falhou: arquivo=%s tamanho_bytes=%s modelo=%s idioma=%s",
+                path,
+                size_bytes,
+                self.model_name,
+                self.language,
+            )
+            raise
 
     def _load_model(self) -> _WhisperModel:
         if self._model is None:
             loader = self._model_loader or _load_whisper_model
+            logger.info("Carregando modelo Whisper: modelo=%s", self.model_name)
             self._model = loader(self.model_name)
+            logger.info("Modelo Whisper carregado: modelo=%s", self.model_name)
         return self._model
 
 
