@@ -24,10 +24,37 @@ def test_modo_codex_organiza_texto_confuso_sem_perder_glossario():
     assert "Codex" in result.output_text
     assert "botões" in result.output_text
     assert "contentor" in result.output_text
-    assert "Ajustes necessários:" in result.output_text
+    assert "Contexto:" in result.output_text
+    assert "Objetivo:" in result.output_text
+    assert "Mudanças desejadas:" in result.output_text
+    assert "Testes esperados:" in result.output_text
     assert "Critérios de aceite:" in result.output_text
+    assert "- não informado" in result.output_text
     assert "1" in result.output_text
     assert "99" in result.output_text
+
+
+def test_modo_codex_distribui_informacoes_nas_secoes_tecnicas():
+    service = AudioTranscriptionIntelligenceService()
+
+    result = service.process(
+        "O problema é uma falha no webhook. "
+        "O objetivo é corrigir o deploy. "
+        "Alterar a API. "
+        "Testar com pytest. "
+        "O critério de aceite é o servidor responder sem erro.",
+        mode="codex",
+        provider="local",
+    )
+
+    assert "Contexto:\n- O problema é uma falha no webhook." in result.output_text
+    assert "Objetivo:\n- O objetivo é corrigir o deploy." in result.output_text
+    assert "Mudanças desejadas:\n- Alterar a API." in result.output_text
+    assert "Testes esperados:\n- Testar com pytest." in result.output_text
+    assert (
+        "Critérios de aceite:\n"
+        "- O critério de aceite é o servidor responder sem erro."
+    ) in result.output_text
 
 
 def test_provider_externo_com_falha_cai_para_local():

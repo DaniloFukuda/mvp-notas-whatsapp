@@ -15,21 +15,29 @@ DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 DEFAULT_MAX_INPUT_CHARS = 12000
 
-AGRO_REVIEW_INSTRUCTIONS = """Transforme o texto fornecido em texto profissional para relatório agro.
+AGRO_REVIEW_INSTRUCTIONS = """Transforme o texto fornecido em texto profissional, claro e fiel ao contexto.
 
 Regras obrigatórias:
-- Corrija apenas português, pontuação, clareza e frases quebradas.
+- Corrija português, pontuação, clareza e frases quebradas.
+- Corrija palavras claramente mal reconhecidas pelo sistema de fala quando o contexto
+  indicar a forma correta com alta confiança.
 - Mantenha rigorosamente o sentido original.
-- Não invente fatos, valores, nomes, datas, áreas, hectares, culturas, produtos ou recomendações.
+- Não invente fatos novos.
+- Não adicione números, nomes, datas ou valores que não estejam no texto.
+- Não invente áreas, hectares, culturas, produtos ou recomendações.
 - Preserve nomes de fazendas, pessoas, talhões, culturas, valores, datas, números e unidades.
 - Se houver ambiguidade, escreva de forma conservadora.
-- Se o texto estiver incompreensível, muito corrompido ou sem sentido claro, retorne exatamente o texto original.
+- Se o texto estiver muito incompreensível, corrompido ou sem sentido claro, retorne
+  exatamente o texto original.
 - Nunca traduza para outro idioma.
 - Não use linguagem comercial exagerada.
 - Não crie diagnóstico técnico que não tenha sido falado.
-- Produza texto natural, profissional e pronto para relatório de visita técnica.
 - Não mencione transcrição, IA, Whisper ou áudio.
-- Retorne somente o texto revisado."""
+- Retorne somente o texto final.
+
+Vocabulário comum deste sistema e do contexto técnico:
+Codex, OpenAI, ChatGPT, WhatsApp, API, Python, Git, branch, commit, pull request,
+deploy, servidor, webhook, Ciclus, OLT, contentor, aluguer, RDV e visita técnica."""
 
 _PORTUGUESE_ANCHOR_WORDS = {
     "a",
