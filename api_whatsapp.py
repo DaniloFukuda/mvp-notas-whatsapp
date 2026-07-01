@@ -266,7 +266,6 @@ STANDALONE_TRANSCRIPTION_PROMPT = "\n".join(
         "",
         "1. Literal",
         "2. Revisada",
-        "3. Para Codex",
         "",
         "Digite o número da opção.",
     ]
@@ -278,8 +277,6 @@ STANDALONE_TRANSCRIPTION_INVALID_MODE_PROMPT = "\n".join(
         "1. Literal",
         "",
         "2. Revisada",
-        "",
-        "3. Para Codex",
     ]
 )
 STANDALONE_TRANSCRIPTION_AUDIO_PROMPT = (
@@ -1196,9 +1193,6 @@ def handle_rdv_text_message(
                 "literal": "literal",
                 "2": "revisada",
                 "revisada": "revisada",
-                "3": "codex",
-                "codex": "codex",
-                "para codex": "codex",
             }.get(normalized)
             if selected_mode is None:
                 return STANDALONE_TRANSCRIPTION_INVALID_MODE_PROMPT
@@ -1669,7 +1663,6 @@ def _standalone_transcription_message(
     headings = {
         "literal": "🎙️ Transcrição literal:",
         "revisada": "📝 Transcrição revisada:",
-        "codex": "🤖 Prompt organizado para Codex:",
         "relatorio": "📄 Texto organizado para relatório:",
     }
     heading = headings.get(result.mode, headings["revisada"])
