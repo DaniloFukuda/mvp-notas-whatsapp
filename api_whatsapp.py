@@ -245,7 +245,7 @@ VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
 }
 VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
 VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
-MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola"}
+MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola", "voltar"}
 STANDALONE_TRANSCRIPTION_COMMANDS = {
     "transcrever audio",
     "transcricao de audio",
