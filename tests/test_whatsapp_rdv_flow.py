@@ -12,6 +12,42 @@ from services.rdv_receipt_analysis_service import RDVReceiptAnalysisResult
 from services.rdv_service import RDVService
 
 
+def test_voltar_abre_menu_principal_quando_estado_do_transcritor_foi_perdido(
+    monkeypatch,
+):
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            menus_enviados = []
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_main_menu_interactive",
+                lambda phone: menus_enviados.append(phone),
+            )
+
+            for option in ("1", "2"):
+                api_whatsapp.handle_rdv_text_message(sender, "transcrever áudio")
+                api_whatsapp.handle_rdv_text_message(sender, option)
+                api_whatsapp.whatsapp_menu_states.pop(sender, None)
+                api_whatsapp.standalone_transcription_modes.pop(sender, None)
+
+                reply = api_whatsapp.handle_rdv_text_message(sender, "voltar")
+
+                assert reply is None
+                assert sender not in api_whatsapp.whatsapp_menu_states
+                assert sender not in api_whatsapp.standalone_transcription_modes
+
+            assert menus_enviados == [sender, sender]
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.standalone_transcription_modes.clear()
+
+
 def test_explicit_km_flow_does_not_capture_regular_messages():
     original_service = api_whatsapp.rdv_service
     original_excel_sender = api_whatsapp._send_weekly_rdv_excel
