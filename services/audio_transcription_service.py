@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 
+DEFAULT_WHISPER_MODEL = "base"
 AUDIO_TOO_LONG_MESSAGE = (
     "Esse áudio ficou muito longo para processar agora. "
     "Envie um áudio de até 30 minutos ou divida em partes menores."
@@ -28,7 +29,7 @@ class _WhisperModel(Protocol):
 class AudioTranscriptionService:
     def __init__(
         self,
-        model_name: str = "tiny",
+        model_name: str = DEFAULT_WHISPER_MODEL,
         language: str = "pt",
         max_audio_mb: float | int | str | None = None,
         max_audio_seconds: float | int | str | None = None,
@@ -37,7 +38,7 @@ class AudioTranscriptionService:
         duration_probe: Callable[[str], float] | None = None,
         chunk_extractor: Callable[[str, str, float, float], None] | None = None,
     ) -> None:
-        self.model_name = str(model_name or "tiny").strip() or "tiny"
+        self.model_name = str(model_name or DEFAULT_WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
         self.language = str(language or "pt").strip() or "pt"
         self.max_audio_mb = _to_positive_float(max_audio_mb, default=_env_max_audio_mb())
         self.max_audio_seconds = _to_positive_float(
@@ -55,7 +56,7 @@ class AudioTranscriptionService:
         model_loader: Callable[[str], _WhisperModel] | None = None,
     ) -> "AudioTranscriptionService":
         return cls(
-            model_name=os.getenv("WHISPER_MODEL", "tiny"),
+            model_name=os.getenv("WHISPER_MODEL", DEFAULT_WHISPER_MODEL),
             language=os.getenv("WHISPER_LANGUAGE", "pt"),
             max_audio_mb=os.getenv("WHISPER_MAX_AUDIO_MB"),
             max_audio_seconds=os.getenv("WHISPER_MAX_AUDIO_SECONDS"),
