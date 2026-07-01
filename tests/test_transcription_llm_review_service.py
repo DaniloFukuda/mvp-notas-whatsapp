@@ -1,4 +1,7 @@
-from services.transcription_llm_review_service import review_transcription_with_llm
+from services.transcription_llm_review_service import (
+    AGRO_REVIEW_INSTRUCTIONS,
+    review_transcription_with_llm,
+)
 
 
 class _FakeResponse:
@@ -64,6 +67,19 @@ def test_llm_ligado_retorna_texto_revisado(monkeypatch):
     assert captured["timeout"] == 20.0
     assert "texto bruto" in captured["json"]["input"]
     assert "audio" not in captured["json"]
+
+
+def test_prompt_permite_corrigir_reconhecimento_sem_inventar_informacoes():
+    assert "alta confiança" in AGRO_REVIEW_INSTRUCTIONS
+    assert "Não invente fatos novos" in AGRO_REVIEW_INSTRUCTIONS
+    assert "Não adicione números, nomes, datas ou valores" in AGRO_REVIEW_INSTRUCTIONS
+    assert "Codex, OpenAI, ChatGPT, WhatsApp, API, Python, Git" in (
+        AGRO_REVIEW_INSTRUCTIONS
+    )
+    assert "Ciclus, OLT, contentor, aluguer, RDV e visita técnica" in (
+        AGRO_REVIEW_INSTRUCTIONS
+    )
+    assert "Retorne somente o texto final" in AGRO_REVIEW_INSTRUCTIONS
 
 
 def test_erro_da_api_usa_fallback(monkeypatch):

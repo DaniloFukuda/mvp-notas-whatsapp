@@ -191,23 +191,62 @@ class AudioTranscriptionIntelligenceService:
         if not items:
             return text
 
-        errors = [
-            item for item in items
-            if re.search(r"\b(erro|falha|inválid|alugad|indisponível)\w*", item, re.IGNORECASE)
-        ]
-        rules = [item for item in items if item not in errors]
-        lines = ["Ajustes necessários:", ""]
-        for index, item in enumerate(rules or items, start=1):
-            lines.append(f"{index}. {item[0].upper() + item[1:]}.")
-        if errors:
-            lines.extend(["", "Mensagens e comportamentos de erro:", ""])
-            lines.extend(f"- {item[0].upper() + item[1:]}." for item in errors)
-        lines.extend(["", "Critérios de aceite:", ""])
-        lines.extend(
-            f"- Confirmar que {item[0].lower() + item[1:]}."
-            for item in items
+        sections: dict[str, list[str]] = {
+            "Contexto": [],
+            "Objetivo": [],
+            "Mudanças desejadas": [],
+            "Testes esperados": [],
+            "Critérios de aceite": [],
+        }
+        patterns = (
+            (
+                "Testes esperados",
+                r"\b(test(?:e|es|ar|ando)?|pytest|validar|validação)\b",
+            ),
+            (
+                "Critérios de aceite",
+                r"\b(critério|critérios|aceite|considerar pronto)\b",
+            ),
+            (
+                "Contexto",
+                r"\b(contexto|cenário|atualmente|problema|erro|falha)\b",
+            ),
+            (
+                "Objetivo",
+                r"\b(objetivo|precisamos|quero|queremos|finalidade)\b",
+            ),
         )
+        for item in items:
+            section = next(
+                (
+                    name
+                    for name, pattern in patterns
+                    if re.search(pattern, item, re.IGNORECASE)
+                ),
+                "Mudanças desejadas",
+            )
+            sections[section].append(item)
+
+        lines: list[str] = []
+        for title, values in sections.items():
+            if lines:
+                lines.append("")
+            lines.append(f"{title}:")
+            if values:
+                lines.extend(
+                    f"- {AudioTranscriptionIntelligenceService._codex_item(value)}"
+                    for value in values
+                )
+            else:
+                lines.append("- não informado")
         return "\n".join(lines)
+
+    @staticmethod
+    def _codex_item(text: str) -> str:
+        item = str(text or "").strip(" -.;")
+        if not item:
+            return "não informado"
+        return f"{item[0].upper() + item[1:]}."
 
     @staticmethod
     def _organize_report(text: str) -> str:
