@@ -94,6 +94,27 @@ def test_resposta_vazia_da_api_usa_fallback(monkeypatch):
     assert "vazia" in result.error_message
 
 
+def test_resposta_corrompida_da_api_usa_fallback(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        "services.transcription_llm_review_service.requests.post",
+        lambda *args, **kwargs: _FakeResponse(
+            {
+                "output_text": (
+                    "Fragen-se deixa eu? rear no eu Não aepherd ESP UP RESERRE "
+                    "IP INDesd licence O chip AB ROM EU irre복 AD E ROM INESD NFP ROM ISDE."
+                )
+            }
+        ),
+    )
+
+    result = review_transcription_with_llm("deixa eu testar esse áudio")
+
+    assert result.ok is False
+    assert result.used_fallback is True
+    assert "corrompida" in result.error_message
+
+
 def test_texto_acima_do_limite_nao_chama_api(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setenv("TRANSCRIPTION_LLM_MAX_INPUT_CHARS", "10")
