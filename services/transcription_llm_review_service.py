@@ -36,8 +36,9 @@ Regras obrigatórias:
 - Retorne somente o texto final.
 
 Vocabulário comum deste sistema e do contexto técnico:
-Codex, OpenAI, ChatGPT, WhatsApp, API, Python, Git, branch, commit, pull request,
-deploy, servidor, webhook, Ciclus, OLT, contentor, aluguer, RDV e visita técnica."""
+WhatsApp, áudio, transcrição, Codex, OpenAI, ChatGPT, Python, Git, branch, commit,
+pull request, deploy, servidor, webhook, Ciclus, OLT, contentor, aluguer, RDV,
+visita técnica e relatório."""
 
 _PORTUGUESE_ANCHOR_WORDS = {
     "a",

@@ -12,6 +12,11 @@ from typing import Callable, Protocol
 logger = logging.getLogger(__name__)
 
 DEFAULT_WHISPER_MODEL = "base"
+DEFAULT_WHISPER_INITIAL_PROMPT = (
+    "Transcrição em português do Brasil. Termos possíveis: WhatsApp, Codex, "
+    "OpenAI, ChatGPT, Python, Git, branch, commit, pull request, deploy, servidor, "
+    "webhook, Ciclus, OLT, contentor, aluguer, RDV, visita técnica."
+)
 AUDIO_TOO_LONG_MESSAGE = (
     "Esse áudio ficou muito longo para processar agora. "
     "Envie um áudio de até 30 minutos ou divida em partes menores."
@@ -27,7 +32,7 @@ class AudioLimitExceededError(ValueError):
 
 
 class _WhisperModel(Protocol):
-    def transcribe(self, audio_path: str, language: str = "pt", fp16: bool = False) -> dict:
+    def transcribe(self, audio_path: str, **kwargs) -> dict:
         ...
 
 
@@ -42,6 +47,10 @@ class AudioTranscriptionService:
         model_loader: Callable[[str], _WhisperModel] | None = None,
         duration_probe: Callable[[str], float] | None = None,
         chunk_extractor: Callable[[str, str, float, float], None] | None = None,
+        audio_preprocessor: Callable[[str, str], None] | None = None,
+        preprocess_audio: bool | str | None = None,
+        temperature: float | int | str | None = None,
+        initial_prompt: str | None = None,
         keep_failed_audio: bool | str | None = None,
         failed_audio_dir: str | Path = "data/debug_audio",
     ) -> None:
@@ -55,6 +64,17 @@ class AudioTranscriptionService:
         self._model_loader = model_loader
         self._duration_probe = duration_probe or probe_audio_duration
         self._chunk_extractor = chunk_extractor or _extract_audio_chunk
+        self._audio_preprocessor = audio_preprocessor or _preprocess_audio
+        self.preprocess_audio = _to_bool(
+            preprocess_audio,
+            default=_env_preprocess_audio(),
+        )
+        self.temperature = _to_float(temperature, default=_env_temperature())
+        self.initial_prompt = (
+            DEFAULT_WHISPER_INITIAL_PROMPT
+            if initial_prompt is None
+            else str(initial_prompt).strip()
+        )
         self.keep_failed_audio = _to_bool(
             keep_failed_audio,
             default=_env_keep_failed_audio(),
@@ -73,6 +93,12 @@ class AudioTranscriptionService:
             max_audio_mb=os.getenv("WHISPER_MAX_AUDIO_MB"),
             max_audio_seconds=os.getenv("WHISPER_MAX_AUDIO_SECONDS"),
             chunk_seconds=os.getenv("WHISPER_CHUNK_SECONDS"),
+            preprocess_audio=os.getenv("WHISPER_PREPROCESS_AUDIO"),
+            temperature=os.getenv("WHISPER_TEMPERATURE"),
+            initial_prompt=os.getenv(
+                "WHISPER_INITIAL_PROMPT",
+                DEFAULT_WHISPER_INITIAL_PROMPT,
+            ),
             keep_failed_audio=os.getenv("WHISPER_KEEP_FAILED_AUDIO"),
             model_loader=model_loader,
         )
@@ -111,6 +137,46 @@ class AudioTranscriptionService:
             raise AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
 
         model = self._load_model()
+        logger.info(
+            "Preprocessamento de audio Whisper: ativado=%s arquivo=%s",
+            self.preprocess_audio,
+            path,
+        )
+        if self.preprocess_audio:
+            with tempfile.TemporaryDirectory(prefix="whisper_preprocess_") as temp_dir:
+                wav_path = Path(temp_dir) / "audio_preprocessado.wav"
+                try:
+                    self._audio_preprocessor(str(path), str(wav_path))
+                    wav_size_bytes = wav_path.stat().st_size
+                    wav_duration = self._duration_probe(str(wav_path))
+                    if wav_size_bytes <= 0 or wav_duration <= 0:
+                        raise RuntimeError(
+                            "WAV preprocessado vazio ou com duracao invalida."
+                        )
+                    logger.info(
+                        "Audio Whisper preprocessado: caminho=%s "
+                        "tamanho_bytes=%s duracao_segundos=%.3f",
+                        wav_path,
+                        wav_size_bytes,
+                        wav_duration,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Falha no preprocessamento de audio Whisper; "
+                        "usando arquivo original: arquivo=%s erro=%s",
+                        path,
+                        exc,
+                    )
+                else:
+                    return self._transcribe_prepared(model, wav_path, wav_duration)
+        return self._transcribe_prepared(model, path, duration)
+
+    def _transcribe_prepared(
+        self,
+        model: _WhisperModel,
+        path: Path,
+        duration: float,
+    ) -> str:
         if duration <= self.chunk_seconds:
             return self._transcribe_path(model, path)
 
@@ -183,7 +249,14 @@ class AudioTranscriptionService:
                 self.model_name,
                 self.language,
             )
-            result = model.transcribe(str(path), language=self.language, fp16=False)
+            transcribe_options: dict[str, object] = {
+                "language": self.language,
+                "fp16": False,
+                "temperature": self.temperature,
+            }
+            if self.initial_prompt:
+                transcribe_options["initial_prompt"] = self.initial_prompt
+            result = model.transcribe(str(path), **transcribe_options)
             text = " ".join(str((result or {}).get("text") or "").split())
             logger.info(
                 "Whisper transcribe concluido: arquivo=%s tamanho_bytes=%s modelo=%s texto_chars=%s texto_vazio=%s",
@@ -260,6 +333,39 @@ def _extract_audio_chunk(
         raise RuntimeError("Nao foi possivel dividir o audio com ffmpeg.") from exc
 
 
+def _preprocess_audio(source_path: str, destination_path: str) -> None:
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                source_path,
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-af",
+                "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15",
+                destination_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise RuntimeError(
+            "Nao foi possivel preprocessar o audio com ffmpeg."
+        ) from exc
+
+
 def whisper_enabled_from_env() -> bool:
     value = os.getenv("WHISPER_ENABLED")
     if value is None:
@@ -288,6 +394,14 @@ def _env_chunk_seconds() -> float:
     return _to_positive_float(os.getenv("WHISPER_CHUNK_SECONDS"), default=60.0)
 
 
+def _env_preprocess_audio() -> bool:
+    return _to_bool(os.getenv("WHISPER_PREPROCESS_AUDIO"), default=True)
+
+
+def _env_temperature() -> float:
+    return _to_float(os.getenv("WHISPER_TEMPERATURE"), default=0.0)
+
+
 def _env_keep_failed_audio() -> bool:
     return _to_bool(os.getenv("WHISPER_KEEP_FAILED_AUDIO"), default=True)
 
@@ -306,6 +420,13 @@ def _to_positive_float(value: float | int | str | None, default: float) -> float
     except (TypeError, ValueError):
         return float(default)
     return parsed if parsed > 0 else float(default)
+
+
+def _to_float(value: float | int | str | None, default: float) -> float:
+    try:
+        return float(value) if value not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _load_whisper_model(model_name: str) -> _WhisperModel:

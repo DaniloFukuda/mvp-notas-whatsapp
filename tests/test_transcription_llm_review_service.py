@@ -73,12 +73,13 @@ def test_prompt_permite_corrigir_reconhecimento_sem_inventar_informacoes():
     assert "alta confiança" in AGRO_REVIEW_INSTRUCTIONS
     assert "Não invente fatos novos" in AGRO_REVIEW_INSTRUCTIONS
     assert "Não adicione números, nomes, datas ou valores" in AGRO_REVIEW_INSTRUCTIONS
-    assert "Codex, OpenAI, ChatGPT, WhatsApp, API, Python, Git" in (
+    assert "WhatsApp, áudio, transcrição, Codex, OpenAI, ChatGPT, Python, Git" in (
         AGRO_REVIEW_INSTRUCTIONS
     )
-    assert "Ciclus, OLT, contentor, aluguer, RDV e visita técnica" in (
+    assert "Ciclus, OLT, contentor, aluguer, RDV" in (
         AGRO_REVIEW_INSTRUCTIONS
     )
+    assert "visita técnica e relatório" in AGRO_REVIEW_INSTRUCTIONS
     assert "Retorne somente o texto final" in AGRO_REVIEW_INSTRUCTIONS
 
 
