@@ -46,6 +46,7 @@ WHISPER_MAX_AUDIO_MB=50
 WHISPER_MAX_AUDIO_SECONDS=1800
 WHISPER_CHUNK_SECONDS=60
 WHISPER_KEEP_AUDIO=false
+WHISPER_KEEP_FAILED_AUDIO=true
 WHISPER_TMP_DIR=tmp/audio_transcriptions
 TRANSCRIPTION_REVIEW_ENABLED=true
 TRANSCRIPTION_REVIEW_PROVIDER=local
@@ -66,6 +67,8 @@ Comportamento:
 - `WHISPER_MAX_AUDIO_SECONDS=1800`: limite de duracao (30 minutos).
 - `WHISPER_CHUNK_SECONDS=60`: divide audios longos em partes temporarias.
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
+- `WHISPER_KEEP_FAILED_AUDIO=true`: copia audios com falha para
+  `data/debug_audio/`; use `false` para manter o descarte anterior.
 - `WHISPER_TMP_DIR`: diretorio usado para baixar audio temporario da Meta.
 - `TRANSCRIPTION_REVIEW_ENABLED=true`: aplica revisão local antes de responder ou salvar. Quando `false`, usa somente a transcrição bruta.
 - `TRANSCRIPTION_REVIEW_PROVIDER=local`: seleciona a camada local. Valores futuros

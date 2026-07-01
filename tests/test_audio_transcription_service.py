@@ -174,11 +174,69 @@ def test_chunk_files_are_cleaned_when_transcription_fails(tmp_path):
     assert not extracted[0].parent.exists()
 
 
+def test_failed_audio_is_preserved_when_enabled(tmp_path, caplog):
+    audio_path = tmp_path / "audio-original.ogg"
+    audio_path.write_bytes(b"audio-com-problema")
+    debug_dir = tmp_path / "data" / "debug_audio"
+
+    class BrokenModel:
+        def transcribe(self, audio_path, language="pt", fp16=False):
+            raise RuntimeError("falha simulada do Whisper")
+
+    service = AudioTranscriptionService(
+        model_name="base",
+        keep_failed_audio=True,
+        failed_audio_dir=debug_dir,
+        duration_probe=lambda path: 12.5,
+        model_loader=lambda name: BrokenModel(),
+    )
+
+    try:
+        service.transcrever(str(audio_path))
+    except RuntimeError as exc:
+        assert "falha simulada do Whisper" in str(exc)
+    else:
+        raise AssertionError("esperava RuntimeError")
+
+    preserved = list(debug_dir.glob("*_audio-original.ogg"))
+    assert len(preserved) == 1
+    assert preserved[0].read_bytes() == b"audio-com-problema"
+    assert "Audio preservado para diagnostico" in caplog.text
+    assert "tamanho_bytes=18" in caplog.text
+    assert "duracao_segundos=12.500" in caplog.text
+    assert "modelo=base" in caplog.text
+    assert "falha simulada do Whisper" in caplog.text
+
+
+def test_failed_audio_is_not_preserved_when_disabled(tmp_path):
+    audio_path = tmp_path / "audio-original.ogg"
+    audio_path.write_bytes(b"audio-com-problema")
+    debug_dir = tmp_path / "data" / "debug_audio"
+
+    service = AudioTranscriptionService(
+        keep_failed_audio=False,
+        failed_audio_dir=debug_dir,
+        duration_probe=lambda path: (_ for _ in ()).throw(
+            RuntimeError("ffprobe falhou")
+        ),
+    )
+
+    try:
+        service.transcrever(str(audio_path))
+    except RuntimeError as exc:
+        assert "ffprobe falhou" in str(exc)
+    else:
+        raise AssertionError("esperava RuntimeError")
+
+    assert not debug_dir.exists()
+
+
 def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
     monkeypatch.delenv("WHISPER_MODEL", raising=False)
     monkeypatch.delenv("WHISPER_MAX_AUDIO_MB", raising=False)
     monkeypatch.delenv("WHISPER_MAX_AUDIO_SECONDS", raising=False)
     monkeypatch.delenv("WHISPER_CHUNK_SECONDS", raising=False)
+    monkeypatch.delenv("WHISPER_KEEP_FAILED_AUDIO", raising=False)
 
     service = AudioTranscriptionService.from_env()
 
@@ -187,6 +245,15 @@ def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
     assert service.chunk_seconds == 60
     assert service.model_name == "base"
     assert service.language == "pt"
+    assert service.keep_failed_audio is True
+
+
+def test_from_env_enables_failed_audio_preservation(monkeypatch):
+    monkeypatch.setenv("WHISPER_KEEP_FAILED_AUDIO", "true")
+
+    service = AudioTranscriptionService.from_env()
+
+    assert service.keep_failed_audio is True
 
 
 def test_whisper_model_env_override_is_preserved(monkeypatch):

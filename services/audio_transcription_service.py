@@ -1,8 +1,10 @@
 import logging
 import math
 import os
+import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -40,6 +42,8 @@ class AudioTranscriptionService:
         model_loader: Callable[[str], _WhisperModel] | None = None,
         duration_probe: Callable[[str], float] | None = None,
         chunk_extractor: Callable[[str, str, float, float], None] | None = None,
+        keep_failed_audio: bool | str | None = None,
+        failed_audio_dir: str | Path = "data/debug_audio",
     ) -> None:
         self.model_name = str(model_name or DEFAULT_WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
         self.language = str(language or "pt").strip() or "pt"
@@ -51,6 +55,11 @@ class AudioTranscriptionService:
         self._model_loader = model_loader
         self._duration_probe = duration_probe or probe_audio_duration
         self._chunk_extractor = chunk_extractor or _extract_audio_chunk
+        self.keep_failed_audio = _to_bool(
+            keep_failed_audio,
+            default=_env_keep_failed_audio(),
+        )
+        self.failed_audio_dir = Path(failed_audio_dir)
         self._model: _WhisperModel | None = None
 
     @classmethod
@@ -64,11 +73,20 @@ class AudioTranscriptionService:
             max_audio_mb=os.getenv("WHISPER_MAX_AUDIO_MB"),
             max_audio_seconds=os.getenv("WHISPER_MAX_AUDIO_SECONDS"),
             chunk_seconds=os.getenv("WHISPER_CHUNK_SECONDS"),
+            keep_failed_audio=os.getenv("WHISPER_KEEP_FAILED_AUDIO"),
             model_loader=model_loader,
         )
 
     def transcrever(self, audio_path: str) -> str:
         path = Path(audio_path)
+        duration_holder: list[float | None] = [None]
+        try:
+            return self._transcrever(path, duration_holder)
+        except Exception:
+            self._preserve_failed_audio(path, duration_holder[0])
+            raise
+
+    def _transcrever(self, path: Path, duration_holder: list[float | None]) -> str:
         if not path.is_file():
             raise FileNotFoundError(f"Arquivo de audio nao encontrado: {path}")
 
@@ -77,6 +95,7 @@ class AudioTranscriptionService:
             raise AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
 
         duration = self._duration_probe(str(path))
+        duration_holder[0] = duration
         logger.info(
             "Diagnostico Whisper: arquivo=%s tamanho_bytes=%s duracao_segundos=%.3f modelo=%s idioma=%s chunk_segundos=%.3f",
             path,
@@ -116,6 +135,43 @@ class AudioTranscriptionService:
                 if text:
                     texts.append(text)
         return " ".join(texts).strip()
+
+    def _preserve_failed_audio(
+        self,
+        source_path: Path,
+        duration: float | None,
+    ) -> Path | None:
+        if not self.keep_failed_audio or not source_path.is_file():
+            return None
+
+        try:
+            self.failed_audio_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            destination = self.failed_audio_dir / f"{timestamp}_{source_path.name}"
+            shutil.copy2(source_path, destination)
+            size_bytes = destination.stat().st_size
+            if duration is None:
+                try:
+                    duration = self._duration_probe(str(source_path))
+                except Exception:
+                    duration = None
+            duration_text = f"{duration:.3f}" if duration is not None else "indisponivel"
+            logger.exception(
+                "Audio preservado para diagnostico: caminho=%s tamanho_bytes=%s "
+                "duracao_segundos=%s modelo=%s",
+                destination,
+                size_bytes,
+                duration_text,
+                self.model_name,
+            )
+            return destination
+        except Exception:
+            logger.exception(
+                "Falha ao preservar audio para diagnostico: arquivo=%s modelo=%s",
+                source_path,
+                self.model_name,
+            )
+            return None
 
     def _transcribe_path(self, model: _WhisperModel, path: Path) -> str:
         size_bytes = path.stat().st_size if path.exists() else 0
@@ -230,6 +286,18 @@ def _env_max_audio_seconds() -> float:
 
 def _env_chunk_seconds() -> float:
     return _to_positive_float(os.getenv("WHISPER_CHUNK_SECONDS"), default=60.0)
+
+
+def _env_keep_failed_audio() -> bool:
+    return _to_bool(os.getenv("WHISPER_KEEP_FAILED_AUDIO"), default=True)
+
+
+def _to_bool(value: bool | str | None, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "sim", "on"}
 
 
 def _to_positive_float(value: float | int | str | None, default: float) -> float:
