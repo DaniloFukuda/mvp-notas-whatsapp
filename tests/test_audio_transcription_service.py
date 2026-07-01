@@ -17,8 +17,8 @@ class FakeModel:
     def __init__(self):
         self.calls = []
 
-    def transcribe(self, audio_path: str, language: str = "pt", fp16: bool = False) -> dict:
-        self.calls.append((audio_path, language, fp16))
+    def transcribe(self, audio_path: str, **kwargs) -> dict:
+        self.calls.append((audio_path, kwargs))
         return {"text": " comentario transcrito "}
 
 
@@ -29,6 +29,7 @@ def test_audio_transcription_service_uses_mocked_model(tmp_path):
     service = AudioTranscriptionService(
         model_name="tiny",
         language="pt",
+        preprocess_audio=False,
         model_loader=lambda model_name: fake_model,
         duration_probe=lambda path: 10,
     )
@@ -36,7 +37,17 @@ def test_audio_transcription_service_uses_mocked_model(tmp_path):
     text = service.transcrever(str(audio_path))
 
     assert text == "comentario transcrito"
-    assert fake_model.calls == [(str(audio_path), "pt", False)]
+    assert fake_model.calls == [
+        (
+            str(audio_path),
+            {
+                "language": "pt",
+                "fp16": False,
+                "temperature": 0.0,
+                "initial_prompt": service.initial_prompt,
+            },
+        )
+    ]
 
 
 def test_audio_transcription_service_caches_model(tmp_path):
@@ -47,6 +58,7 @@ def test_audio_transcription_service_caches_model(tmp_path):
     service = AudioTranscriptionService(
         model_name="tiny",
         language="pt",
+        preprocess_audio=False,
         model_loader=lambda model_name: loaded.append(model_name) or fake_model,
         duration_probe=lambda path: 10,
     )
@@ -56,6 +68,125 @@ def test_audio_transcription_service_caches_model(tmp_path):
 
     assert loaded == ["tiny"]
     assert len(fake_model.calls) == 2
+
+
+def test_preprocessamento_ativado_usa_wav_e_remove_temporario(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"audio-original")
+    preprocessed = []
+    fake_model = FakeModel()
+
+    def preprocess(source, destination):
+        destination_path = Path(destination)
+        destination_path.write_bytes(b"wav-preprocessado")
+        preprocessed.append((source, destination_path))
+
+    service = AudioTranscriptionService(
+        preprocess_audio=True,
+        audio_preprocessor=preprocess,
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: fake_model,
+    )
+
+    assert service.transcrever(str(audio_path)) == "comentario transcrito"
+
+    assert len(preprocessed) == 1
+    assert preprocessed[0][0] == str(audio_path)
+    wav_path = preprocessed[0][1]
+    assert fake_model.calls[0][0] == str(wav_path)
+    assert not wav_path.exists()
+    assert not wav_path.parent.exists()
+
+
+def test_preprocessamento_chama_ffmpeg_antes_do_whisper(monkeypatch, tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"audio-original")
+    events = []
+    command_seen = []
+
+    def fake_run(command, **kwargs):
+        command_seen.extend(command)
+        events.append("ffmpeg")
+        Path(command[-1]).write_bytes(b"wav-preprocessado")
+
+    class OrderedModel:
+        def transcribe(self, audio_path, **kwargs):
+            events.append("whisper")
+            return {"text": "texto"}
+
+    monkeypatch.setattr(
+        "services.audio_transcription_service.subprocess.run",
+        fake_run,
+    )
+    service = AudioTranscriptionService(
+        preprocess_audio=True,
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: OrderedModel(),
+    )
+
+    assert service.transcrever(str(audio_path)) == "texto"
+    assert events == ["ffmpeg", "whisper"]
+    assert command_seen[:4] == ["ffmpeg", "-v", "error", "-y"]
+    assert command_seen[command_seen.index("-ac") + 1] == "1"
+    assert command_seen[command_seen.index("-ar") + 1] == "16000"
+    assert command_seen[command_seen.index("-af") + 1] == (
+        "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15"
+    )
+
+
+def test_falha_no_preprocessamento_usa_audio_original(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"audio-original")
+    fake_model = FakeModel()
+    service = AudioTranscriptionService(
+        preprocess_audio=True,
+        audio_preprocessor=lambda source, destination: (_ for _ in ()).throw(
+            RuntimeError("ffmpeg falhou")
+        ),
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: fake_model,
+    )
+
+    assert service.transcrever(str(audio_path)) == "comentario transcrito"
+    assert fake_model.calls[0][0] == str(audio_path)
+
+
+def test_transcribe_recebe_temperature_e_initial_prompt(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"audio-original")
+    fake_model = FakeModel()
+    service = AudioTranscriptionService(
+        preprocess_audio=False,
+        temperature="0",
+        initial_prompt="Vocabulário técnico configurado.",
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: fake_model,
+    )
+
+    service.transcrever(str(audio_path))
+
+    assert fake_model.calls[0][1]["temperature"] == 0.0
+    assert (
+        fake_model.calls[0][1]["initial_prompt"]
+        == "Vocabulário técnico configurado."
+    )
+    assert fake_model.calls[0][1]["fp16"] is False
+
+
+def test_initial_prompt_vazio_nao_e_enviado_ao_whisper(tmp_path):
+    audio_path = tmp_path / "audio.ogg"
+    audio_path.write_bytes(b"audio-original")
+    fake_model = FakeModel()
+    service = AudioTranscriptionService(
+        preprocess_audio=False,
+        initial_prompt="",
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: fake_model,
+    )
+
+    service.transcrever(str(audio_path))
+
+    assert "initial_prompt" not in fake_model.calls[0][1]
 
 
 def test_audio_transcription_service_blocks_large_file(tmp_path):
@@ -95,7 +226,7 @@ def test_long_audio_is_chunked_joined_in_order_and_cleaned(tmp_path):
         def __init__(self):
             self.calls = []
 
-        def transcribe(self, audio_path, language="pt", fp16=False):
+        def transcribe(self, audio_path, **kwargs):
             path = Path(audio_path)
             self.calls.append(path)
             return {"text": f" parte {int(path.stem.split('_')[1]) + 1} "}
@@ -109,6 +240,7 @@ def test_long_audio_is_chunked_joined_in_order_and_cleaned(tmp_path):
 
     service = AudioTranscriptionService(
         chunk_seconds=60,
+        preprocess_audio=False,
         duration_probe=lambda path: 125,
         chunk_extractor=extract,
         model_loader=lambda name: model,
@@ -150,7 +282,7 @@ def test_chunk_files_are_cleaned_when_transcription_fails(tmp_path):
     extracted = []
 
     class BrokenModel:
-        def transcribe(self, audio_path, language="pt", fp16=False):
+        def transcribe(self, audio_path, **kwargs):
             raise RuntimeError("falha simulada")
 
     def extract(source, destination, start, duration):
@@ -160,6 +292,7 @@ def test_chunk_files_are_cleaned_when_transcription_fails(tmp_path):
 
     service = AudioTranscriptionService(
         duration_probe=lambda path: 61,
+        preprocess_audio=False,
         chunk_extractor=extract,
         model_loader=lambda name: BrokenModel(),
     )
@@ -180,11 +313,12 @@ def test_failed_audio_is_preserved_when_enabled(tmp_path, caplog):
     debug_dir = tmp_path / "data" / "debug_audio"
 
     class BrokenModel:
-        def transcribe(self, audio_path, language="pt", fp16=False):
+        def transcribe(self, audio_path, **kwargs):
             raise RuntimeError("falha simulada do Whisper")
 
     service = AudioTranscriptionService(
         model_name="base",
+        preprocess_audio=False,
         keep_failed_audio=True,
         failed_audio_dir=debug_dir,
         duration_probe=lambda path: 12.5,
@@ -236,6 +370,9 @@ def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
     monkeypatch.delenv("WHISPER_MAX_AUDIO_MB", raising=False)
     monkeypatch.delenv("WHISPER_MAX_AUDIO_SECONDS", raising=False)
     monkeypatch.delenv("WHISPER_CHUNK_SECONDS", raising=False)
+    monkeypatch.delenv("WHISPER_PREPROCESS_AUDIO", raising=False)
+    monkeypatch.delenv("WHISPER_TEMPERATURE", raising=False)
+    monkeypatch.delenv("WHISPER_INITIAL_PROMPT", raising=False)
     monkeypatch.delenv("WHISPER_KEEP_FAILED_AUDIO", raising=False)
 
     service = AudioTranscriptionService.from_env()
@@ -245,6 +382,9 @@ def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
     assert service.chunk_seconds == 60
     assert service.model_name == "base"
     assert service.language == "pt"
+    assert service.preprocess_audio is True
+    assert service.temperature == 0
+    assert service.initial_prompt
     assert service.keep_failed_audio is True
 
 

@@ -45,6 +45,9 @@ WHISPER_LANGUAGE=pt
 WHISPER_MAX_AUDIO_MB=50
 WHISPER_MAX_AUDIO_SECONDS=1800
 WHISPER_CHUNK_SECONDS=60
+WHISPER_PREPROCESS_AUDIO=true
+WHISPER_TEMPERATURE=0
+WHISPER_INITIAL_PROMPT=Transcrição em português do Brasil. Termos possíveis: WhatsApp, Codex, OpenAI, ChatGPT, Python, Git, branch, commit, pull request, deploy, servidor, webhook, Ciclus, OLT, contentor, aluguer, RDV, visita técnica.
 WHISPER_KEEP_AUDIO=false
 WHISPER_KEEP_FAILED_AUDIO=true
 WHISPER_TMP_DIR=tmp/audio_transcriptions
@@ -66,6 +69,12 @@ Comportamento:
 - `WHISPER_MAX_AUDIO_MB=50`: limite de tamanho do arquivo.
 - `WHISPER_MAX_AUDIO_SECONDS=1800`: limite de duracao (30 minutos).
 - `WHISPER_CHUNK_SECONDS=60`: divide audios longos em partes temporarias.
+- `WHISPER_PREPROCESS_AUDIO=true`: converte o original para WAV mono 16 kHz,
+  reduz frequencias fora da faixa de voz e normaliza o volume antes do Whisper.
+  Se o ffmpeg falhar, usa o arquivo original.
+- `WHISPER_TEMPERATURE=0`: usa decodificacao deterministica no Whisper.
+- `WHISPER_INITIAL_PROMPT`: fornece vocabulario esperado ao Whisper. Defina como
+  vazio para nao enviar contexto inicial.
 - `WHISPER_KEEP_AUDIO=false`: remove audio temporario depois da transcricao.
 - `WHISPER_KEEP_FAILED_AUDIO=true`: copia audios com falha para
   `data/debug_audio/`; use `false` para manter o descarte anterior.
