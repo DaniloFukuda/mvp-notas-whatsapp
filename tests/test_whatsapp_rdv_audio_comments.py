@@ -2,6 +2,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -11,6 +13,9 @@ from services.audio_transcription_service import (
     AUDIO_TOO_LONG_MESSAGE,
     TRANSCRIPTION_FAILED_MESSAGE,
     AudioLimitExceededError,
+)
+from services.audio_transcription_intelligence_service import (
+    IntelligentTranscriptionResult,
 )
 from services.rdv_service import RDVService
 from services.visitas_service import VisitasTecnicasService
@@ -38,6 +43,147 @@ def _completed_expense(service: RDVService, collaborator: dict, sender: str) -> 
         status_fluxo="completo",
         caminho_arquivo="comprovante.jpg",
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "context"),
+    [
+        ("aguardando_descricao_visita", "visita_descricao"),
+        ("aguardando_edicao_descricao", "visita_descricao"),
+        ("aguardando_observacoes_gerais", "visita_observacao"),
+        ("aguardando_adicao_observacao", "visita_observacao"),
+        ("aguardando_reescrita_observacoes", "visita_observacao"),
+    ],
+)
+def test_audio_de_visita_usa_sempre_modo_revisada(
+    monkeypatch,
+    tmp_path,
+    state,
+    context,
+):
+    rdv = RDVService(tmp_path / "rdv.db")
+    visitas = VisitasTecnicasService(tmp_path / "visitas.db")
+    monkeypatch.setattr(api_whatsapp, "rdv_service", rdv)
+    monkeypatch.setattr(api_whatsapp, "visitas_service", visitas)
+    collaborator = rdv.get_collaborator_by_phone("5500000000001")
+    sender = collaborator["telefone_whatsapp"]
+    visita = visitas.iniciar_visita(sender)
+    visitas.atualizar_campo(visita["id"], "estado_fluxo", state)
+    downloaded = tmp_path / f"{state}.ogg"
+    downloaded.write_bytes(b"audio")
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setenv("WHISPER_KEEP_AUDIO", "false")
+    monkeypatch.setattr(
+        api_whatsapp,
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_file",
+        lambda path: "texto bruto reconhecido pelo whisper",
+    )
+    calls = []
+
+    class Reviewer:
+        def process(self, raw_text, **kwargs):
+            calls.append((raw_text, kwargs))
+            return IntelligentTranscriptionResult(
+                True,
+                raw_text,
+                "Texto revisado e pronto para o relatório da visita.",
+                kwargs["mode"],
+                "local",
+            )
+
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_audio_transcription_intelligence_service",
+        Reviewer(),
+    )
+
+    api_whatsapp.handle_whatsapp_audio_message(
+        sender,
+        f"media-{state}",
+        "audio/ogg",
+    )
+
+    assert calls == [
+        (
+            "texto bruto reconhecido pelo whisper",
+            {"mode": "revisada", "context": context},
+        )
+    ]
+    assert all(call[1]["mode"] != "literal" for call in calls)
+    saved = visitas.obter_visita_aberta(sender)
+    if context == "visita_descricao":
+        assert (
+            saved["descricao_visita"]
+            == "Texto revisado e pronto para o relatório da visita."
+        )
+    else:
+        assert "Texto revisado e pronto para o relatório da visita." in (
+            saved["observacoes_gerais"]
+        )
+
+
+def test_audio_de_visita_salva_fallback_local_quando_llm_falha(
+    monkeypatch,
+    tmp_path,
+):
+    rdv = RDVService(tmp_path / "rdv.db")
+    visitas = VisitasTecnicasService(tmp_path / "visitas.db")
+    monkeypatch.setattr(api_whatsapp, "rdv_service", rdv)
+    monkeypatch.setattr(api_whatsapp, "visitas_service", visitas)
+    collaborator = rdv.get_collaborator_by_phone("5500000000001")
+    sender = collaborator["telefone_whatsapp"]
+    visita = visitas.iniciar_visita(sender)
+    visitas.atualizar_campo(
+        visita["id"],
+        "estado_fluxo",
+        "aguardando_observacoes_gerais",
+    )
+    downloaded = tmp_path / "fallback.ogg"
+    downloaded.write_bytes(b"audio")
+    monkeypatch.setenv("WHISPER_ENABLED", "true")
+    monkeypatch.setattr(
+        api_whatsapp,
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_file",
+        lambda path: "texto bruto com erro",
+    )
+
+    class FallbackReviewer:
+        def process(self, raw_text, **kwargs):
+            return IntelligentTranscriptionResult(
+                True,
+                raw_text,
+                "Texto corrigido pelo fallback local.",
+                "revisada",
+                "local",
+                "LLM indisponível",
+                True,
+            )
+
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_audio_transcription_intelligence_service",
+        FallbackReviewer(),
+    )
+
+    api_whatsapp.handle_whatsapp_audio_message(
+        sender,
+        "media-fallback",
+        "audio/ogg",
+    )
+
+    saved = visitas.obter_visita_aberta(sender)
+    assert "Texto corrigido pelo fallback local." in saved["observacoes_gerais"]
+    assert "texto bruto com erro" not in saved["observacoes_gerais"]
 
 
 def test_audio_received_with_transcription_disabled_does_not_break(monkeypatch):
