@@ -260,6 +260,13 @@ STANDALONE_TRANSCRIPTION_EXIT_COMMANDS = {
 }
 STANDALONE_TRANSCRIPTION_STATE = "audio_transcription_waiting"
 STANDALONE_TRANSCRIPTION_MODE_STATE = "audio_transcription_select_mode"
+VISITA_AUDIO_REVIEW_CONTEXT_BY_STATE = {
+    "aguardando_descricao_visita": "visita_descricao",
+    "aguardando_edicao_descricao": "visita_descricao",
+    "aguardando_observacoes_gerais": "visita_observacao",
+    "aguardando_adicao_observacao": "visita_observacao",
+    "aguardando_reescrita_observacoes": "visita_observacao",
+}
 STANDALONE_TRANSCRIPTION_PROMPT = "\n".join(
     [
         "Como você quer receber a transcrição?",
@@ -1461,7 +1468,10 @@ def handle_rdv_audio_comment_message(
         state["state"] = "awaiting_correction"
         return TRANSCRIPTION_FAILED_MESSAGE
 
-    reviewed = _review_transcription(transcription, context="relatorio_campo")
+    reviewed = _review_transcription_in_revisada_mode(
+        transcription,
+        context="relatorio_campo",
+    )
     final_text = reviewed.reviewed_text or transcription
     state["state"] = "awaiting_audio_confirmation"
     state["raw_text"] = transcription
@@ -1528,10 +1538,7 @@ def handle_whatsapp_audio_message(
         )
         return _standalone_transcription_message(intelligent)
 
-    reviewed = _review_transcription(
-        transcription,
-        context=_transcription_context_for_sender(sender_phone),
-    )
+    reviewed = _review_audio_transcription_for_sender(sender_phone, transcription)
     final_text = reviewed.reviewed_text or transcription
 
     reply = handle_rdv_text_message(
@@ -1615,7 +1622,11 @@ def _audio_transcription_enabled() -> bool:
     return whisper_enabled_from_env()
 
 
-def _review_transcription(raw_text: str, *, context: str) -> ReviewedTranscription:
+def _review_transcription_in_revisada_mode(
+    raw_text: str,
+    *,
+    context: str,
+) -> ReviewedTranscription:
     try:
         result = _audio_transcription_intelligence_service.process(
             raw_text,
@@ -1636,18 +1647,21 @@ def _review_transcription(raw_text: str, *, context: str) -> ReviewedTranscripti
         return ReviewedTranscription(raw, raw, False, ["review_failed"])
 
 
+def _review_audio_transcription_for_sender(
+    sender_phone: str,
+    raw_text: str,
+) -> ReviewedTranscription:
+    """Aplica sempre o modo revisado aos áudios fora do transcritor avulso."""
+    return _review_transcription_in_revisada_mode(
+        raw_text,
+        context=_transcription_context_for_sender(sender_phone),
+    )
+
+
 def _transcription_context_for_sender(sender_phone: str) -> str:
     visit = _get_active_visita_for_phone(sender_phone)
     state = str((visit or {}).get("estado_fluxo") or "")
-    if state in {"aguardando_descricao_visita", "aguardando_edicao_descricao"}:
-        return "visita_descricao"
-    if state in {
-        "aguardando_observacoes_gerais",
-        "aguardando_adicao_observacao",
-        "aguardando_reescrita_observacoes",
-    }:
-        return "visita_observacao"
-    return "relatorio_campo"
+    return VISITA_AUDIO_REVIEW_CONTEXT_BY_STATE.get(state, "relatorio_campo")
 
 
 def _is_standalone_transcription_session(sender_phone: str) -> bool:
