@@ -175,6 +175,7 @@ def test_chunk_files_are_cleaned_when_transcription_fails(tmp_path):
 
 
 def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
     monkeypatch.delenv("WHISPER_MAX_AUDIO_MB", raising=False)
     monkeypatch.delenv("WHISPER_MAX_AUDIO_SECONDS", raising=False)
     monkeypatch.delenv("WHISPER_CHUNK_SECONDS", raising=False)
@@ -184,8 +185,16 @@ def test_from_env_uses_new_defaults_and_old_env_compatibility(monkeypatch):
     assert service.max_audio_mb == 50
     assert service.max_audio_seconds == 1800
     assert service.chunk_seconds == 60
-    assert service.model_name == "tiny"
+    assert service.model_name == "base"
     assert service.language == "pt"
+
+
+def test_whisper_model_env_override_is_preserved(monkeypatch):
+    monkeypatch.setenv("WHISPER_MODEL", "small")
+
+    service = AudioTranscriptionService.from_env()
+
+    assert service.model_name == "small"
 
 
 def test_whisper_enabled_from_env_defaults_local_on(monkeypatch):
