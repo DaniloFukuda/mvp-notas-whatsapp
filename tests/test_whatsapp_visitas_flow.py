@@ -1180,10 +1180,14 @@ def test_visita_preencher_campos():
             api_whatsapp.handle_rdv_text_message(sender, "nao informado")
             descricao = api_whatsapp.handle_rdv_text_message(sender, "Talhao 3")
             assert "Descrição da visita" in descricao
+            assert "Você pode responder digitando o texto ou enviando um áudio." in descricao
+            assert "o sistema fará a transcrição automaticamente." in descricao
             obs = api_whatsapp.handle_rdv_text_message(
                 sender, "Apresentacao de produtos ao cliente"
             )
             assert "Observações gerais" in obs
+            assert "Você pode informar as observações digitando ou enviando um áudio." in obs
+            assert "envie um áudio explicando os pontos observados na visita." in obs
             api_whatsapp.handle_rdv_text_message(sender, "Pedido de 300T")
             final = api_whatsapp.handle_rdv_text_message(sender, "finalizar observacoes")
 

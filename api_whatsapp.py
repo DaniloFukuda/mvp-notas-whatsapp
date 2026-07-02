@@ -194,6 +194,9 @@ VISITA_DESCRICAO_MESSAGE = "\n".join(
         "* Acompanhamento da lavoura",
         "* Coleta de informações para aplicação",
         "",
+        "Você pode responder digitando o texto ou enviando um áudio.",
+        "Se enviar áudio, o sistema fará a transcrição automaticamente.",
+        "",
         "Digite agora a descrição da visita:",
     ]
 )
@@ -202,6 +205,9 @@ VISITA_OBSERVACOES_MESSAGE = "\n".join(
         "Observações gerais da visita",
         "",
         "Agora você pode enviar as observações gerais do relatório.",
+        "",
+        "Você pode informar as observações digitando ou enviando um áudio.",
+        "Se preferir, envie um áudio explicando os pontos observados na visita.",
         "",
         "Aqui você pode colocar tudo que percebeu durante a visita, como problemas encontrados, informações passadas pelo proprietário ou gerente, pontos de atenção, recomendações e qualquer detalhe importante.",
         "",
