@@ -52,6 +52,20 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         Spacer(1, 0.35 * cm),
         _main_cards(visita_data, styles),
         Spacer(1, 0.35 * cm),
+        *_section("Descrição da visita", styles),
+        _note_box(
+            _text(visita_data.get("descricao_visita")) or "Descrição não informada.",
+            styles,
+        ),
+        Spacer(1, 0.28 * cm),
+        *_section("Observações gerais", styles),
+        _note_box(
+            _text(visita_data.get("observacoes_gerais"))
+            or _text(visita_data.get("observacoes"))
+            or "Nenhuma observação geral informada.",
+            styles,
+        ),
+        Spacer(1, 0.28 * cm),
         *_section("Resumo da visita", styles),
         _note_box(_executive_summary(visita_data), styles),
         Spacer(1, 0.28 * cm),
@@ -178,11 +192,13 @@ def _main_cards(visita: dict, styles: dict) -> Table:
     localizacoes = visita.get("localizacoes") or []
     cards = [
         _info_card(
-            "Contato",
+            "Dados da propriedade",
             [
                 ("Proprietário", visita.get("proprietario")),
+                ("Telefone do proprietário", visita.get("telefone_proprietario")),
                 ("Gerente/responsável", visita.get("gerente")),
-                ("Telefone do técnico", visita.get("telefone_origem")),
+                ("Telefone do gerente", visita.get("telefone_gerente")),
+                ("Área/local visitado", visita.get("area")),
             ],
             styles,
         ),
