@@ -40,8 +40,11 @@ def test_build_visita_pdf_basico():
     assert "Retornar após o reparo." in text
     assert "Área em hectares" in text
     assert "Resumo da visita" in text
-    assert "Objetivo comercial" in text
-    assert "Oportunidades e próximos passos" in text
+    assert "Objetivo comercial" not in text
+    assert "Objetivo não informado" not in text
+    assert "Tipo de visita" not in text
+    assert "Tipo de visita não informado" not in text
+    assert "Oportunidades e próximos passos" not in text
     assert "Localizações e pontos de referência" in text
     assert "Abrir no Google Maps" in text
 
@@ -150,7 +153,7 @@ def test_build_visita_pdf_com_dados_coletados():
     assert "tanque" in text
 
 
-def test_build_visita_pdf_destaca_oportunidade_por_orcamento():
+def test_build_visita_pdf_nao_cria_oportunidade_artificial():
     visita = _visita_completa()
     visita["observacoes"] = "Cliente pediu orçamento para a próxima compra."
 
@@ -158,11 +161,12 @@ def test_build_visita_pdf_destaca_oportunidade_por_orcamento():
 
     assert content.startswith(b"%PDF")
     text = _extract_pdf_text(content)
-    assert "Oportunidade identificada" in text
-    assert "Observações mencionam orçamento" in text
+    assert "Oportunidades e próximos passos" not in text
+    assert "Oportunidade identificada" not in text
+    assert "Próximo passo sugerido" not in text
 
 
-def test_build_visita_pdf_usa_descricao_como_objetivo_e_infere_tipo():
+def test_build_visita_pdf_mantem_descricao_e_observacoes_sem_objetivo():
     visita = _visita_completa()
     visita["objetivo"] = ""
     visita["tipo_visita"] = ""
@@ -174,9 +178,9 @@ def test_build_visita_pdf_usa_descricao_como_objetivo_e_infere_tipo():
     content = visitas_pdf_service.build_visita_pdf(visita)
 
     text = _extract_pdf_text(content)
+    assert "Objetivo comercial" not in text
     assert "Objetivo não informado." not in text
-    assert "Objetivo identificado a partir da descrição da visita:" in text
-    assert "Apresentação técnica / Comercial" in text
+    assert "Tipo de visita não informado." not in text
     assert "Descrição da visita" in text
     assert "Equipe esclareceu as dúvidas do responsável." in text
     assert "Observações gerais" in text
@@ -200,8 +204,9 @@ def test_build_visita_pdf_sem_descricao_mantem_compatibilidade():
 
     assert content.startswith(b"%PDF")
     text = _extract_pdf_text(content)
-    assert "Objetivo não informado." in text
-    assert "Não classificado" in text
+    assert "Objetivo comercial" not in text
+    assert "Objetivo não informado." not in text
+    assert "Tipo de visita não informado." not in text
 
 
 def test_build_visita_pdf_tolera_campos_vazios():

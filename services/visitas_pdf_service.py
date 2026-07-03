@@ -1,7 +1,6 @@
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-import unicodedata
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -69,12 +68,6 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         Spacer(1, 0.28 * cm),
         *_section("Resumo da visita", styles),
         _note_box(_executive_summary(visita_data), styles),
-        Spacer(1, 0.28 * cm),
-        *_section("Objetivo comercial", styles),
-        _objective_box(visita_data, styles),
-        Spacer(1, 0.28 * cm),
-        *_section("Oportunidades e próximos passos", styles),
-        _opportunities_box(visita_data, styles),
         Spacer(1, 0.28 * cm),
     ]
 
@@ -209,7 +202,6 @@ def _main_cards(visita: dict, styles: dict) -> Table:
                 ("Área em hectares", _number(visita.get("area_hectares"))),
                 ("Área em alqueires", _number(visita.get("area_alqueires"))),
                 ("Safra", visita.get("safra")),
-                ("Tipo de visita", visita.get("tipo_visita")),
             ],
             styles,
         ),
@@ -277,88 +269,6 @@ def _info_card(title: str, items: list[tuple[str, object]], styles: dict) -> Tab
     card = Table([[body]], colWidths=[8.35 * cm], hAlign="LEFT")
     card.setStyle(_card_style())
     return card
-
-
-def _objective_box(visita: dict, styles: dict) -> Table:
-    description = _text(visita.get("descricao_visita"))
-    objective = _text(visita.get("objetivo"))
-    if not objective and description:
-        objective = (
-            "Objetivo identificado a partir da descrição da visita: "
-            f"{_short_text(description)}"
-        )
-
-    rows = [
-        ["Objetivo", objective or "Objetivo não informado."],
-        [
-            "Tipo de visita",
-            _text(visita.get("tipo_visita"))
-            or _infer_visit_type(description),
-        ],
-    ]
-    return _key_value_table(rows, styles)
-
-
-def _infer_visit_type(description: str) -> str:
-    normalized = unicodedata.normalize("NFKD", _text(description))
-    normalized = "".join(
-        character for character in normalized if not unicodedata.combining(character)
-    ).lower()
-    classifications = (
-        (
-            ("apresentacao", "produto", "produtos", "demonstracao", "tecnologia"),
-            "Apresentação técnica / Comercial",
-        ),
-        (
-            ("vistoria", "verificacao", "problema", "avaliar"),
-            "Vistoria técnica",
-        ),
-        (
-            ("orcamento", "levantamento"),
-            "Levantamento para orçamento",
-        ),
-        (
-            ("acompanhamento", "lavoura"),
-            "Acompanhamento de lavoura",
-        ),
-    )
-    for keywords, visit_type in classifications:
-        if any(keyword in normalized for keyword in keywords):
-            return visit_type
-    return "Não classificado"
-
-
-def _short_text(value: str, limit: int = 180) -> str:
-    text = " ".join(_text(value).split())
-    if len(text) <= limit:
-        return text
-    shortened = text[: limit - 1].rsplit(" ", 1)[0].rstrip(".,;:")
-    return f"{shortened or text[: limit - 1]}…"
-
-
-def _opportunities_box(visita: dict, styles: dict) -> Table:
-    opportunity = _detect_opportunity(visita)
-    next_step = "Registrar próximos passos comerciais após validação da equipe."
-    if opportunity:
-        next_step = "Validar oportunidade com a equipe comercial e registrar retorno ao cliente."
-    rows = [
-        ["Oportunidade identificada", opportunity or "Nenhuma oportunidade específica foi destacada nos dados atuais."],
-        ["Próximo passo sugerido", next_step],
-    ]
-    return _key_value_table(rows, styles)
-
-
-def _detect_opportunity(visita: dict) -> str:
-    observations = _text(visita.get("observacoes"))
-    if "orçamento" in observations.lower() or "orcamento" in observations.lower():
-        return "Observações mencionam orçamento."
-    keywords = ("pedido", "produto", "tanque", "combustível", "combustivel", "adubo", "hectares")
-    for row in visita.get("dados_coletados") or []:
-        key = _text(row.get("chave")).lower()
-        if any(keyword in key for keyword in keywords):
-            value = _text(row.get("valor"))
-            return f"Dado coletado '{_text(row.get('chave'))}'" + (f": {value}" if value else ".")
-    return ""
 
 
 def _executive_summary(visita: dict) -> str:
