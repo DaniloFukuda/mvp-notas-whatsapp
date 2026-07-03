@@ -1,6 +1,7 @@
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+import unicodedata
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -279,11 +280,60 @@ def _info_card(title: str, items: list[tuple[str, object]], styles: dict) -> Tab
 
 
 def _objective_box(visita: dict, styles: dict) -> Table:
+    description = _text(visita.get("descricao_visita"))
+    objective = _text(visita.get("objetivo"))
+    if not objective and description:
+        objective = (
+            "Objetivo identificado a partir da descrição da visita: "
+            f"{_short_text(description)}"
+        )
+
     rows = [
-        ["Objetivo", _text(visita.get("objetivo")) or "Objetivo não informado."],
-        ["Tipo de visita", _text(visita.get("tipo_visita")) or "Tipo de visita não informado."],
+        ["Objetivo", objective or "Objetivo não informado."],
+        [
+            "Tipo de visita",
+            _text(visita.get("tipo_visita"))
+            or _infer_visit_type(description),
+        ],
     ]
     return _key_value_table(rows, styles)
+
+
+def _infer_visit_type(description: str) -> str:
+    normalized = unicodedata.normalize("NFKD", _text(description))
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    ).lower()
+    classifications = (
+        (
+            ("apresentacao", "produto", "produtos", "demonstracao", "tecnologia"),
+            "Apresentação técnica / Comercial",
+        ),
+        (
+            ("vistoria", "verificacao", "problema", "avaliar"),
+            "Vistoria técnica",
+        ),
+        (
+            ("orcamento", "levantamento"),
+            "Levantamento para orçamento",
+        ),
+        (
+            ("acompanhamento", "lavoura"),
+            "Acompanhamento de lavoura",
+        ),
+    )
+    for keywords, visit_type in classifications:
+        if any(keyword in normalized for keyword in keywords):
+            return visit_type
+    return "Não classificado"
+
+
+def _short_text(value: str, limit: int = 180) -> str:
+    text = " ".join(_text(value).split())
+    if len(text) <= limit:
+        return text
+    shortened = text[: limit - 1].rsplit(" ", 1)[0].rstrip(".,;:")
+    return f"{shortened or text[: limit - 1]}…"
 
 
 def _opportunities_box(visita: dict, styles: dict) -> Table:

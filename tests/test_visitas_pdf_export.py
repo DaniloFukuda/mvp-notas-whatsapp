@@ -18,13 +18,26 @@ def test_build_visita_pdf_basico():
     assert content.startswith(b"%PDF")
     assert len(content) > 1000
     text = _extract_pdf_text(content)
+    normalized_text = " ".join(text.split())
     assert "Relatório de Visita Técnica" in text
     assert "Gestão de Campo" in text
     assert "Ciclus Agro" in text
     assert "FAZENDA IMPERIAL" in text
     assert "Técnico" in text
     assert "Proprietário" in text
+    assert "Telefone do proprietário" in normalized_text
+    assert "(61) 99999-8888" in text
     assert "Gerente/responsável" in text
+    assert "Telefone do gerente" in text
+    assert "(61) 98888-7777" in text
+    assert "Área/local visitado" in text
+    assert "Talhão 3 - setor norte" in text
+    assert "Descrição da visita" in text
+    assert "Inspeção do sistema de irrigação." in text
+    assert "Linha secundária revisada." in text
+    assert "Observações gerais" in text
+    assert "Vazamento próximo ao reservatório." in text
+    assert "Retornar após o reparo." in text
     assert "Área em hectares" in text
     assert "Resumo da visita" in text
     assert "Objetivo comercial" in text
@@ -149,6 +162,48 @@ def test_build_visita_pdf_destaca_oportunidade_por_orcamento():
     assert "Observações mencionam orçamento" in text
 
 
+def test_build_visita_pdf_usa_descricao_como_objetivo_e_infere_tipo():
+    visita = _visita_completa()
+    visita["objetivo"] = ""
+    visita["tipo_visita"] = ""
+    visita["descricao_visita"] = (
+        "Apresentação dos produtos e demonstração da tecnologia disponível.\n"
+        "Equipe esclareceu as dúvidas do responsável."
+    )
+
+    content = visitas_pdf_service.build_visita_pdf(visita)
+
+    text = _extract_pdf_text(content)
+    assert "Objetivo não informado." not in text
+    assert "Objetivo identificado a partir da descrição da visita:" in text
+    assert "Apresentação técnica / Comercial" in text
+    assert "Descrição da visita" in text
+    assert "Equipe esclareceu as dúvidas do responsável." in text
+    assert "Observações gerais" in text
+    assert "Vazamento próximo ao reservatório." in text
+
+
+def test_build_visita_pdf_sem_descricao_mantem_compatibilidade():
+    content = visitas_pdf_service.build_visita_pdf(
+        {
+            "id": 7,
+            "fazenda": "Fazenda Legada",
+            "objetivo": "",
+            "tipo_visita": "",
+            "descricao_visita": "",
+            "observacoes_gerais": "",
+            "midias": [],
+            "localizacoes": [],
+            "dados_coletados": [],
+        }
+    )
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Objetivo não informado." in text
+    assert "Não classificado" in text
+
+
 def test_build_visita_pdf_tolera_campos_vazios():
     content = visitas_pdf_service.build_visita_pdf(
         {
@@ -177,7 +232,12 @@ def _visita_completa() -> dict:
         "telefone_origem": "5500000000001",
         "fazenda": "Fazenda Imperial",
         "proprietario": "Alexander Duarte Paniago",
+        "telefone_proprietario": "(61) 99999-8888",
         "gerente": "Paulo Silva",
+        "telefone_gerente": "(61) 98888-7777",
+        "area": "Talhão 3 - setor norte",
+        "descricao_visita": "Inspeção do sistema de irrigação.\nLinha secundária revisada.",
+        "observacoes_gerais": "Vazamento próximo ao reservatório.\nRetornar após o reparo.",
         "safra": "2025/2026",
         "tipo_visita": "Comercial",
         "area_hectares": 2299,
