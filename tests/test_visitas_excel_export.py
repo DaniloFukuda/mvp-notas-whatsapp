@@ -158,7 +158,7 @@ def test_visita_planilha_exporta_abas_e_link_gps():
         visitas = workbook["Visitas"]
         assert visitas.cell(1, 3).value == "Tecnico"
         assert visitas.cell(1, 7).value == "Telefone do proprietario"
-        assert visitas.cell(1, 10).value == "Area/local visitado"
+        assert visitas.cell(1, 10).value == "Tamanho total da fazenda/propriedade"
         assert visitas.cell(1, 11).value == "Descricao da visita"
         assert "Tipo" not in [cell.value for cell in visitas[1]]
         assert visitas.cell(2, 5).value == "Fazenda Imperial"

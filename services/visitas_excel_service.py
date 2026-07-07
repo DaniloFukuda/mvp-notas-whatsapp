@@ -95,7 +95,7 @@ def _build_visitas_sheet(workbook: Workbook, visitas: list[dict]) -> None:
             "Telefone do proprietario",
             "Gerente",
             "Telefone do gerente",
-            "Area/local visitado",
+            "Tamanho total da fazenda/propriedade",
             "Descricao da visita",
             "Status",
             "Qtd fotos",

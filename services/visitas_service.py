@@ -30,6 +30,7 @@ VISITA_COLUMNS = (
     "latitude_principal",
     "longitude_principal",
     "maps_url_principal",
+    "localizacao_texto",
     "criado_em",
     "atualizado_em",
     "fechado_em",
@@ -70,6 +71,7 @@ class VisitasTecnicasService:
                     latitude_principal REAL,
                     longitude_principal REAL,
                     maps_url_principal TEXT,
+                    localizacao_texto TEXT,
                     criado_em TEXT NOT NULL,
                     atualizado_em TEXT,
                     fechado_em TEXT
@@ -119,6 +121,7 @@ class VisitasTecnicasService:
                     "area": "TEXT",
                     "descricao_visita": "TEXT",
                     "observacoes_gerais": "TEXT",
+                    "localizacao_texto": "TEXT",
                 },
             )
             self._ensure_columns(
@@ -265,6 +268,7 @@ class VisitasTecnicasService:
             "latitude_principal",
             "longitude_principal",
             "maps_url_principal",
+            "localizacao_texto",
         }
         if campo not in allowed:
             raise ValueError("Campo de visita invalido.")
@@ -464,6 +468,13 @@ class VisitasTecnicasService:
                 (cursor.lastrowid,),
             ).fetchone()
         return dict(row) if row is not None else {}
+
+    def salvar_localizacao_textual(self, visita_id: int, texto: str) -> dict:
+        text = _clean(texto)
+        updates = {"localizacao_texto": text}
+        if _looks_like_url(text):
+            updates["maps_url_principal"] = text
+        return self._update_visita(visita_id, updates)
 
     def adicionar_midia(
         self,
@@ -878,6 +889,10 @@ def _to_float(value: object) -> float | None:
     if match is None:
         return None
     return float(match.group(0))
+
+
+def _looks_like_url(value: object) -> bool:
+    return re.match(r"^https?://", _clean(value), flags=re.IGNORECASE) is not None
 
 
 def _now() -> str:

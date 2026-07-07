@@ -108,6 +108,8 @@ VISITA_EDITABLE_FIELDS = {
     "fazenda": "Fazenda",
     "proprietario": "Proprietário",
     "gerente": "Gerente/responsável",
+    "localizacao_texto": "Localização da fazenda/propriedade",
+    "area": "Tamanho total da fazenda/propriedade",
     "area_hectares": "Área em hectares",
     "area_alqueires": "Área em alqueires",
     "safra": "Safra",
@@ -119,8 +121,9 @@ VISITA_EDITABLE_FIELDS = {
 VISITA_FLOW_STEPS = {
     "aguardando_fazenda": ("fazenda", "Qual o nome do proprietário?"),
     "aguardando_proprietario": ("proprietario", "Qual o gerente/responsável?"),
-    "aguardando_gerente": ("gerente", "Qual a área da fazenda?"),
-    "aguardando_area": ("area_hectares", "Qual a safra?"),
+    "aguardando_gerente": ("gerente", "Qual a localização da fazenda/propriedade?"),
+    "aguardando_localizacao": ("localizacao_texto", "Qual o tamanho total da fazenda/propriedade?"),
+    "aguardando_area": ("area", "Qual a safra?"),
     "aguardando_safra": ("safra", "Qual o tipo de visita?"),
     "aguardando_tipo_visita": ("tipo_visita", ""),
 }
@@ -129,7 +132,8 @@ VISITA_FLOW_STEPS = {
     "aguardando_proprietario": ("proprietario", "Qual o telefone do proprietario?"),
     "aguardando_telefone_proprietario": ("telefone_proprietario", "Qual o nome do gerente ou responsavel local pela propriedade?"),
     "aguardando_gerente": ("gerente", "Qual o telefone do gerente ou responsavel local?"),
-    "aguardando_telefone_gerente": ("telefone_gerente", "Qual area, talhao ou local da propriedade foi visitado?\n\nExemplos:\nSede, Talhao 3, Area de irrigacao, Pasto proximo ao curral, Barracao de maquinas."),
+    "aguardando_telefone_gerente": ("telefone_gerente", "Envie a localizacao da fazenda/propriedade."),
+    "aguardando_localizacao": ("localizacao_texto", "Qual e o tamanho total da fazenda/propriedade?\n\nExemplos:\n500 hectares\n120 alqueires\n35 hectares\nNao sei\nPular"),
     "aguardando_area": ("area", ""),
 }
 VISITA_DESCRICAO_MESSAGE = "\n".join(
@@ -183,7 +187,8 @@ VISITA_FLOW_STEPS = {
     "aguardando_proprietario": ("proprietario", "Qual o telefone do proprietário?"),
     "aguardando_telefone_proprietario": ("telefone_proprietario", "Qual o nome do gerente ou responsável local pela propriedade?"),
     "aguardando_gerente": ("gerente", "Qual o telefone do gerente ou responsável local?"),
-    "aguardando_telefone_gerente": ("telefone_gerente", "Qual área, talhão ou local da propriedade foi visitado?\n\nExemplos:\nSede, Talhão 3, Área de irrigação, Pasto próximo ao curral, Barracão de máquinas."),
+    "aguardando_telefone_gerente": ("telefone_gerente", "📍 Envie a localização da fazenda/propriedade.\n\nVocê pode:\n- Compartilhar a localização pelo WhatsApp\n- Enviar um link do Google Maps\n- Digitar o endereço ou referência\n- Digitar \"pular\" se não tiver essa informação agora"),
+    "aguardando_localizacao": ("localizacao_texto", "📏 Qual é o tamanho total da fazenda/propriedade?\n\nExemplos:\n500 hectares\n120 alqueires\n35 hectares\nNão sei\nPular"),
     "aguardando_area": ("area", ""),
 }
 VISITA_DESCRICAO_MESSAGE = "\n".join(
@@ -211,14 +216,18 @@ VISITA_DESCRICAO_MESSAGE = "\n".join(
 )
 VISITA_OBSERVACOES_MESSAGE = "\n".join(
     [
-        "Observações gerais da visita",
+        "📝 Observações adicionais",
         "",
-        "Agora você pode enviar as observações gerais do relatório.",
+        "Use este campo para registrar detalhes importantes que não entraram nas perguntas anteriores, por exemplo:",
         "",
-        "Você pode informar as observações digitando ou enviando um áudio.",
-        "Se preferir, envie um áudio explicando os pontos observados na visita.",
+        "- tamanho de plantações específicas;",
+        "- se a plantação é pequena ou apenas para consumo dos animais;",
+        "- tamanho da área onde fica o combustível;",
+        "- detalhes sobre barracões, irrigação, pasto, máquinas ou estrutura;",
+        "- qualquer ponto relevante para o relatório.",
         "",
-        "Aqui você pode colocar tudo que percebeu durante a visita, como problemas encontrados, informações passadas pelo proprietário ou gerente, pontos de atenção, recomendações e qualquer detalhe importante.",
+        "Você pode responder por texto ou áudio.",
+        "Se não houver observações, digite \"pular\".",
         "",
         "Você pode mandar quantas mensagens quiser.",
         "Cada mensagem será salva como uma observação separada no relatório.",
@@ -257,6 +266,9 @@ VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
     "concluir observacao",
     "pronto",
     "terminei",
+    "pular",
+    "nao sei",
+    "sem informacao",
 }
 VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
 VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
@@ -2008,7 +2020,7 @@ def handle_visitas_text_message(
             "3": ("telefone_proprietario", "Digite o novo telefone do proprietario:"),
             "4": ("gerente", "Digite o novo gerente/responsavel local:"),
             "5": ("telefone_gerente", "Digite o novo telefone do gerente:"),
-            "6": ("area", "Digite a nova area/local visitado:"),
+            "6": ("area", "Digite o novo tamanho total da fazenda/propriedade:"),
         }
         if normalized_text == "7":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
@@ -2108,12 +2120,18 @@ def handle_visitas_text_message(
         validation = validate_visit_field(field, text)
         if not validation.ok:
             return True, validation.error
-        updates = {field: validation.value}
         next_state = _next_visita_state(state)
-        updates["estado_fluxo"] = next_state
-        saved = open_visit
-        for update_field, update_value in updates.items():
-            saved = visitas_service.atualizar_campo(saved["id"], update_field, update_value)
+        if field == "localizacao_texto":
+            if validation.value:
+                saved = visitas_service.salvar_localizacao_textual(open_visit["id"], validation.value)
+            else:
+                saved = open_visit
+            saved = visitas_service.atualizar_campo(saved["id"], "estado_fluxo", next_state)
+        else:
+            updates = {field: validation.value, "estado_fluxo": next_state}
+            saved = open_visit
+            for update_field, update_value in updates.items():
+                saved = visitas_service.atualizar_campo(saved["id"], update_field, update_value)
         visita_active_states[phone] = int(saved["id"])
         if next_state == "aguardando_descricao_visita":
             return True, VISITA_DESCRICAO_MESSAGE
@@ -2144,7 +2162,10 @@ def handle_visitas_text_message(
 
 def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
     open_visit = _get_active_visita_for_phone(sender_phone)
-    if open_visit is None or open_visit.get("estado_fluxo") != "visita_aberta":
+    if open_visit is None:
+        return None
+    state = str(open_visit.get("estado_fluxo") or "")
+    if state not in {"visita_aberta", "aguardando_localizacao"}:
         return None
     latitude = location.get("latitude")
     longitude = location.get("longitude")
@@ -2157,6 +2178,17 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
         float(longitude),
         descricao=description,
     )
+    if state == "aguardando_localizacao":
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_area")
+        return "\n".join(
+            [
+                "📍 Localização salva.",
+                "Abrir no GPS:",
+                saved["maps_url"],
+                "",
+                VISITA_FLOW_STEPS["aguardando_localizacao"][1],
+            ]
+        )
     return "\n".join(
         [
             "📍 Localização salva.",
@@ -2329,7 +2361,8 @@ def _handle_visita_direct_command(
         ("safra", "safra"),
         ("area_hectares", "hectares"),
         ("area_alqueires", "alqueires"),
-        ("area_hectares", "area"),
+        ("area", "area"),
+        ("localizacao_texto", "localizacao"),
     )
     for field, prefix in direct_patterns:
         if normalized_text == prefix or normalized_text.startswith(prefix + " "):
@@ -2338,7 +2371,10 @@ def _handle_visita_direct_command(
                 return "Informe o valor junto com o comando."
             if field in {"area_hectares", "area_alqueires"}:
                 value = _parse_visita_area(value)
-            visitas_service.atualizar_campo(open_visit["id"], field, value)
+            if field == "localizacao_texto":
+                visitas_service.salvar_localizacao_textual(open_visit["id"], value)
+            else:
+                visitas_service.atualizar_campo(open_visit["id"], field, value)
             return "Campo salvo na visita."
 
     for prefix in ("obs ", "observacao "):
@@ -2368,6 +2404,7 @@ def _next_visita_state(state: str) -> str:
         "aguardando_telefone_proprietario",
         "aguardando_gerente",
         "aguardando_telefone_gerente",
+        "aguardando_localizacao",
         "aguardando_area",
         "aguardando_descricao_visita",
     )
@@ -2615,7 +2652,7 @@ def _start_visita_edit(sender_phone: str, normalized_text: str) -> str:
             "* fazenda",
             "* proprietário",
             "* gerente",
-            "* área",
+            "* tamanho",
             "* safra",
             "* tipo",
             "* observações",
@@ -2623,7 +2660,7 @@ def _start_visita_edit(sender_phone: str, normalized_text: str) -> str:
             "",
             "Exemplos:",
             "gerente = Marcos Silva",
-            "área = 250 hectares",
+            "tamanho = 250 hectares",
             "observações = Cliente solicitou orçamento para aplicação.",
             "",
             "Quando terminar, envie:",
@@ -2713,7 +2750,7 @@ def _visita_edit_help() -> str:
             "Não reconheci esse campo.",
             "Envie no formato: campo = valor",
             "",
-            "Campos aceitos: fazenda, proprietário, gerente, área, safra, tipo, observações, data.",
+            "Campos aceitos: fazenda, proprietário, gerente, tamanho, safra, tipo, observações, data.",
         ]
     )
 
@@ -2738,7 +2775,15 @@ def _resolve_visita_edit_field(raw_field: str, raw_value: str = "") -> str | Non
         "obs": "observacoes",
         "data": "data_visita",
         "data visita": "data_visita",
-        "area": "area_hectares",
+        "area": "area",
+        "tamanho": "area",
+        "tamanho total": "area",
+        "tamanho propriedade": "area",
+        "tamanho da propriedade": "area",
+        "tamanho fazenda": "area",
+        "tamanho da fazenda": "area",
+        "localizacao": "localizacao_texto",
+        "localizacao fazenda": "localizacao_texto",
         "area hectares": "area_hectares",
         "hectares": "area_hectares",
         "area alqueires": "area_alqueires",
@@ -2825,7 +2870,7 @@ def _visita_status_message(visita: dict) -> str:
             f"Fazenda: {visita.get('fazenda') or '-'}",
             f"Proprietário: {visita.get('proprietario') or '-'}",
             f"Gerente: {visita.get('gerente') or '-'}",
-            f"Área/local: {visita.get('area') or '-'}",
+            f"Tamanho total: {visita.get('area') or '-'}",
             f"Descrição da visita: {visitas_service.descricao_da_visita(visita) or '-'}",
         ]
     )
@@ -2844,7 +2889,7 @@ def _visita_resumo_final_message(visita_id: int) -> str:
         f"Telefone do proprietário: {resumo.get('telefone_proprietario') or '-'}",
         f"Gerente/responsável local: {resumo.get('gerente') or '-'}",
         f"Telefone do gerente: {resumo.get('telefone_gerente') or '-'}",
-        f"Área/local visitado: {resumo.get('area') or '-'}",
+        f"Tamanho total da fazenda/propriedade: {resumo.get('area') or '-'}",
         "",
         "Descrição da visita",
         visitas_service.descricao_da_visita(resumo) or "-",
@@ -2894,7 +2939,7 @@ def _visita_corrigir_dados_message() -> str:
             "3 - Telefone do proprietário",
             "4 - Gerente/responsável local",
             "5 - Telefone do gerente",
-            "6 - Área/local visitado",
+            "6 - Tamanho total da fazenda/propriedade",
             "7 - Voltar",
         ]
     )
@@ -2962,7 +3007,7 @@ def _visita_fechada_message(visita: dict) -> str:
             f"Fazenda: {visita.get('fazenda') or '-'}",
             f"Proprietario: {visita.get('proprietario') or '-'}",
             f"Gerente: {visita.get('gerente') or '-'}",
-            f"Area/local: {visita.get('area') or '-'}",
+            f"Tamanho total: {visita.get('area') or '-'}",
             f"Fotos: {fotos}",
             f"Localizacoes: {localizacoes}",
             "",

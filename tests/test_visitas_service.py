@@ -41,6 +41,20 @@ def test_visita_salvar_localizacao_preenche_ponto_principal():
         assert saved["maps_url_principal"] == location["maps_url"]
 
 
+def test_visita_salvar_localizacao_textual_reaproveita_url_principal():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001")
+
+        saved = service.salvar_localizacao_textual(
+            visita["id"],
+            "https://maps.google.com/?q=-15,-50",
+        )
+
+        assert saved["localizacao_texto"] == "https://maps.google.com/?q=-15,-50"
+        assert saved["maps_url_principal"] == "https://maps.google.com/?q=-15,-50"
+
+
 def test_visita_fechar_marca_status_e_data():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")

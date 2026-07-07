@@ -30,8 +30,9 @@ def test_build_visita_pdf_basico():
     assert "Gerente/responsável" in text
     assert "Telefone do gerente" in text
     assert "(61) 98888-7777" in text
-    assert "Área/local visitado" in text
-    assert "Talhão 3 - setor norte" in text
+    assert "Tamanho total da fazenda/propriedade" in normalized_text
+    assert "500 hectares" in text
+    assert "Área/local visitado" not in text
     assert "Descrição da visita" in text
     assert "Inspeção do sistema de irrigação." in text
     assert "Linha secundária revisada." in text
@@ -47,6 +48,7 @@ def test_build_visita_pdf_basico():
     assert "Oportunidades e próximos passos" not in text
     assert "Localizações e pontos de referência" in text
     assert "Abrir no Google Maps" in text
+    assert "Quantidade de vídeos" in text
 
 
 def test_build_visita_pdf_com_logo_nao_quebra():
@@ -105,6 +107,42 @@ def test_build_visita_pdf_com_foto(tmp_path):
     text = _extract_pdf_text(content)
     assert "Registros fotográficos" in text
     assert "Talhão norte" in text
+
+
+def test_build_visita_pdf_com_video_public_url_separado_de_fotos(tmp_path):
+    image_path = tmp_path / "talhao.png"
+    image_path.write_bytes(base64.b64decode(_ONE_PIXEL_PNG))
+
+    content = visitas_pdf_service.build_visita_pdf(
+        {
+            "id": 8,
+            "fazenda": "Fazenda Imperial",
+            "midias": [
+                {
+                    "tipo": "foto",
+                    "legenda": "Foto do talhão",
+                    "caminho_arquivo": str(image_path),
+                },
+                {
+                    "tipo": "video",
+                    "comentario": "Falha perto da entrada",
+                    "public_url": "https://cdn.example/visitas/video-1.mp4",
+                    "mime_type": "video/mp4",
+                    "tamanho_bytes": 2048,
+                },
+            ],
+        }
+    )
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Registros fotográficos" in text
+    assert "Foto do talhão" in text
+    assert "Registros em vídeo" in text
+    assert "Vídeo 1" in text
+    assert "Falha perto da entrada" in text
+    assert "https://cdn.example/visitas/video-1.mp4" in text
+    assert "Quantidade de vídeos" in text
 
 
 def test_build_visita_pdf_com_localizacao():
@@ -240,7 +278,8 @@ def _visita_completa() -> dict:
         "telefone_proprietario": "(61) 99999-8888",
         "gerente": "Paulo Silva",
         "telefone_gerente": "(61) 98888-7777",
-        "area": "Talhão 3 - setor norte",
+        "area": "500 hectares",
+        "localizacao_texto": "Fazenda Imperial, entrada principal",
         "descricao_visita": "Inspeção do sistema de irrigação.\nLinha secundária revisada.",
         "observacoes_gerais": "Vazamento próximo ao reservatório.\nRetornar após o reparo.",
         "safra": "2025/2026",

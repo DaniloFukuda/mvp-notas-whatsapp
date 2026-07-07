@@ -93,10 +93,16 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         story.append(Spacer(1, 0.1 * cm))
 
     midias = visita_data.get("midias") or []
-    if midias:
+    fotos = [media for media in midias if _text(media.get("tipo")) != "video"]
+    videos = [media for media in midias if _text(media.get("tipo")) == "video"]
+    if fotos:
         story.extend(_section("Registros fotográficos", styles))
-        for media in midias:
+        for media in fotos:
             story.append(_media_card(media, styles))
+    if videos:
+        story.extend(_section("Registros em vídeo", styles))
+        for index, media in enumerate(videos, start=1):
+            story.append(_video_card(media, index, styles))
 
     def draw_footer(canvas, doc):
         _footer(canvas, doc, generated_at)
@@ -183,6 +189,8 @@ def _logo_flowable(styles: dict):
 
 def _main_cards(visita: dict, styles: dict) -> Table:
     midias = visita.get("midias") or []
+    fotos = [media for media in midias if _text(media.get("tipo")) != "video"]
+    videos = [media for media in midias if _text(media.get("tipo")) == "video"]
     localizacoes = visita.get("localizacoes") or []
     cards = [
         _info_card(
@@ -192,7 +200,7 @@ def _main_cards(visita: dict, styles: dict) -> Table:
                 ("Telefone do proprietário", visita.get("telefone_proprietario")),
                 ("Gerente/responsável", visita.get("gerente")),
                 ("Telefone do gerente", visita.get("telefone_gerente")),
-                ("Área/local visitado", visita.get("area")),
+                ("Tamanho total da fazenda/propriedade", visita.get("area")),
             ],
             styles,
         ),
@@ -210,6 +218,7 @@ def _main_cards(visita: dict, styles: dict) -> Table:
             [
                 ("Latitude", _number(visita.get("latitude_principal"))),
                 ("Longitude", _number(visita.get("longitude_principal"))),
+                ("Localização informada", visita.get("localizacao_texto")),
                 ("GPS", _maps_link(_text(visita.get("maps_url_principal")), styles, show_url=False)),
             ],
             styles,
@@ -220,7 +229,8 @@ def _main_cards(visita: dict, styles: dict) -> Table:
                 ("ID da visita", visita.get("id")),
                 ("Criado em", _format_datetime(visita.get("criado_em"))),
                 ("Fechado em", _format_datetime(visita.get("fechado_em"))),
-                ("Quantidade de fotos", len(midias)),
+                ("Quantidade de fotos", len(fotos)),
+                ("Quantidade de vídeos", len(videos)),
                 ("Quantidade de localizações", len(localizacoes)),
             ],
             styles,
@@ -287,6 +297,20 @@ def _executive_summary(visita: dict) -> str:
 
 def _location_cards(visita: dict, styles: dict) -> list:
     cards = []
+    if _text(visita.get("localizacao_texto")):
+        rows = [["Localização", _location_text_flowable(visita.get("localizacao_texto"), styles)]]
+        cards.append(
+            KeepTogether(
+                [
+                    _small_card(
+                        "Localização da fazenda/propriedade",
+                        _key_value_table(rows, styles),
+                        styles,
+                    ),
+                    Spacer(1, 0.18 * cm),
+                ]
+            )
+        )
     if _text(visita.get("maps_url_principal")) or visita.get("latitude_principal") not in (None, ""):
         cards.append(
             _location_card(
@@ -401,6 +425,20 @@ def _media_card(media: dict, styles: dict) -> KeepTogether:
     card = Table([[body]], colWidths=[CONTENT_WIDTH], hAlign="LEFT")
     card.setStyle(_card_style())
     return KeepTogether([card, Spacer(1, 0.28 * cm)])
+
+
+def _video_card(media: dict, index: int, styles: dict) -> KeepTogether:
+    title = f"Vídeo {index}"
+    caption = _text(media.get("comentario")) or _text(media.get("legenda"))
+    rows = [
+        ["Legenda/comentário", caption or "-"],
+        ["Link público", _video_public_url(media, styles)],
+    ]
+    if _text(media.get("mime_type")):
+        rows.append(["Tipo do arquivo", media.get("mime_type")])
+    if media.get("tamanho_bytes") not in (None, ""):
+        rows.append(["Tamanho", _format_bytes(media.get("tamanho_bytes"))])
+    return KeepTogether([_small_card(title, _key_value_table(rows, styles), styles), Spacer(1, 0.28 * cm)])
 
 
 def _small_card(title: str, content, styles: dict) -> Table:
@@ -572,6 +610,37 @@ def _maps_link(value: str, styles: dict, show_url: bool = True) -> Paragraph:
     escaped_url = _escape(url)
     suffix = f"<br/>{escaped_url}" if show_url else ""
     return Paragraph(f'<a href="{escaped_url}" color="#2B78C2">Abrir no Google Maps</a>{suffix}', styles["Link"])
+
+
+def _location_text_flowable(value: object, styles: dict) -> Paragraph:
+    text = _text(value)
+    if text.lower().startswith(("http://", "https://")):
+        return _url_link(text, styles)
+    return _paragraph(text, styles)
+
+
+def _video_public_url(media: dict, styles: dict) -> Paragraph:
+    url = _text(media.get("public_url"))
+    if not url:
+        return Paragraph("Vídeo anexado, mas link público indisponível.", styles["Body"])
+    return _url_link(url, styles)
+
+
+def _url_link(url: str, styles: dict) -> Paragraph:
+    escaped_url = _escape(url)
+    return Paragraph(f'<a href="{escaped_url}" color="#2B78C2">{escaped_url}</a>', styles["Link"])
+
+
+def _format_bytes(value: object) -> str:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return _text(value) or "-"
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def _scaled_image_size(path: Path, max_width: float, max_height: float) -> tuple[float, float]:

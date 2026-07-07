@@ -34,9 +34,19 @@ def validate_visit_field(field: str, value: str) -> ValidationResult:
     text = normalize_spaces(value)
     normalized = _normalize(text)
 
-    if field in {"proprietario", "telefone_proprietario", "gerente", "telefone_gerente"}:
+    if field in {
+        "proprietario",
+        "telefone_proprietario",
+        "gerente",
+        "telefone_gerente",
+        "area",
+        "localizacao_texto",
+    }:
         if normalized in SKIP_ALIASES:
-            return ValidationResult(True, SKIPPED_VALUE)
+            return ValidationResult(
+                True,
+                "" if field in {"area", "localizacao_texto"} else SKIPPED_VALUE,
+            )
 
     if field == "fazenda":
         return _validate_text(
@@ -72,8 +82,17 @@ def validate_visit_field(field: str, value: str) -> ValidationResult:
             text,
             min_len=3,
             max_len=120,
-            label="área, talhão ou local visitado",
-            error="Não consegui entender essa informação. Informe a área, talhão ou local visitado com pelo menos 3 caracteres.",
+            label="tamanho total da fazenda/propriedade",
+            error='Não consegui entender essa informação. Informe o tamanho total da fazenda/propriedade ou envie "pular".',
+        )
+    if field == "localizacao_texto":
+        return _validate_text(
+            text,
+            min_len=3,
+            max_len=500,
+            label="localização da fazenda/propriedade",
+            error='Não consegui entender essa localização. Envie um link, endereço, referência ou "pular".',
+            check_random=False,
         )
     if field == "descricao_visita":
         return _validate_text(
