@@ -156,6 +156,45 @@ def test_visita_fechar():
         api_whatsapp.send_whatsapp_document = original_sender
 
 
+def test_visita_finalizada_nao_recebe_nova_midia():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            photo_reply = api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-after-close",
+                "foto-after-close.jpg",
+            )
+            video_reply = api_whatsapp.handle_visitas_video_message(
+                sender,
+                "video-after-close",
+                "video/mp4",
+            )
+            closed = visitas.obter_visita_completa(visita["id"])
+
+            assert "Esta visita já foi finalizada" in photo_reply
+            assert "Esta visita já foi finalizada" in video_reply
+            assert closed["status"] == "fechada"
+            assert closed["midias"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
 def test_visita_revisao_corrige_descricao_e_gera_nova_previa_sem_fechar():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -259,6 +298,81 @@ def test_visita_revisao_corrige_dados_da_propriedade():
         api_whatsapp.send_whatsapp_document = original_sender
 
 
+def test_visita_revisao_aceita_localizacao_nativa_e_link_maps():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            native_reply = api_whatsapp.handle_visitas_location_message(
+                sender,
+                {"latitude": -15.0019124, "longitude": -50.7714295},
+            )
+            link_reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "https://maps.google.com/?q=-16,-51",
+            )
+            saved = visitas.obter_visita_completa(visita["id"])
+
+            assert "Localização atualizada" in native_reply
+            assert "prévia anterior pode estar desatualizada" in native_reply.lower()
+            assert "Localização atualizada" in link_reply
+            assert saved["maps_url_principal"] == "https://maps.google.com/?q=-16,-51"
+            assert saved["localizacao_texto"] == "https://maps.google.com/?q=-16,-51"
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
+            assert len(saved["localizacoes"]) == 1
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_visita_revisao_previa_apos_midia_reenvia_pdf_sem_fechar():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            api_whatsapp.handle_visitas_media_message(
+                sender,
+                "image",
+                "media-review",
+                "foto-review.jpg",
+            )
+            api_whatsapp.handle_rdv_text_message(sender, "2")
+            reply = api_whatsapp.handle_rdv_text_message(sender, "previa")
+            saved = visitas.obter_visita_completa(visita["id"])
+
+            assert "Prévia do relatório enviada" in reply
+            assert len(sent) == 2
+            assert sent[-1][4].startswith(b"%PDF")
+            assert len(saved["midias"]) == 1
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
 def test_nova_visita_nao_usa_visita_aberta_antiga():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -345,7 +459,7 @@ def test_continuar_visita_define_visita_ativa():
         api_whatsapp.visita_active_states.clear()
 
 
-def test_fechar_visita_limpa_estado_ativo():
+def test_visita_revisao_final_aceita_foto_e_comentario_sem_finalizar():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     original_sender = api_whatsapp.send_whatsapp_document
@@ -367,10 +481,17 @@ def test_fechar_visita_limpa_estado_ativo():
 
             saved = visitas.obter_visita_completa(visita_id)
             assert "Prévia do relatório enviada" in close_reply
-            assert "Para adicionar fotos ou vídeos" in media_reply
+            assert "Foto anexada" in media_reply
+            assert "prévia anterior pode estar desatualizada" in media_reply.lower()
+            assert "Digite o comentario da Foto" in api_whatsapp.handle_rdv_text_message(sender, "1")
+            done = api_whatsapp.handle_rdv_text_message(sender, "Foto complementar")
+            saved = visitas.obter_visita_completa(visita_id)
+            assert "Comentário salvo" in done
+            assert "prévia anterior pode estar desatualizada" in done.lower()
             assert saved["status"] == "aberta"
             assert saved["estado_fluxo"] == "aguardando_revisao_final"
-            assert saved["midias"] == []
+            assert len(saved["midias"]) == 1
+            assert saved["midias"][0]["comentario"] == "Foto complementar"
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -1931,6 +2052,50 @@ def test_video_durante_visita_upload_salva_metadados_e_pede_legenda():
         api_whatsapp.visitas_service = original_visitas
         api_whatsapp.visita_media_service = original_media_service
         api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_video_durante_revisao_anexa_salva_legenda_e_nao_finaliza():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+
+            def fake_download(media_id, destino):
+                Path(destino).write_bytes(b"video")
+                return Path(destino)
+
+            api_whatsapp.download_media = fake_download
+            api_whatsapp.visita_media_service = _FakeVideoMediaService()
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+
+            reply = api_whatsapp.handle_visitas_video_message(sender, "video-review", "video/mp4")
+            legend = api_whatsapp.handle_rdv_text_message(sender, "Video complementar")
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            video = saved["midias"][0]
+            assert "Vídeo recebido e anexado" in reply
+            assert "prévia anterior ficará desatualizada" in reply.lower()
+            assert "Legenda salva" in legend
+            assert "prévia anterior pode estar desatualizada" in legend.lower()
+            assert video["tipo"] == "video"
+            assert video["comentario"] == "Video complementar"
+            assert video["public_url"] == "https://cdn.example/video-review.mp4"
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.send_whatsapp_document = original_sender
         api_whatsapp.visita_active_states.clear()
 
 

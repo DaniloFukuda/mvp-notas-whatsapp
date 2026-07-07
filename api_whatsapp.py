@@ -273,9 +273,15 @@ VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
 VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
 VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
 VISITA_CLOSE_COMMANDS = {"fechar visita", "finalizar visita", "encerrar visita"}
-VISITA_REVIEW_FINALIZE_COMMANDS = {"1", "finalizar", "finalizar visita"}
+VISITA_REVIEW_FINALIZE_COMMANDS = {
+    "1",
+    "finalizar",
+    "finalizar visita",
+    "confirmar finalizacao",
+    "concluir visita",
+}
 VISITA_REVIEW_PREVIEW_COMMANDS = {
-    "5",
+    "6",
     "previa",
     "previa relatorio",
     "gerar previa",
@@ -284,12 +290,21 @@ VISITA_REVIEW_PREVIEW_COMMANDS = {
     "relatorio visita",
     "relatorio da visita",
 }
-VISITA_REVIEW_BACK_COMMANDS = {"6", "voltar", "voltar sem finalizar"}
-VISITA_REVIEW_MEDIA_MESSAGE = "\n".join(
+VISITA_REVIEW_MEDIA_OPTION_COMMANDS = {"5", "midia", "midias", "foto", "video", "localizacao"}
+VISITA_REVIEW_BACK_COMMANDS = {"7", "voltar", "voltar sem finalizar"}
+VISITA_REVIEW_MEDIA_GUIDANCE_MESSAGE = "\n".join(
     [
-        "📎 Para adicionar fotos ou vídeos antes de finalizar, volte para a visita em edição e envie a mídia normalmente.",
+        "Envie a foto, o vídeo ou a localização agora.",
         "",
-        "Digite \"voltar\" para continuar editando a visita ou \"prévia\" para revisar novamente.",
+        "Depois de anexar, a prévia anterior pode ficar desatualizada.",
+        "Digite \"prévia\" para gerar o relatório atualizado antes de finalizar.",
+    ]
+)
+VISITA_CLOSED_MEDIA_MESSAGE = "\n".join(
+    [
+        "⚠️ Esta visita já foi finalizada.",
+        "",
+        "Para anexar novas fotos ou vídeos, inicie uma nova visita técnica ou registre uma nova visita complementar.",
     ]
 )
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola", "voltar"}
@@ -1103,7 +1118,9 @@ def _handle_whatsapp_message(message: dict) -> None:
         "corrigindo_observacoes",
         "corrigindo_comentario_foto",
         "aguardando_decisao_comentario_foto",
+        "aguardando_decisao_comentario_foto_revisao",
         "aguardando_texto_comentario_foto",
+        "aguardando_texto_comentario_foto_revisao",
     }:
         destination = _build_media_destination(
             sender_phone=sender_phone,
@@ -1896,6 +1913,13 @@ def handle_visitas_text_message(
     if _is_listar_visitas_command(normalized_text):
         return True, _listar_visitas_message(normalized_text)
 
+    if (
+        open_visit is not None
+        and str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
+        and normalized_text in VISITA_REVIEW_PREVIEW_COMMANDS
+    ):
+        return True, _start_visita_review(sender_phone, open_visit["id"])
+
     if _is_relatorio_visita_command(normalized_text):
         try:
             reply = _handle_relatorio_visita(sender_phone, text, normalized_text)
@@ -1955,13 +1979,20 @@ def handle_visitas_text_message(
         return True, "Visita cancelada com sucesso."
 
     state = str(open_visit.get("estado_fluxo") or "")
-    if state.startswith("aguardando_legenda_video:"):
+    if state.startswith("aguardando_legenda_video:") or state.startswith("aguardando_legenda_video_revisao:"):
+        review_mode = state.startswith("aguardando_legenda_video_revisao:")
         media_id = int(state.split(":", 1)[1])
         validation = validate_visit_field("comentario_foto", text)
         if not validation.ok:
             return True, validation.error
         visitas_service.salvar_comentario_midia(media_id, validation.value)
-        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+        visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "aguardando_revisao_final" if review_mode else "visita_aberta",
+        )
+        if review_mode:
+            return True, _visita_midia_atualizada_message("✅ Legenda salva para o vídeo.")
         return True, "\n".join(
             [
                 "Legenda salva para o vídeo.",
@@ -1995,35 +2026,52 @@ def handle_visitas_text_message(
             )
         return True, "Observação salva. Envie outra observação ou finalize com: finalizar observações"
 
-    if state == "aguardando_decisao_comentario_foto":
+    if state in {"aguardando_decisao_comentario_foto", "aguardando_decisao_comentario_foto_revisao"}:
+        review_mode = state.endswith("_revisao")
         pending = visitas_service.proxima_foto_pendente(open_visit["id"])
         if pending is None:
-            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
-            return True, "Fotos salvas no relatorio."
+            visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                "aguardando_revisao_final" if review_mode else "visita_aberta",
+            )
+            return True, _visita_midia_atualizada_message("Fotos salvas no relatório.") if review_mode else "Fotos salvas no relatorio."
         if normalized_text in VISITA_FOTO_COMENTAR_COMMANDS:
-            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_texto_comentario_foto")
+            visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                "aguardando_texto_comentario_foto_revisao" if review_mode else "aguardando_texto_comentario_foto",
+            )
             return True, f"Digite o comentario da Foto {pending.get('indice') or 1}:"
         if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
             visitas_service.salvar_comentario_foto(pending["id"], "Sem comentario informado.")
-            return True, _visita_proxima_foto_ou_finaliza(open_visit["id"])
+            return True, _visita_proxima_foto_ou_finaliza(open_visit["id"], review_mode=review_mode)
         return True, "Responda 1 para comentar ou 2 para continuar sem comentario nesta foto."
 
-    if state == "aguardando_texto_comentario_foto":
+    if state in {"aguardando_texto_comentario_foto", "aguardando_texto_comentario_foto_revisao"}:
+        review_mode = state.endswith("_revisao")
         pending = visitas_service.proxima_foto_pendente(open_visit["id"])
         if pending is None:
-            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
-            return True, "Fotos salvas no relatorio."
+            visitas_service.atualizar_campo(
+                open_visit["id"],
+                "estado_fluxo",
+                "aguardando_revisao_final" if review_mode else "visita_aberta",
+            )
+            return True, _visita_midia_atualizada_message("Fotos salvas no relatório.") if review_mode else "Fotos salvas no relatorio."
         validation = validate_visit_field("comentario_foto", text)
         if not validation.ok:
             return True, validation.error
         visitas_service.salvar_comentario_foto(pending["id"], validation.value)
-        return True, _visita_proxima_foto_ou_finaliza(open_visit["id"])
+        return True, _visita_proxima_foto_ou_finaliza(open_visit["id"], review_mode=review_mode)
 
     if state == "aguardando_revisao_final":
         if normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS:
             closed = visitas_service.fechar_visita(open_visit["id"])
             _clear_active_visita(sender_phone, open_visit["id"])
             return True, _visita_finalizada_message(closed)
+        if _is_maps_location_text(text):
+            visitas_service.salvar_localizacao_textual(open_visit["id"], text)
+            return True, _visita_midia_atualizada_message("✅ Localização atualizada.")
         if normalized_text == "2":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_dados_propriedade")
             return True, _visita_corrigir_dados_message()
@@ -2033,6 +2081,8 @@ def handle_visitas_text_message(
         if normalized_text == "4":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_observacoes")
             return True, _visita_corrigir_observacoes_message()
+        if normalized_text in VISITA_REVIEW_MEDIA_OPTION_COMMANDS:
+            return True, VISITA_REVIEW_MEDIA_GUIDANCE_MESSAGE
         if normalized_text in VISITA_REVIEW_PREVIEW_COMMANDS:
             return True, _start_visita_review(sender_phone, open_visit["id"])
         if normalized_text in VISITA_REVIEW_BACK_COMMANDS:
@@ -2194,9 +2244,9 @@ def handle_visitas_text_message(
 def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
-        return None
+        return _visita_closed_media_message_if_applicable(sender_phone)
     state = str(open_visit.get("estado_fluxo") or "")
-    if state not in {"visita_aberta", "aguardando_localizacao"}:
+    if state not in {"visita_aberta", "aguardando_localizacao", "aguardando_revisao_final"}:
         return None
     latitude = location.get("latitude")
     longitude = location.get("longitude")
@@ -2220,6 +2270,8 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
                 VISITA_FLOW_STEPS["aguardando_localizacao"][1],
             ]
         )
+    if state == "aguardando_revisao_final":
+        return _visita_midia_atualizada_message("✅ Localização atualizada.")
     return "\n".join(
         [
             "📍 Localização salva.",
@@ -2238,9 +2290,7 @@ def handle_visitas_media_message(
 ) -> str:
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
-        return "Nenhuma visita em andamento encontrada."
-    if _visita_state_is_text_review(open_visit):
-        return VISITA_REVIEW_MEDIA_MESSAGE
+        return _visita_closed_media_message_if_applicable(sender_phone) or "Nenhuma visita em andamento encontrada."
     media = visitas_service.adicionar_midia(
         open_visit["id"],
         tipo="foto" if message_type == "image" else message_type,
@@ -2249,15 +2299,22 @@ def handle_visitas_media_message(
         legenda=caption,
     )
     if message_type == "image":
-        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_decisao_comentario_foto")
+        review_mode = str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
+        visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            "aguardando_decisao_comentario_foto_revisao" if review_mode else "aguardando_decisao_comentario_foto",
+        )
         pending = visitas_service.proxima_foto_pendente(open_visit["id"]) or media
         fazenda = open_visit.get("fazenda") or "visita em andamento"
+        saved_message = "✅ Foto anexada à visita." if review_mode else f"Foto salva na visita {fazenda}."
         return "\n\n".join(
             [
-                f"Foto salva na visita {fazenda}.",
+                saved_message,
                 _visita_foto_comentario_message(pending),
+                _visita_preview_outdated_hint() if review_mode else "",
             ]
-        )
+        ).strip()
     fazenda = open_visit.get("fazenda") or "visita em andamento"
     return "\n".join(
         [
@@ -2274,11 +2331,10 @@ def handle_visitas_video_message(
 ) -> str:
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
-        return VISITA_VIDEO_NO_OPEN_MESSAGE
-    if _visita_state_is_text_review(open_visit):
-        return VISITA_REVIEW_MEDIA_MESSAGE
+        return _visita_closed_media_message_if_applicable(sender_phone) or VISITA_VIDEO_NO_OPEN_MESSAGE
     if not _visita_state_accepts_media(open_visit):
         return "Continue preenchendo a visita técnica atual antes de anexar vídeos."
+    review_mode = str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
 
     limit = visita_media_service.video_limit_per_visit()
     current_count = visitas_service.contar_midias_por_tipo(open_visit["id"], "video")
@@ -2313,7 +2369,7 @@ def handle_visitas_video_message(
         visitas_service.atualizar_campo(
             open_visit["id"],
             "estado_fluxo",
-            f"aguardando_legenda_video:{media['id']}",
+            f"aguardando_legenda_video_revisao:{media['id']}" if review_mode else f"aguardando_legenda_video:{media['id']}",
         )
     except VideoTooLargeError:
         return _visita_video_too_large_message()
@@ -2331,9 +2387,11 @@ def handle_visitas_video_message(
         [
             "✅ Vídeo recebido e anexado à visita.",
             "Agora envie uma legenda rápida para esse vídeo.",
+            "Depois da legenda, a prévia anterior ficará desatualizada." if review_mode else "",
+            "Digite \"prévia\" para gerar o relatório atualizado antes de finalizar." if review_mode else "",
             "Exemplo: Área com falha perto da entrada da fazenda.",
         ]
-    )
+    ).strip()
 
 
 def _visita_state_accepts_media(visita: dict) -> bool:
@@ -2345,7 +2403,9 @@ def _visita_state_accepts_media(visita: dict) -> bool:
         "corrigindo_observacoes",
         "corrigindo_comentario_foto",
         "aguardando_decisao_comentario_foto",
+        "aguardando_decisao_comentario_foto_revisao",
         "aguardando_texto_comentario_foto",
+        "aguardando_texto_comentario_foto_revisao",
     }
 
 
@@ -2473,11 +2533,18 @@ def _visita_foto_comentario_message(media: dict) -> str:
     )
 
 
-def _visita_proxima_foto_ou_finaliza(visita_id: int) -> str:
+def _visita_proxima_foto_ou_finaliza(visita_id: int, review_mode: bool = False) -> str:
     pending = visitas_service.proxima_foto_pendente(visita_id)
     if pending is not None:
-        visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_decisao_comentario_foto")
+        visitas_service.atualizar_campo(
+            visita_id,
+            "estado_fluxo",
+            "aguardando_decisao_comentario_foto_revisao" if review_mode else "aguardando_decisao_comentario_foto",
+        )
         return _visita_foto_comentario_message(pending)
+    if review_mode:
+        visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_revisao_final")
+        return _visita_midia_atualizada_message("✅ Comentário salvo.")
     visitas_service.atualizar_campo(visita_id, "estado_fluxo", "visita_aberta")
     return "\n".join(
         [
@@ -2926,14 +2993,17 @@ def _visita_revisao_final_message() -> str:
             "",
             "Revise os dados antes de finalizar a visita.",
             "",
+            "Você ainda pode corrigir informações ou enviar mais fotos, vídeos e localização antes de finalizar.",
+            "",
             "O que deseja fazer agora?",
             "",
             "1. Finalizar visita",
             "2. Corrigir dados da propriedade",
             "3. Corrigir descrição da visita",
             "4. Corrigir observações",
-            "5. Gerar nova prévia",
-            "6. Voltar sem finalizar",
+            "5. Enviar mais foto, vídeo ou localização",
+            "6. Gerar nova prévia",
+            "7. Voltar sem finalizar",
             "",
             "A visita ainda não foi finalizada.",
         ]
@@ -2948,6 +3018,36 @@ def _visita_revisao_texto_atualizado_message() -> str:
             "A prévia anterior pode estar desatualizada.",
             "Digite \"prévia\" para gerar o relatório atualizado ou \"finalizar\" para encerrar a visita.",
         ]
+    )
+
+
+def _visita_preview_outdated_hint() -> str:
+    return "\n".join(
+        [
+            "A prévia anterior pode estar desatualizada.",
+            "Digite \"prévia\" para gerar o relatório atualizado ou envie mais informações antes de finalizar.",
+        ]
+    )
+
+
+def _visita_midia_atualizada_message(title: str) -> str:
+    return "\n\n".join([title, _visita_preview_outdated_hint()])
+
+
+def _visita_closed_media_message_if_applicable(sender_phone: str) -> str | None:
+    visita = visitas_service.obter_ultima_visita(sender_phone)
+    if visita is not None and visita.get("status") == "fechada":
+        return VISITA_CLOSED_MEDIA_MESSAGE
+    return None
+
+
+def _is_maps_location_text(value: str) -> bool:
+    normalized = _normalize_caption(value)
+    return (
+        "maps.google" in normalized
+        or "google.com/maps" in normalized
+        or "maps.app.goo.gl" in normalized
+        or "goo.gl/maps" in normalized
     )
 
 
