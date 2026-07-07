@@ -128,6 +128,10 @@ class VisitasTecnicasService:
                     "indice": "INTEGER",
                     "comentario": "TEXT",
                     "comentario_status": "TEXT",
+                    "storage_key": "TEXT",
+                    "public_url": "TEXT",
+                    "tamanho_bytes": "INTEGER",
+                    "mime_type": "TEXT",
                 },
             )
             connection.execute(
@@ -470,6 +474,10 @@ class VisitasTecnicasService:
         legenda: str | None = None,
         latitude: float | None = None,
         longitude: float | None = None,
+        storage_key: str | None = None,
+        public_url: str | None = None,
+        tamanho_bytes: int | None = None,
+        mime_type: str | None = None,
     ) -> dict:
         self.ensure_schema()
         maps_url = (
@@ -485,8 +493,9 @@ class VisitasTecnicasService:
                 INSERT INTO visita_midias (
                     visita_id, tipo, media_id_whatsapp, caminho_arquivo, legenda,
                     latitude, longitude, maps_url, indice, comentario,
-                    comentario_status, enviado_em
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    comentario_status, storage_key, public_url, tamanho_bytes,
+                    mime_type, enviado_em
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(visita_id),
@@ -499,7 +508,11 @@ class VisitasTecnicasService:
                     maps_url,
                     indice,
                     None,
-                    "pendente" if _clean(tipo) == "foto" else "",
+                    "pendente" if _clean(tipo) in {"foto", "video"} else "",
+                    _clean(storage_key),
+                    _clean(public_url),
+                    int(tamanho_bytes) if tamanho_bytes is not None else None,
+                    _clean(mime_type),
                     now,
                 ),
             )
@@ -512,7 +525,8 @@ class VisitasTecnicasService:
                 """
                 SELECT id, visita_id, tipo, media_id_whatsapp, caminho_arquivo,
                        legenda, latitude, longitude, maps_url, indice, comentario,
-                       comentario_status, enviado_em
+                       comentario_status, storage_key, public_url, tamanho_bytes,
+                       mime_type, enviado_em
                 FROM visita_midias
                 WHERE id = ?
                 """,
@@ -528,6 +542,19 @@ class VisitasTecnicasService:
                 (int(midia_id),),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def contar_midias_por_tipo(self, visita_id: int, tipo: str) -> int:
+        self.ensure_schema()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM visita_midias
+                WHERE visita_id = ? AND tipo = ?
+                """,
+                (int(visita_id), _clean(tipo)),
+            ).fetchone()
+        return int((row or {"total": 0})["total"] or 0)
 
     def proxima_foto_pendente(self, visita_id: int) -> dict | None:
         self.ensure_schema()
@@ -550,6 +577,9 @@ class VisitasTecnicasService:
         return self.proxima_foto_pendente(visita_id) is not None
 
     def salvar_comentario_foto(self, midia_id: int, comentario: str) -> dict:
+        return self.salvar_comentario_midia(midia_id, comentario)
+
+    def salvar_comentario_midia(self, midia_id: int, comentario: str) -> dict:
         now = _now()
         safe_comment = _clean(comentario) or "Sem comentario informado."
         with closing(self._connect()) as connection:
@@ -716,9 +746,12 @@ class VisitasTecnicasService:
         visita["midias"] = midias
         visita["localizacoes"] = localizacoes
         visita["dados_coletados"] = dados
+        fotos = [media for media in midias if media.get("tipo") == "foto"]
+        videos = [media for media in midias if media.get("tipo") == "video"]
         visita["contadores"] = {
             "midias": len(midias),
-            "fotos": len(midias),
+            "fotos": len(fotos),
+            "videos": len(videos),
             "localizacoes": len(localizacoes),
             "dados_coletados": len(dados),
         }

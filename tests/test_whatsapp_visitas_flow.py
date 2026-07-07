@@ -1144,6 +1144,26 @@ def test_rdv_nao_quebrou_comandos_principais():
         api_whatsapp._send_monthly_rdv_excel = original_monthly
 
 
+class _FakeVideoMediaService:
+    def __init__(self, *, limit=3, error=None):
+        self.limit = limit
+        self.error = error
+
+    def video_limit_per_visit(self):
+        return self.limit
+
+    def upload_visit_video(self, visita_id, local_path, video_id, mime_type=""):
+        if self.error is not None:
+            raise self.error
+        return {
+            "bucket": "lucre-agro-midias",
+            "storage_key": f"visitas/test/{video_id}.mp4",
+            "public_url": f"https://cdn.example/{video_id}.mp4",
+            "size_bytes": Path(local_path).stat().st_size if Path(local_path).exists() else 5,
+            "content_type": mime_type or "video/mp4",
+        }
+
+
 def test_visita_iniciar_fluxo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -1628,6 +1648,209 @@ def test_visita_tres_fotos_mantem_fila_de_comentarios():
             ]
     finally:
         api_whatsapp.visitas_service = original_visitas
+
+
+def test_video_sem_visita_ativa_responde_orientacao():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_send_text = api_whatsapp.send_whatsapp_text
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            sent = []
+            downloads = []
+            api_whatsapp.send_whatsapp_text = lambda to, message: sent.append(
+                (to, message)
+            )
+            api_whatsapp.download_media = lambda media_id, destino: downloads.append(
+                media_id
+            )
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.video.sem.visita",
+                    "type": "video",
+                    "timestamp": "1780000000",
+                    "video": {
+                        "id": "video-sem-visita",
+                        "mime_type": "video/mp4",
+                    },
+                }
+            )
+
+            assert sent == [(sender, api_whatsapp.VISITA_VIDEO_NO_OPEN_MESSAGE)]
+            assert downloads == []
+            assert visitas.listar_visitas_validas()["visitas"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_text = original_send_text
+        api_whatsapp.download_media = original_download
+
+
+def test_video_durante_visita_upload_salva_metadados_e_pede_legenda():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            downloaded = Path(temp_dir) / "video.mp4"
+
+            def fake_download(media_id, destino):
+                Path(destino).write_bytes(b"video")
+                return Path(destino)
+
+            api_whatsapp.download_media = fake_download
+            api_whatsapp.visita_media_service = _FakeVideoMediaService()
+
+            reply = api_whatsapp.handle_visitas_video_message(
+                sender,
+                "video-1",
+                "video/mp4",
+            )
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            video = saved["midias"][0]
+            assert "Vídeo recebido e anexado" in reply
+            assert "legenda" in reply
+            assert video["tipo"] == "video"
+            assert video["storage_key"] == "visitas/test/video-1.mp4"
+            assert video["public_url"] == "https://cdn.example/video-1.mp4"
+            assert video["tamanho_bytes"] == 5
+            assert video["mime_type"] == "video/mp4"
+            assert video["comentario_status"] == "pendente"
+            assert not downloaded.exists()
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_video_acima_do_limite_responde_mensagem_amigavel():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            api_whatsapp.download_media = lambda media_id, destino: Path(destino)
+            api_whatsapp.visita_media_service = _FakeVideoMediaService(
+                error=api_whatsapp.VideoTooLargeError("too_large")
+            )
+
+            reply = api_whatsapp.handle_visitas_video_message(sender, "video-big", "video/mp4")
+
+            assert "vídeo ficou muito grande" in reply
+            assert "até 15 MB" in reply
+            assert visitas.obter_visita_completa(visita["id"])["midias"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_video_limite_por_visita_nao_baixa_novo_video():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            visitas.adicionar_midia(visita["id"], "video", storage_key="v1")
+            downloads = []
+            api_whatsapp.download_media = lambda media_id, destino: downloads.append(
+                media_id
+            )
+            api_whatsapp.visita_media_service = _FakeVideoMediaService(limit=1)
+
+            reply = api_whatsapp.handle_visitas_video_message(sender, "video-2", "video/mp4")
+
+            assert "limite de 1 vídeos" in reply
+            assert downloads == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_video_falha_upload_responde_mensagem_amigavel():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.download_media = lambda media_id, destino: Path(destino)
+            api_whatsapp.visita_media_service = _FakeVideoMediaService(
+                error=api_whatsapp.VideoUploadError("spaces indisponivel")
+            )
+
+            reply = api_whatsapp.handle_visitas_video_message(sender, "video-fail", "video/mp4")
+
+            assert reply == api_whatsapp.VISITA_VIDEO_UPLOAD_ERROR_MESSAGE
+            assert visitas.obter_visita_completa(visita["id"])["midias"] == []
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_legenda_apos_video_salva_comentario():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.download_media = lambda media_id, destino: Path(destino)
+            api_whatsapp.visita_media_service = _FakeVideoMediaService()
+            api_whatsapp.handle_visitas_video_message(sender, "video-1", "video/mp4")
+
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Área com falha perto da entrada da fazenda",
+            )
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            assert "Legenda salva" in reply
+            assert saved["midias"][0]["comentario"] == (
+                "Área com falha perto da entrada da fazenda"
+            )
+            assert saved["midias"][0]["comentario_status"] == "resolvido"
+            assert visitas.obter_visita(visita["id"])["estado_fluxo"] == "visita_aberta"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
+        api_whatsapp.visita_active_states.clear()
 
 
 def test_visita_resumo_final_mostra_comentarios_das_fotos():

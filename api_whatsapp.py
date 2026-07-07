@@ -54,6 +54,15 @@ from services.report_catalog import (
 )
 from services.visitas_excel_service import build_visitas_workbook
 from services.visitas_pdf_service import build_visita_pdf
+from services.visita_media_service import (
+    VideoLimitReachedError,
+    VideoTooLargeError,
+    VideoUploadError,
+    VisitaMediaService,
+    video_max_mb,
+    video_max_per_visita,
+    video_max_seconds,
+)
 from services.visita_report_commands import parse_visit_report_command
 from services.visita_validation import (
     split_visit_observation,
@@ -466,6 +475,13 @@ INVALID_RDV_RECEIPT_MESSAGE = (
     "Se preferir cancelar, digite cancelar."
 )
 RDV_RECEIPT_CANCEL_MESSAGE = "Lançamento de comprovante cancelado."
+VISITA_VIDEO_NO_OPEN_MESSAGE = (
+    "\U0001f3a5 Recebi um v\u00eddeo, mas ainda n\u00e3o h\u00e1 uma visita t\u00e9cnica em andamento.\n"
+    "Para anexar v\u00eddeos a um relat\u00f3rio, primeiro inicie uma visita t\u00e9cnica."
+)
+VISITA_VIDEO_UPLOAD_ERROR_MESSAGE = (
+    "N\u00e3o consegui anexar esse v\u00eddeo \u00e0 visita agora. Tente novamente em instantes."
+)
 RDV_MENU = "\n".join(
     [
         "Ciclus Agro - RDV por WhatsApp",
@@ -481,6 +497,7 @@ RDV_MENU = "\n".join(
 rdv_service = RDVService()
 rdv_receipt_analysis_service = RDVReceiptAnalysisService()
 visitas_service = VisitasTecnicasService()
+visita_media_service = VisitaMediaService()
 whatsapp_menu_states: dict[str, str] = {}
 visita_edit_states: dict[str, int] = {}
 visita_active_states: dict[str, int] = {}
@@ -965,7 +982,11 @@ def _handle_whatsapp_message(message: dict) -> None:
     message_type = str(message.get("type") or "")
     text = _extract_text(message)
     caption = _extract_caption(message, message_type)
-    media = message.get(message_type) if message_type in ("image", "document", "audio", "voice") else {}
+    media = (
+        message.get(message_type)
+        if message_type in ("image", "document", "audio", "voice", "video")
+        else {}
+    )
     media_id = str((media or {}).get("id") or "")
     image_sha256 = str((media or {}).get("sha256") or "") if message_type == "image" else ""
     mime_type = str((media or {}).get("mime_type") or "")
@@ -1024,6 +1045,15 @@ def _handle_whatsapp_message(message: dict) -> None:
                 _safe_send_text_chunks(sender_phone, reply)
             else:
                 _safe_send_text(sender_phone, reply)
+        return
+
+    if message_type == "video":
+        reply = handle_visitas_video_message(
+            sender_phone=sender_phone,
+            media_id=media_id,
+            mime_type=mime_type,
+        )
+        _safe_send_text(sender_phone, reply)
         return
 
     if message_type not in ("image", "document") or not media_id:
@@ -1730,7 +1760,7 @@ def _safe_unlink(path: str | Path) -> None:
     try:
         Path(path).unlink(missing_ok=True)
     except Exception:
-        logger.warning("Nao foi possivel remover audio temporario: %s", Path(path).name)
+        logger.warning("Nao foi possivel remover arquivo temporario: %s", Path(path).name)
 
 
 def _open_main_menu(sender_phone: str) -> str:
@@ -1889,6 +1919,20 @@ def handle_visitas_text_message(
         return True, "Visita cancelada com sucesso."
 
     state = str(open_visit.get("estado_fluxo") or "")
+    if state.startswith("aguardando_legenda_video:"):
+        media_id = int(state.split(":", 1)[1])
+        validation = validate_visit_field("comentario_foto", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.salvar_comentario_midia(media_id, validation.value)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+        return True, "\n".join(
+            [
+                "Legenda salva para o vídeo.",
+                "Você pode enviar outro vídeo, foto, observação, localização ou fechar a visita.",
+            ]
+        )
+
     if state == "aguardando_descricao_visita":
         validation = validate_visit_field("descricao_visita", text)
         if not validation.ok:
@@ -2154,6 +2198,106 @@ def handle_visitas_media_message(
         [
             f"Foto salva na visita {fazenda}.",
             "Envie outra foto, observação, localização ou \"fechar visita\".",
+        ]
+    )
+
+
+def handle_visitas_video_message(
+    sender_phone: str,
+    media_id: str,
+    mime_type: str = "",
+) -> str:
+    open_visit = _get_active_visita_for_phone(sender_phone)
+    if open_visit is None:
+        return VISITA_VIDEO_NO_OPEN_MESSAGE
+    if not _visita_state_accepts_media(open_visit):
+        return "Continue preenchendo a visita técnica atual antes de anexar vídeos."
+
+    limit = visita_media_service.video_limit_per_visit()
+    current_count = visitas_service.contar_midias_por_tipo(open_visit["id"], "video")
+    if current_count >= limit:
+        return _visita_video_limit_message(limit)
+
+    destination = _build_media_destination(
+        sender_phone=sender_phone,
+        media_id=media_id,
+        mime_type=mime_type or "video/mp4",
+    )
+    downloaded_path = destination
+    try:
+        downloaded_path = download_media(media_id, destination)
+        upload = visita_media_service.upload_visit_video(
+            visita_id=open_visit["id"],
+            local_path=downloaded_path,
+            video_id=media_id,
+            mime_type=mime_type or "video/mp4",
+        )
+        media = visitas_service.adicionar_midia(
+            open_visit["id"],
+            tipo="video",
+            media_id_whatsapp=media_id,
+            caminho_arquivo="",
+            legenda="",
+            storage_key=upload.get("storage_key"),
+            public_url=upload.get("public_url"),
+            tamanho_bytes=upload.get("size_bytes"),
+            mime_type=upload.get("content_type") or mime_type,
+        )
+        visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            f"aguardando_legenda_video:{media['id']}",
+        )
+    except VideoTooLargeError:
+        return _visita_video_too_large_message()
+    except (VideoUploadError, OSError, RuntimeError) as exc:
+        logger.exception(
+            "Falha ao anexar video da visita: media_id=%s erro=%s",
+            _mask_media_id(media_id),
+            _safe_exception_summary(exc),
+        )
+        return VISITA_VIDEO_UPLOAD_ERROR_MESSAGE
+    finally:
+        _safe_unlink(downloaded_path)
+
+    return "\n".join(
+        [
+            "✅ Vídeo recebido e anexado à visita.",
+            "Agora envie uma legenda rápida para esse vídeo.",
+            "Exemplo: Área com falha perto da entrada da fazenda.",
+        ]
+    )
+
+
+def _visita_state_accepts_media(visita: dict) -> bool:
+    state = str(visita.get("estado_fluxo") or "")
+    return state in {
+        "visita_aberta",
+        "aguardando_revisao_final",
+        "corrigindo_dados_propriedade",
+        "corrigindo_observacoes",
+        "corrigindo_comentario_foto",
+        "aguardando_decisao_comentario_foto",
+        "aguardando_texto_comentario_foto",
+    }
+
+
+def _visita_video_too_large_message() -> str:
+    return "\n".join(
+        [
+            "⚠️ Esse vídeo ficou muito grande.",
+            f"Envie um vídeo menor, de até {int(video_max_mb())} MB.",
+            f"Dica: grave um trecho curto, de preferência até {int(video_max_seconds())} segundos.",
+        ]
+    )
+
+
+def _visita_video_limit_message(limit: int | None = None) -> str:
+    max_videos = int(limit or video_max_per_visita())
+    return "\n".join(
+        [
+            f"⚠️ Esta visita já atingiu o limite de {max_videos} vídeos.",
+            "Para manter o relatório leve, finalize esta visita ou use fotos/observações.",
         ]
     )
 
