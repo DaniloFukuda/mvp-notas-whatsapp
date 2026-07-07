@@ -129,26 +129,134 @@ def test_visita_salvar_localizacao():
 def test_visita_fechar():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender)
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
 
             closed = visitas.obter_visita(visita["id"])
-            assert "Visita fechada com sucesso." in reply
-            assert "Área: - ha" in reply
-            assert "Localizações: 0" in reply
-            assert "Comandos disponíveis:" in reply
-            assert "relatório visita" in reply
-            assert "localização visita" in reply
-            assert closed["status"] == "fechada"
-            assert closed["fechado_em"]
+            assert "Prévia do relatório enviada" in reply
+            assert "A visita ainda não foi finalizada" in reply
+            assert sent[0][4].startswith(b"%PDF")
+            assert closed["status"] == "aberta"
+            assert closed["estado_fluxo"] == "aguardando_revisao_final"
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_visita_revisao_corrige_descricao_e_gera_nova_previa_sem_fechar():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            visitas.atualizar_campo(visita["id"], "descricao_visita", "Descricao antiga da visita")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            edit_prompt = api_whatsapp.handle_rdv_text_message(sender, "3")
+            updated = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Descricao atualizada com detalhes suficientes",
+            )
+            preview = api_whatsapp.handle_rdv_text_message(sender, "previa")
+            saved = visitas.obter_visita(visita["id"])
+
+            assert "nova descricao" in edit_prompt.lower()
+            assert "Informação atualizada" in updated
+            assert "prévia anterior pode estar desatualizada" in updated.lower()
+            assert "Prévia do relatório enviada" in preview
+            assert len(sent) == 2
+            assert saved["descricao_visita"] == "Descricao atualizada com detalhes suficientes"
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_visita_revisao_corrige_observacoes_e_finaliza_por_texto():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "encerrar visita")
+            api_whatsapp.handle_rdv_text_message(sender, "4")
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            updated = api_whatsapp.handle_rdv_text_message(sender, "Observacao revisada")
+            final = api_whatsapp.handle_rdv_text_message(sender, "finalizar")
+            closed = visitas.obter_visita(visita["id"])
+
+            assert "Informação atualizada" in updated
+            assert "Visita finalizada com sucesso" in final
+            assert closed["observacoes_gerais"] == "Observacao revisada"
+            assert closed["status"] == "fechada"
+            assert closed["fechado_em"]
+            assert len(sent) == 1
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_visita_revisao_corrige_dados_da_propriedade():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            menu = api_whatsapp.handle_rdv_text_message(sender, "2")
+            prompt = api_whatsapp.handle_rdv_text_message(sender, "7")
+            updated = api_whatsapp.handle_rdv_text_message(sender, "500 hectares")
+            saved = visitas.obter_visita(visita["id"])
+
+            assert "Localização da fazenda" in menu
+            assert "tamanho total" in prompt.lower()
+            assert "Informação atualizada" in updated
+            assert saved["area"] == "500 hectares"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
 
 
 def test_nova_visita_nao_usa_visita_aberta_antiga():
@@ -240,12 +348,14 @@ def test_continuar_visita_define_visita_ativa():
 def test_fechar_visita_limpa_estado_ativo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _, visitas, sender = _install_services(temp_dir)
             api_whatsapp.handle_rdv_text_message(sender, "nova visita")
             api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
             visita_id = api_whatsapp.visita_active_states[sender]
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
 
             close_reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
             media_reply = api_whatsapp.handle_visitas_media_message(
@@ -256,12 +366,15 @@ def test_fechar_visita_limpa_estado_ativo():
             )
 
             saved = visitas.obter_visita_completa(visita_id)
-            assert "Visita fechada com sucesso." in close_reply
-            assert media_reply == "Nenhuma visita em andamento encontrada."
+            assert "Prévia do relatório enviada" in close_reply
+            assert "Para adicionar fotos ou vídeos" in media_reply
+            assert saved["status"] == "aberta"
+            assert saved["estado_fluxo"] == "aguardando_revisao_final"
             assert saved["midias"] == []
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
         api_whatsapp.visita_active_states.clear()
         api_whatsapp.visita_new_visit_states.clear()
 
@@ -1943,11 +2056,18 @@ def test_legenda_apos_video_salva_comentario():
 def test_visita_resumo_final_mostra_comentarios_das_fotos():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender)
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
             media = visitas.adicionar_midia(
                 visita["id"],
                 "foto",
@@ -1958,39 +2078,47 @@ def test_visita_resumo_final_mostra_comentarios_das_fotos():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
 
-            assert "Fotos da visita" in reply
-            assert "Foto 1" in reply
-            assert "Comentário: Vazamento no registro" in reply
+            assert "Prévia do relatório enviada" in reply
+            assert sent[0][4].startswith(b"%PDF")
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
 
 
 def test_visita_fechar():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender)
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
             saved = visitas.obter_visita(visita["id"])
 
-            assert "Resumo da visita técnica" in reply
-            assert "Dados da propriedade" in reply
-            assert "Descrição da visita" in reply
+            assert "Prévia do relatório enviada" in reply
+            assert "Revise os dados antes de finalizar" in reply
             assert "Tipo" not in reply
-            assert "Finalizar relatório" in reply
+            assert "1. Finalizar visita" in reply
+            assert sent[0][4].startswith(b"%PDF")
             assert saved["status"] == "aberta"
             assert saved["estado_fluxo"] == "aguardando_revisao_final"
 
-            final = api_whatsapp.handle_rdv_text_message(sender, "5")
+            final = api_whatsapp.handle_rdv_text_message(sender, "1")
             closed = visitas.obter_visita(visita["id"])
-            assert "Visita fechada com sucesso." in final
+            assert "Visita finalizada com sucesso." in final
             assert closed["status"] == "fechada"
             assert closed["fechado_em"]
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender

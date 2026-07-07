@@ -272,6 +272,26 @@ VISITA_FINALIZAR_OBSERVACOES_COMMANDS = {
 }
 VISITA_FOTO_COMENTAR_COMMANDS = {"1", "sim", "s", "comentar"}
 VISITA_FOTO_PULAR_COMMANDS = {"2", "nao", "pular", "sem comentario"}
+VISITA_CLOSE_COMMANDS = {"fechar visita", "finalizar visita", "encerrar visita"}
+VISITA_REVIEW_FINALIZE_COMMANDS = {"1", "finalizar", "finalizar visita"}
+VISITA_REVIEW_PREVIEW_COMMANDS = {
+    "5",
+    "previa",
+    "previa relatorio",
+    "gerar previa",
+    "relatorio",
+    "gerar relatorio",
+    "relatorio visita",
+    "relatorio da visita",
+}
+VISITA_REVIEW_BACK_COMMANDS = {"6", "voltar", "voltar sem finalizar"}
+VISITA_REVIEW_MEDIA_MESSAGE = "\n".join(
+    [
+        "📎 Para adicionar fotos ou vídeos antes de finalizar, volte para a visita em edição e envie a mídia normalmente.",
+        "",
+        "Digite \"voltar\" para continuar editando a visita ou \"prévia\" para revisar novamente.",
+    ]
+)
 MENU_OPEN_COMMANDS = {"menu", "iniciar", "inicio", "ajuda", "oi", "ola", "voltar"}
 STANDALONE_TRANSCRIPTION_COMMANDS = {
     "transcrever audio",
@@ -1903,17 +1923,21 @@ def handle_visitas_text_message(
     if phone in visita_edit_states:
         return True, _handle_visita_edit_message(sender_phone, text)
 
-    if normalized_text == "fechar visita":
+    if normalized_text in VISITA_CLOSE_COMMANDS:
         if open_visit is None:
             return True, NO_OPEN_VISITA_MESSAGE
-        if _is_legacy_quick_visit(open_visit):
+        if (
+            str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
+            and normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS
+        ):
             closed = visitas_service.fechar_visita(open_visit["id"])
             _clear_active_visita(sender_phone, open_visit["id"])
-            return True, _visita_fechada_message(closed)
+            return True, _visita_finalizada_message(closed)
+        if _is_legacy_quick_visit(open_visit):
+            return True, _start_visita_review(sender_phone, open_visit["id"])
         if visitas_service.existem_fotos_pendentes(open_visit["id"]):
             return True, VISITA_FOTO_PENDENTE_MESSAGE
-        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-        return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _start_visita_review(sender_phone, open_visit["id"])
 
     if normalized_text == "cancelar visita":
         if open_visit is None:
@@ -1996,22 +2020,25 @@ def handle_visitas_text_message(
         return True, _visita_proxima_foto_ou_finaliza(open_visit["id"])
 
     if state == "aguardando_revisao_final":
-        if normalized_text == "1":
+        if normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS:
+            closed = visitas_service.fechar_visita(open_visit["id"])
+            _clear_active_visita(sender_phone, open_visit["id"])
+            return True, _visita_finalizada_message(closed)
+        if normalized_text == "2":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_dados_propriedade")
             return True, _visita_corrigir_dados_message()
-        if normalized_text == "2":
+        if normalized_text == "3":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_edicao_descricao")
             return True, "Digite a nova descricao da visita:"
-        if normalized_text == "3":
+        if normalized_text == "4":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_observacoes")
             return True, _visita_corrigir_observacoes_message()
-        if normalized_text == "4":
-            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_comentario_foto")
-            return True, _visita_corrigir_fotos_message(open_visit["id"])
-        if normalized_text == "5":
-            closed = visitas_service.fechar_visita(open_visit["id"])
-            return True, _visita_fechada_message(closed)
-        return True, _visita_resumo_final_message(open_visit["id"])
+        if normalized_text in VISITA_REVIEW_PREVIEW_COMMANDS:
+            return True, _start_visita_review(sender_phone, open_visit["id"])
+        if normalized_text in VISITA_REVIEW_BACK_COMMANDS:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
+            return True, "Visita continua aberta. Envie ajustes, fotos, vídeos, observações ou \"fechar visita\" para revisar novamente."
+        return True, _visita_revisao_final_message()
 
     if state == "corrigindo_dados_propriedade":
         fields = {
@@ -2020,11 +2047,12 @@ def handle_visitas_text_message(
             "3": ("telefone_proprietario", "Digite o novo telefone do proprietario:"),
             "4": ("gerente", "Digite o novo gerente/responsavel local:"),
             "5": ("telefone_gerente", "Digite o novo telefone do gerente:"),
-            "6": ("area", "Digite o novo tamanho total da fazenda/propriedade:"),
+            "6": ("localizacao_texto", "Digite a nova localização da fazenda/propriedade:"),
+            "7": ("area", "Digite o novo tamanho total da fazenda/propriedade:"),
         }
-        if normalized_text == "7":
+        if normalized_text == "8":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-            return True, _visita_resumo_final_message(open_visit["id"])
+            return True, _visita_revisao_final_message()
         if normalized_text in fields:
             field, question = fields[normalized_text]
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", f"aguardando_edicao_campo:{field}")
@@ -2036,9 +2064,12 @@ def handle_visitas_text_message(
         validation = validate_visit_field(field, text)
         if not validation.ok:
             return True, validation.error
-        visitas_service.atualizar_campo(open_visit["id"], field, validation.value)
+        if field == "localizacao_texto":
+            visitas_service.salvar_localizacao_textual(open_visit["id"], validation.value)
+        else:
+            visitas_service.atualizar_campo(open_visit["id"], field, validation.value)
         visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-        return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_revisao_texto_atualizado_message()
 
     if state == "aguardando_edicao_descricao":
         validation = validate_visit_field("descricao_visita", text)
@@ -2046,7 +2077,7 @@ def handle_visitas_text_message(
             return True, validation.error
         visitas_service.atualizar_campo(open_visit["id"], "descricao_visita", validation.value)
         visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-        return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_revisao_texto_atualizado_message()
 
     if state == "corrigindo_observacoes":
         if normalized_text == "1":
@@ -2060,7 +2091,7 @@ def handle_visitas_text_message(
             return True, "Digite todas as observacoes gerais. Cada linha sera salva como uma observacao separada:"
         if normalized_text == "4":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-            return True, _visita_resumo_final_message(open_visit["id"])
+            return True, _visita_revisao_final_message()
         return True, _visita_corrigir_observacoes_message()
 
     if state == "aguardando_adicao_observacao":
@@ -2077,7 +2108,7 @@ def handle_visitas_text_message(
                 True,
                 f"Áudio transcrito e salvo em {saved_count} observações do relatório.",
             )
-        return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_revisao_texto_atualizado_message()
 
     if state == "aguardando_remocao_observacao":
         observacoes = visitas_service.observacoes_gerais_lista(open_visit)
@@ -2089,13 +2120,13 @@ def handle_visitas_text_message(
             observacoes.pop(index)
             visitas_service.substituir_observacoes_gerais(open_visit["id"], observacoes)
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-            return True, _visita_resumo_final_message(open_visit["id"])
+            return True, _visita_revisao_texto_atualizado_message()
         return True, _visita_listar_observacoes_para_remover(open_visit)
 
     if state == "aguardando_reescrita_observacoes":
         visitas_service.substituir_observacoes_gerais(open_visit["id"], text.splitlines())
         visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
-        return True, _visita_resumo_final_message(open_visit["id"])
+        return True, _visita_revisao_texto_atualizado_message()
 
     if state == "corrigindo_comentario_foto":
         if normalized_text == "0":
@@ -2208,6 +2239,8 @@ def handle_visitas_media_message(
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
         return "Nenhuma visita em andamento encontrada."
+    if _visita_state_is_text_review(open_visit):
+        return VISITA_REVIEW_MEDIA_MESSAGE
     media = visitas_service.adicionar_midia(
         open_visit["id"],
         tipo="foto" if message_type == "image" else message_type,
@@ -2242,6 +2275,8 @@ def handle_visitas_video_message(
     open_visit = _get_active_visita_for_phone(sender_phone)
     if open_visit is None:
         return VISITA_VIDEO_NO_OPEN_MESSAGE
+    if _visita_state_is_text_review(open_visit):
+        return VISITA_REVIEW_MEDIA_MESSAGE
     if not _visita_state_accepts_media(open_visit):
         return "Continue preenchendo a visita técnica atual antes de anexar vídeos."
 
@@ -2876,6 +2911,71 @@ def _visita_status_message(visita: dict) -> str:
     )
 
 
+def _start_visita_review(sender_phone: str, visita_id: int) -> str:
+    visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_revisao_final")
+    visita = visitas_service.obter_visita_completa(visita_id)
+    if visita is not None:
+        _send_visita_pdf_data(sender_phone, visita)
+    return _visita_revisao_final_message()
+
+
+def _visita_revisao_final_message() -> str:
+    return "\n".join(
+        [
+            "📄 Prévia do relatório enviada.",
+            "",
+            "Revise os dados antes de finalizar a visita.",
+            "",
+            "O que deseja fazer agora?",
+            "",
+            "1. Finalizar visita",
+            "2. Corrigir dados da propriedade",
+            "3. Corrigir descrição da visita",
+            "4. Corrigir observações",
+            "5. Gerar nova prévia",
+            "6. Voltar sem finalizar",
+            "",
+            "A visita ainda não foi finalizada.",
+        ]
+    )
+
+
+def _visita_revisao_texto_atualizado_message() -> str:
+    return "\n".join(
+        [
+            "✅ Informação atualizada.",
+            "",
+            "A prévia anterior pode estar desatualizada.",
+            "Digite \"prévia\" para gerar o relatório atualizado ou \"finalizar\" para encerrar a visita.",
+        ]
+    )
+
+
+def _visita_finalizada_message(visita: dict) -> str:
+    return "\n".join(
+        [
+            "✅ Visita finalizada com sucesso.",
+            "",
+            "O relatório foi marcado como finalizado.",
+            "",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Gerente: {visita.get('gerente') or '-'}",
+        ]
+    )
+
+
+def _visita_state_is_text_review(visita: dict) -> bool:
+    state = str(visita.get("estado_fluxo") or "")
+    return state == "aguardando_revisao_final" or state in {
+        "corrigindo_dados_propriedade",
+        "aguardando_edicao_descricao",
+        "corrigindo_observacoes",
+        "aguardando_adicao_observacao",
+        "aguardando_remocao_observacao",
+        "aguardando_reescrita_observacoes",
+    } or state.startswith("aguardando_edicao_campo:")
+
+
 def _visita_resumo_final_message(visita_id: int) -> str:
     resumo = visitas_service.obter_visita_completa(visita_id) or visitas_service.obter_visita(visita_id) or {}
     observacoes = visitas_service.observacoes_gerais_lista(resumo)
@@ -2939,8 +3039,9 @@ def _visita_corrigir_dados_message() -> str:
             "3 - Telefone do proprietário",
             "4 - Gerente/responsável local",
             "5 - Telefone do gerente",
-            "6 - Tamanho total da fazenda/propriedade",
-            "7 - Voltar",
+            "6 - Localização da fazenda/propriedade",
+            "7 - Tamanho total da fazenda/propriedade",
+            "8 - Voltar",
         ]
     )
 
