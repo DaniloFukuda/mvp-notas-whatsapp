@@ -570,6 +570,214 @@ def test_visita_revisao_final_apaga_foto_com_confirmacao_e_pdf_atualizado():
         api_whatsapp.visita_active_states.clear()
 
 
+def test_visita_revisao_final_envia_menu_interativo_e_parser_list_reply(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+            sent_lists = []
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_whatsapp_list_message",
+                lambda **kwargs: sent_lists.append(kwargs),
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            api_whatsapp._send_rdv_reply(sender, "fechar visita", reply)
+            rows = sent_lists[0]["sections"][0]["rows"]
+            command = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "list_reply": {
+                            "id": "visita_revisao_apagar_foto",
+                            "title": "Apagar foto",
+                        }
+                    },
+                }
+            )
+
+            assert sent_lists[0]["header"] == "Revisar visita"
+            assert [row["title"] for row in rows] == [
+                "Finalizar visita",
+                "Corrigir dados",
+                "Corrigir descrição",
+                "Corrigir observações",
+                "Gerar nova prévia",
+                "Apagar foto",
+                "Apagar vídeo",
+                "Voltar sem finalizar",
+            ]
+            assert command == "6"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_final_menu_interativo_fallback_textual(monkeypatch):
+    sent_texts = []
+    monkeypatch.setattr(
+        api_whatsapp,
+        "send_whatsapp_list_message",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("Meta recusou")),
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "send_whatsapp_text",
+        lambda to, message: sent_texts.append((to, message)),
+    )
+
+    reply = api_whatsapp._visita_revisao_final_message()
+    api_whatsapp._send_rdv_reply("5500000000001", "fechar visita", reply)
+
+    assert sent_texts == [("5500000000001", reply)]
+
+
+def test_visita_apagar_foto_usa_botoes_e_confirma_sim_por_interactive(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            foto1 = visitas.adicionar_midia(visita["id"], "foto", caminho_arquivo=str(Path(temp_dir) / "foto-1.jpg"))
+            foto2 = visitas.adicionar_midia(visita["id"], "foto", caminho_arquivo=str(Path(temp_dir) / "foto-2.jpg"))
+            visitas.salvar_comentario_foto(foto1["id"], "Foto mantida")
+            visitas.salvar_comentario_foto(foto2["id"], "Foto removida")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+            sent_buttons = []
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_whatsapp_button_message",
+                lambda **kwargs: sent_buttons.append(kwargs),
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            list_reply = api_whatsapp.handle_rdv_text_message(sender, "6")
+            api_whatsapp._send_rdv_reply(sender, "6", list_reply)
+            choose_command = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "button_reply": {
+                            "id": "visita_apagar_foto_2",
+                            "title": "Foto 2",
+                        }
+                    },
+                }
+            )
+            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, choose_command)
+            api_whatsapp._send_rdv_reply(sender, choose_command, confirm_reply)
+            yes_command = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "button_reply": {
+                            "id": "visita_confirmar_apagar_midia_sim",
+                            "title": "Sim",
+                        }
+                    },
+                }
+            )
+            removed = api_whatsapp.handle_rdv_text_message(sender, yes_command)
+            saved = visitas.obter_visita_completa(visita["id"])
+
+            assert [button["title"] for button in sent_buttons[0]["buttons"]] == ["Foto 1", "Foto 2", "Cancelar"]
+            assert [button["title"] for button in sent_buttons[1]["buttons"]] == ["Sim", "Não"]
+            assert "Foto 2 removida da visita" in removed
+            assert len(saved["midias"]) == 1
+            assert saved["midias"][0]["comentario"] == "Foto mantida"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_apagar_video_usa_lista_e_confirma_nao_por_interactive(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            for index in range(1, 4):
+                video = visitas.adicionar_midia(
+                    visita["id"],
+                    "video",
+                    storage_key=f"visitas/2026/07/08/1/videos/video-{index}.mp4",
+                    public_url=f"https://cdn.example/video-{index}.mp4",
+                    tamanho_bytes=1024 * index,
+                    mime_type="video/mp4",
+                )
+                visitas.salvar_comentario_midia(video["id"], f"Legenda {index}")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+            sent_lists = []
+            sent_buttons = []
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_whatsapp_list_message",
+                lambda **kwargs: sent_lists.append(kwargs),
+            )
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_whatsapp_button_message",
+                lambda **kwargs: sent_buttons.append(kwargs),
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            list_reply = api_whatsapp.handle_rdv_text_message(sender, "7")
+            api_whatsapp._send_rdv_reply(sender, "7", list_reply)
+            choose_command = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "list_reply": {
+                            "id": "visita_apagar_video_2",
+                            "title": "Vídeo 2",
+                        }
+                    },
+                }
+            )
+            confirm_reply = api_whatsapp.handle_rdv_text_message(sender, choose_command)
+            api_whatsapp._send_rdv_reply(sender, choose_command, confirm_reply)
+            no_command = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "button_reply": {
+                            "id": "visita_confirmar_apagar_midia_nao",
+                            "title": "Não",
+                        }
+                    },
+                }
+            )
+            denied = api_whatsapp.handle_rdv_text_message(sender, no_command)
+            saved = visitas.obter_visita_completa(visita["id"])
+
+            rows = sent_lists[0]["sections"][0]["rows"]
+            assert [row["title"] for row in rows] == ["Vídeo 1", "Vídeo 2", "Vídeo 3", "Cancelar"]
+            assert [button["title"] for button in sent_buttons[0]["buttons"]] == ["Sim", "Não"]
+            assert "A visita ainda" in denied
+            assert len(saved["midias"]) == 3
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
 def test_visita_revisao_final_apaga_video_com_confirmacao_storage_e_pdf_atualizado(monkeypatch):
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service

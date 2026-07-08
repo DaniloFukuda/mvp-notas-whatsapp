@@ -380,6 +380,18 @@ INTERACTIVE_COMMAND_IDS = {
     "cancel_action": "menu",
     "confirm_visit_close": "confirmar",
     "cancel_visit_review": "cancelar",
+    "visita_revisao_finalizar": "1",
+    "visita_revisao_corrigir_dados": "2",
+    "visita_revisao_corrigir_descricao": "3",
+    "visita_revisao_corrigir_observacoes": "4",
+    "visita_revisao_previa": "5",
+    "visita_revisao_apagar_foto": "6",
+    "visita_revisao_apagar_video": "7",
+    "visita_revisao_voltar": "8",
+    "visita_apagar_foto_cancelar": "cancelar",
+    "visita_apagar_video_cancelar": "cancelar",
+    "visita_confirmar_apagar_midia_sim": "sim",
+    "visita_confirmar_apagar_midia_nao": "nao",
 }
 INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
 MAIN_MENU_MESSAGE = "\n".join(
@@ -826,6 +838,40 @@ def send_reports_menu_interactive(to: str) -> None:
         button_text="Ver relatorios",
         sections=report_menu_sections(),
         fallback_text=REPORTS_MENU_MESSAGE,
+    )
+
+
+def send_visita_review_menu_interactive(to: str, fallback_text: str | None = None) -> None:
+    send_whatsapp_list_message(
+        to=to,
+        header="Revisar visita",
+        body="\n".join(
+            [
+                "Prévia do relatório enviada.",
+                "",
+                "Revise os dados antes de finalizar a visita.",
+                "Você ainda pode corrigir informações ou enviar mais fotos, vídeos e localização antes de finalizar.",
+                "",
+                "O que deseja fazer agora?",
+            ]
+        ),
+        button_text="Revisar visita",
+        sections=[
+            {
+                "title": "Revisão final",
+                "rows": [
+                    {"id": "visita_revisao_finalizar", "title": "Finalizar visita"},
+                    {"id": "visita_revisao_corrigir_dados", "title": "Corrigir dados"},
+                    {"id": "visita_revisao_corrigir_descricao", "title": "Corrigir descrição"},
+                    {"id": "visita_revisao_corrigir_observacoes", "title": "Corrigir observações"},
+                    {"id": "visita_revisao_previa", "title": "Gerar nova prévia"},
+                    {"id": "visita_revisao_apagar_foto", "title": "Apagar foto"},
+                    {"id": "visita_revisao_apagar_video", "title": "Apagar vídeo"},
+                    {"id": "visita_revisao_voltar", "title": "Voltar sem finalizar"},
+                ],
+            },
+        ],
+        fallback_text=fallback_text or _visita_revisao_final_message(),
     )
 
 
@@ -3276,6 +3322,87 @@ def _visita_delete_media_list_message(visita_id: int, media_type: str, invalid: 
     return "\n".join(lines)
 
 
+def _send_visita_delete_media_choice_interactive(
+    to: str,
+    visita_id: int,
+    media_type: str,
+    fallback_text: str,
+) -> None:
+    medias = _visita_numbered_media(visita_id, media_type)
+    if not medias:
+        _safe_send_text(to, fallback_text)
+        return
+
+    body = _visita_delete_media_choice_body(visita_id, media_type)
+    if len(medias) <= 2:
+        buttons = [
+            {
+                "id": f"visita_apagar_{media_type}_{int(media.get('numero_relatorio') or 1)}",
+                "title": f"{'Foto' if media_type == 'foto' else 'Vídeo'} {int(media.get('numero_relatorio') or 1)}",
+            }
+            for media in medias
+        ]
+        buttons.append({"id": f"visita_apagar_{media_type}_cancelar", "title": "Cancelar"})
+        send_whatsapp_button_message(to=to, body=body, buttons=buttons)
+        return
+
+    rows = [
+        {
+            "id": f"visita_apagar_{media_type}_{int(media.get('numero_relatorio') or 1)}",
+            "title": f"{'Foto' if media_type == 'foto' else 'Vídeo'} {int(media.get('numero_relatorio') or 1)}",
+            "description": _visita_media_short_description(media),
+        }
+        for media in medias
+    ]
+    rows.append(
+        {
+            "id": f"visita_apagar_{media_type}_cancelar",
+            "title": "Cancelar",
+            "description": "Voltar para a revisão",
+        }
+    )
+    send_whatsapp_list_message(
+        to=to,
+        header="Apagar foto" if media_type == "foto" else "Apagar vídeo",
+        body=body,
+        button_text="Escolher",
+        sections=[{"title": "Mídias da visita", "rows": rows}],
+        fallback_text=fallback_text,
+    )
+
+
+def _visita_delete_media_choice_body(visita_id: int, media_type: str) -> str:
+    text = _visita_delete_media_list_message(visita_id, media_type)
+    marker = "Responda com o n"
+    if marker in text:
+        text = text.split(marker, 1)[0].rstrip()
+    return "\n".join(
+        [
+            text,
+            "",
+            f"Escolha qual {'foto' if media_type == 'foto' else 'vídeo'} deseja apagar.",
+        ]
+    )
+
+
+def _visita_media_short_description(media: dict) -> str:
+    comment = str(media.get("comentario") or media.get("legenda") or "Sem comentário informado.").strip()
+    if len(comment) > 68:
+        return comment[:65].rstrip() + "..."
+    return comment
+
+
+def _send_visita_delete_confirmation_buttons(to: str, fallback_text: str) -> None:
+    send_whatsapp_button_message(
+        to=to,
+        body=fallback_text,
+        buttons=[
+            {"id": "visita_confirmar_apagar_midia_sim", "title": "Sim"},
+            {"id": "visita_confirmar_apagar_midia_nao", "title": "Não"},
+        ],
+    )
+
+
 def _visita_numbered_media(visita_id: int, media_type: str) -> list[dict]:
     medias = visitas_service.listar_midias_por_tipo(visita_id, media_type)
     numbered = []
@@ -4490,6 +4617,9 @@ def _extract_interactive_command(message: dict) -> str:
     reply_id = _extract_interactive_reply_id(message)
     if reply_id in INTERACTIVE_COMMAND_IDS:
         return INTERACTIVE_COMMAND_IDS[reply_id]
+    dynamic_command = _interactive_visit_command(reply_id)
+    if dynamic_command:
+        return dynamic_command
 
     interactive = message.get("interactive") or {}
     if not isinstance(interactive, dict):
@@ -4499,6 +4629,13 @@ def _extract_interactive_command(message: dict) -> str:
         return ""
     title = str(reply.get("title") or "").strip()
     return title
+
+
+def _interactive_visit_command(reply_id: str) -> str:
+    match = re.fullmatch(r"visita_apagar_(foto|video)_(\d+)", str(reply_id or "").strip())
+    if match:
+        return match.group(2)
+    return ""
 
 
 def _extract_interactive_reply_id(message: dict) -> str:
@@ -4882,6 +5019,34 @@ def _send_rdv_reply(to: str, command_text: str, reply: str) -> None:
         if normalized == "relatorios" and reply == REPORTS_MENU_MESSAGE:
             send_reports_menu_interactive(to)
             return
+        if reply == _visita_revisao_final_message():
+            send_visita_review_menu_interactive(to, fallback_text=reply)
+            return
+        open_visit = visitas_service.obter_visita_aberta(to)
+        if open_visit is not None:
+            state = str(open_visit.get("estado_fluxo") or "")
+            if state == "aguardando_exclusao_foto":
+                _send_visita_delete_media_choice_interactive(
+                    to,
+                    int(open_visit["id"]),
+                    "foto",
+                    fallback_text=reply,
+                )
+                return
+            if state == "aguardando_exclusao_video":
+                _send_visita_delete_media_choice_interactive(
+                    to,
+                    int(open_visit["id"]),
+                    "video",
+                    fallback_text=reply,
+                )
+                return
+            if (
+                state.startswith("aguardando_confirmacao_exclusao_foto:")
+                or state.startswith("aguardando_confirmacao_exclusao_video:")
+            ):
+                _send_visita_delete_confirmation_buttons(to, fallback_text=reply)
+                return
         if normalized in KM_CLEAR_REQUEST_COMMANDS and reply == KM_CLEAR_WARNING:
             send_confirmation_buttons(
                 to,
