@@ -133,3 +133,22 @@ def test_historico_edicao_registra_alteracao():
         assert edicoes[0]["valor_anterior"] == "Marcos"
         assert edicoes[0]["valor_novo"] == "Marcos Silva"
         assert edicoes[0]["telefone_editor"] == "5500000000002"
+
+
+def test_remover_midia_remove_apenas_da_visita_e_retorna_metadados():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001")
+        outra = service.iniciar_visita("5500000000002")
+        foto = service.adicionar_midia(
+            visita["id"],
+            "foto",
+            caminho_arquivo=str(Path(temp_dir) / "foto-1.jpg"),
+        )
+        service.adicionar_midia(outra["id"], "foto", caminho_arquivo="outra.jpg")
+
+        removed = service.remover_midia(visita["id"], foto["id"])
+
+        assert removed["id"] == foto["id"]
+        assert service.listar_midias_por_tipo(visita["id"], "foto") == []
+        assert len(service.listar_midias_por_tipo(outra["id"], "foto")) == 1

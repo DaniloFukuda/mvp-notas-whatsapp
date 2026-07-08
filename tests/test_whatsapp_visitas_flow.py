@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 
 from openpyxl import load_workbook
+from pypdf import PdfReader
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,11 @@ def _install_services(temp_dir):
     api_whatsapp.visita_new_visit_states.clear()
     collaborator = rdv.get_collaborator_by_phone("5500000000001")
     return rdv, visitas, collaborator["telefone_whatsapp"]
+
+
+def _extract_pdf_text(content):
+    reader = PdfReader(BytesIO(content))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
 def test_visita_iniciar_fluxo():
@@ -498,6 +504,164 @@ def test_visita_revisao_final_aceita_foto_e_comentario_sem_finalizar():
         api_whatsapp.send_whatsapp_document = original_sender
         api_whatsapp.visita_active_states.clear()
         api_whatsapp.visita_new_visit_states.clear()
+
+
+def test_visita_revisao_final_apaga_foto_com_confirmacao_e_pdf_atualizado():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            foto1_path = Path(temp_dir) / "foto-1.jpg"
+            foto2_path = Path(temp_dir) / "foto-2.jpg"
+            foto1_path.write_bytes(b"foto-1")
+            foto2_path.write_bytes(b"foto-2")
+            foto1 = visitas.adicionar_midia(visita["id"], "foto", caminho_arquivo=str(foto1_path))
+            foto2 = visitas.adicionar_midia(visita["id"], "foto", caminho_arquivo=str(foto2_path))
+            visitas.salvar_comentario_foto(foto1["id"], "Comentario foto mantida")
+            visitas.salvar_comentario_foto(foto2["id"], "Comentario foto removida")
+            sent = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+
+            menu = api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            first_list = api_whatsapp.handle_rdv_text_message(sender, "6")
+            invalid = api_whatsapp.handle_rdv_text_message(sender, "9")
+            canceled = api_whatsapp.handle_rdv_text_message(sender, "cancelar")
+            api_whatsapp.handle_rdv_text_message(sender, "apagar foto")
+            confirm_prompt = api_whatsapp.handle_rdv_text_message(sender, "2")
+            denied = api_whatsapp.handle_rdv_text_message(sender, "2")
+            api_whatsapp.handle_rdv_text_message(sender, "apagar foto")
+            api_whatsapp.handle_rdv_text_message(sender, "2")
+            removed = api_whatsapp.handle_rdv_text_message(sender, "1")
+            preview = api_whatsapp.handle_rdv_text_message(sender, "5")
+            saved = visitas.obter_visita_completa(visita["id"])
+            pdf_text = _extract_pdf_text(sent[-1][4])
+
+            assert "6. Apagar foto" in menu
+            assert "7. Apagar v" in menu
+            assert "Fotos da visita" in first_list
+            assert "Comentario foto removida" in first_list
+            assert "Número inválido" in invalid
+            assert "A visita ainda não foi finalizada" in canceled
+            assert "Deseja apagar a Foto 2" in confirm_prompt
+            assert "A visita ainda não foi finalizada" in denied
+            assert "Foto 2 removida da visita" in removed
+            assert "prévia anterior pode estar desatualizada" in removed
+            assert "relat" in preview
+            assert len(saved["midias"]) == 1
+            assert saved["midias"][0]["comentario"] == "Comentario foto mantida"
+            assert foto1_path.exists()
+            assert not foto2_path.exists()
+            assert "Quantidade de fotos" in pdf_text
+            assert "1" in pdf_text
+            assert "Comentario foto mantida" in pdf_text
+            assert "Comentario foto removida" not in pdf_text
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_final_apaga_video_com_confirmacao_storage_e_pdf_atualizado(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            video1 = visitas.adicionar_midia(
+                visita["id"],
+                "video",
+                storage_key="visitas/2026/07/08/1/videos/video-1.mp4",
+                public_url="https://cdn.example/video-1.mp4",
+                tamanho_bytes=2048,
+                mime_type="video/mp4",
+            )
+            video2 = visitas.adicionar_midia(
+                visita["id"],
+                "video",
+                storage_key="visitas/2026/07/08/1/videos/video-2.mp4",
+                public_url="https://cdn.example/video-2.mp4",
+                tamanho_bytes=4096,
+                mime_type="video/mp4",
+            )
+            visitas.salvar_comentario_midia(video1["id"], "Legenda mantida")
+            visitas.salvar_comentario_midia(video2["id"], "Legenda removida")
+            sent = []
+            deleted_keys = []
+            api_whatsapp.send_whatsapp_document = (
+                lambda to, content, filename, caption, mime_type: sent.append(
+                    (to, filename, caption, mime_type, content)
+                )
+            )
+            monkeypatch.setattr(
+                api_whatsapp,
+                "delete_storage_file",
+                lambda storage_key: deleted_keys.append(storage_key),
+            )
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            listed = api_whatsapp.handle_rdv_text_message(sender, "7")
+            confirm_prompt = api_whatsapp.handle_rdv_text_message(sender, "2")
+            removed = api_whatsapp.handle_rdv_text_message(sender, "sim")
+            api_whatsapp.handle_rdv_text_message(sender, "previa")
+            saved = visitas.obter_visita_completa(visita["id"])
+            pdf_text = _extract_pdf_text(sent[-1][4])
+
+            assert "V" in listed
+            assert "Legenda removida" in listed
+            assert "Deseja apagar a V" in confirm_prompt
+            assert "2" in confirm_prompt
+            assert "removido da visita" in removed
+            assert deleted_keys == ["visitas/2026/07/08/1/videos/video-2.mp4"]
+            assert len(saved["midias"]) == 1
+            assert saved["midias"][0]["comentario"] == "Legenda mantida"
+            assert "Quantidade de v" in pdf_text
+            assert "Legenda mantida" in pdf_text
+            assert "Legenda removida" not in pdf_text
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_visita_revisao_final_mensagens_sem_midia_e_bloqueia_finalizada():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_sender = api_whatsapp.send_whatsapp_document
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            api_whatsapp.send_whatsapp_document = lambda *args, **kwargs: None
+
+            api_whatsapp.handle_rdv_text_message(sender, "fechar visita")
+            no_photo = api_whatsapp.handle_rdv_text_message(sender, "6")
+            no_video = api_whatsapp.handle_rdv_text_message(sender, "7")
+            api_whatsapp.handle_rdv_text_message(sender, "1")
+            blocked = api_whatsapp.handle_rdv_text_message(sender, "apagar foto")
+
+            assert "não possui fotos" in no_photo
+            assert "não possui v" in no_video
+            assert "já foi finalizada" in blocked
+            assert "Não é possível apagar mídias" in blocked
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
 
 
 def test_cancelar_visita_limpa_estado_ativo():

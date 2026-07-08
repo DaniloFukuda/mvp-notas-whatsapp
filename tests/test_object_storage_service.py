@@ -135,6 +135,25 @@ def test_upload_returns_metadata(monkeypatch, tmp_path):
     assert result["content_type"] == "text/plain"
 
 
+def test_delete_file_removes_object_by_storage_key(monkeypatch):
+    _set_spaces_env(monkeypatch)
+    fake_boto3 = _FakeBoto3()
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+
+    result = object_storage_service.delete_file("/visitas/2026/07/08/31/videos/video.mp4")
+
+    assert result == {
+        "bucket": "lucre-agro-midias",
+        "storage_key": "visitas/2026/07/08/31/videos/video.mp4",
+    }
+    assert fake_boto3.created_client.deletes == [
+        {
+            "bucket": "lucre-agro-midias",
+            "key": "visitas/2026/07/08/31/videos/video.mp4",
+        }
+    ]
+
+
 class _FakeBoto3:
     def __init__(self):
         self.client_calls = []
@@ -154,6 +173,7 @@ class _FailingBoto3:
 class _FakeS3Client:
     def __init__(self):
         self.uploads = []
+        self.deletes = []
 
     def upload_fileobj(self, file_obj, bucket, key, ExtraArgs=None):
         self.uploads.append(
@@ -164,3 +184,6 @@ class _FakeS3Client:
                 "extra_args": ExtraArgs,
             }
         )
+
+    def delete_object(self, Bucket, Key):
+        self.deletes.append({"bucket": Bucket, "key": Key})

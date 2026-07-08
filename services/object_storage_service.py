@@ -98,6 +98,21 @@ def upload_file(
     }
 
 
+def delete_file(storage_key: str) -> dict:
+    config = get_spaces_config()
+    if not config.enabled:
+        raise ObjectStorageError("DigitalOcean Spaces desabilitado.")
+    _validate_enabled_config(config)
+
+    safe_key = str(storage_key or "").strip().lstrip("/")
+    if not safe_key:
+        raise ObjectStorageError("storage_key e obrigatorio para remover do Spaces.")
+
+    client = create_spaces_client(config)
+    client.delete_object(Bucket=config.bucket, Key=safe_key)
+    return {"bucket": config.bucket, "storage_key": safe_key}
+
+
 def _validate_enabled_config(config: SpacesConfig) -> None:
     if not config.enabled:
         raise ObjectStorageError("DigitalOcean Spaces nao esta habilitado.")

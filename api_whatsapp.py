@@ -63,6 +63,7 @@ from services.visita_media_service import (
     video_max_per_visita,
     video_max_seconds,
 )
+from services.object_storage_service import ObjectStorageError, delete_file as delete_storage_file
 from services.visita_report_commands import parse_visit_report_command
 from services.visita_validation import (
     split_visit_observation,
@@ -281,7 +282,7 @@ VISITA_REVIEW_FINALIZE_COMMANDS = {
     "concluir visita",
 }
 VISITA_REVIEW_PREVIEW_COMMANDS = {
-    "6",
+    "5",
     "previa",
     "previa relatorio",
     "gerar previa",
@@ -290,8 +291,21 @@ VISITA_REVIEW_PREVIEW_COMMANDS = {
     "relatorio visita",
     "relatorio da visita",
 }
-VISITA_REVIEW_MEDIA_OPTION_COMMANDS = {"5", "midia", "midias", "foto", "video", "localizacao"}
-VISITA_REVIEW_BACK_COMMANDS = {"7", "voltar", "voltar sem finalizar"}
+VISITA_REVIEW_MEDIA_OPTION_COMMANDS = {
+    "midia",
+    "midias",
+    "enviar midia",
+    "enviar midias",
+    "enviar foto",
+    "enviar video",
+    "localizacao",
+}
+VISITA_REVIEW_DELETE_PHOTO_COMMANDS = {"6", "apagar foto", "excluir foto", "remover foto"}
+VISITA_REVIEW_DELETE_VIDEO_COMMANDS = {"7", "apagar video", "apagar vídeo", "excluir video", "excluir vídeo", "remover video", "remover vídeo"}
+VISITA_REVIEW_BACK_COMMANDS = {"8", "voltar", "voltar sem finalizar"}
+VISITA_REVIEW_CANCEL_COMMANDS = {"cancelar", "voltar"}
+VISITA_REVIEW_CONFIRM_DELETE_COMMANDS = {"1", "sim", "s", "confirmar"}
+VISITA_REVIEW_DENY_DELETE_COMMANDS = {"2", "nao", "não", "n", "cancelar"}
 VISITA_REVIEW_MEDIA_GUIDANCE_MESSAGE = "\n".join(
     [
         "Envie a foto, o vídeo ou a localização agora.",
@@ -1969,15 +1983,33 @@ def handle_visitas_text_message(
         _clear_active_visita(sender_phone, open_visit["id"])
         return True, "Visita cancelada com sucesso."
 
+    if normalized_text in VISITA_REVIEW_DELETE_PHOTO_COMMANDS or normalized_text in VISITA_REVIEW_DELETE_VIDEO_COMMANDS:
+        closed_message = _visita_finalizada_delete_media_message_if_applicable(sender_phone)
+        if closed_message:
+            return True, closed_message
+
     if open_visit is None:
         return False, None
+
+    state = str(open_visit.get("estado_fluxo") or "")
+    if state in {"aguardando_exclusao_foto", "aguardando_exclusao_video"} and normalized_text in VISITA_REVIEW_CANCEL_COMMANDS:
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_revisao_final_message()
+    if (
+        (
+            state.startswith("aguardando_confirmacao_exclusao_foto:")
+            or state.startswith("aguardando_confirmacao_exclusao_video:")
+        )
+        and normalized_text in VISITA_REVIEW_DENY_DELETE_COMMANDS
+    ):
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        return True, _visita_revisao_final_message()
 
     if normalized_text in {"cancelar", "sair"}:
         visitas_service.cancelar_visita(open_visit["id"])
         _clear_active_visita(sender_phone, open_visit["id"])
         return True, "Visita cancelada com sucesso."
 
-    state = str(open_visit.get("estado_fluxo") or "")
     if state.startswith("aguardando_legenda_video:") or state.startswith("aguardando_legenda_video_revisao:"):
         review_mode = state.startswith("aguardando_legenda_video_revisao:")
         pending = visitas_service.proximo_video_pendente(open_visit["id"])
@@ -2096,6 +2128,10 @@ def handle_visitas_text_message(
         if normalized_text == "4":
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "corrigindo_observacoes")
             return True, _visita_corrigir_observacoes_message()
+        if normalized_text in VISITA_REVIEW_DELETE_PHOTO_COMMANDS:
+            return True, _start_visita_media_delete(open_visit, "foto")
+        if normalized_text in VISITA_REVIEW_DELETE_VIDEO_COMMANDS:
+            return True, _start_visita_media_delete(open_visit, "video")
         if normalized_text in VISITA_REVIEW_MEDIA_OPTION_COMMANDS:
             return True, VISITA_REVIEW_MEDIA_GUIDANCE_MESSAGE
         if normalized_text in VISITA_REVIEW_PREVIEW_COMMANDS:
@@ -2104,6 +2140,59 @@ def handle_visitas_text_message(
             visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "visita_aberta")
             return True, "Visita continua aberta. Envie ajustes, fotos, vídeos, observações ou \"fechar visita\" para revisar novamente."
         return True, _visita_revisao_final_message()
+
+    if state in {"aguardando_exclusao_foto", "aguardando_exclusao_video"}:
+        media_type = "foto" if state.endswith("foto") else "video"
+        if normalized_text in VISITA_REVIEW_CANCEL_COMMANDS:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_revisao_final_message()
+        media = _visita_media_by_current_number(open_visit["id"], media_type, normalized_text)
+        if media is None:
+            return True, _visita_delete_media_list_message(open_visit["id"], media_type, invalid=True)
+        index = int(media.get("numero_relatorio") or 1)
+        visitas_service.atualizar_campo(
+            open_visit["id"],
+            "estado_fluxo",
+            f"aguardando_confirmacao_exclusao_{media_type}:{media['id']}:{index}",
+        )
+        label = "Foto" if media_type == "foto" else "Vídeo"
+        return True, "\n".join([f"Deseja apagar a {label} {index} da visita?", "", "1. Sim", "2. Não"])
+
+    if state.startswith("aguardando_confirmacao_exclusao_foto:") or state.startswith("aguardando_confirmacao_exclusao_video:"):
+        media_type = "foto" if state.startswith("aguardando_confirmacao_exclusao_foto:") else "video"
+        if normalized_text in VISITA_REVIEW_DENY_DELETE_COMMANDS:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_revisao_final_message()
+        if normalized_text not in VISITA_REVIEW_CONFIRM_DELETE_COMMANDS:
+            parts = state.rsplit(":", 2)
+            index = parts[-1] if len(parts) >= 3 else "1"
+            label = "Foto" if media_type == "foto" else "Vídeo"
+            return True, "\n".join([f"Deseja apagar a {label} {index} da visita?", "", "1. Sim", "2. Não"])
+        try:
+            _, media_id_text, index_text = state.rsplit(":", 2)
+            media_id = int(media_id_text)
+            index = int(index_text)
+        except ValueError:
+            visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+            return True, _visita_revisao_final_message()
+        removed = _delete_visita_media(open_visit, media_id)
+        visitas_service.atualizar_campo(open_visit["id"], "estado_fluxo", "aguardando_revisao_final")
+        if removed is None:
+            return True, _visita_delete_media_list_message(open_visit["id"], media_type, invalid=True)
+        label = "Foto" if media_type == "foto" else "Vídeo"
+        title = (
+            f"âœ… {label} {index} removida da visita."
+            if media_type == "foto"
+            else f"âœ… {label} {index} removido da visita."
+        )
+        return True, "\n".join(
+            [
+                title,
+                "",
+                "A prévia anterior pode estar desatualizada.",
+                "Digite \"prévia\" ou escolha \"Gerar nova prévia\" para ver o relatório atualizado.",
+            ]
+        )
 
     if state == "corrigindo_dados_propriedade":
         fields = {
@@ -3073,6 +3162,31 @@ def _start_visita_review(sender_phone: str, visita_id: int) -> str:
 
 
 def _visita_revisao_final_message() -> str:
+    menu_lines = [
+        "1. Finalizar visita",
+        "2. Corrigir dados da propriedade",
+        "3. Corrigir descrição da visita",
+        "4. Corrigir observações",
+        "5. Gerar nova prévia",
+        "6. Apagar foto",
+        "7. Apagar vídeo",
+        "8. Voltar sem finalizar",
+    ]
+    return "\n".join(
+        [
+            "📄 Prévia do relatório enviada.",
+            "",
+            "Revise os dados antes de finalizar a visita.",
+            "",
+            "Você ainda pode corrigir informações ou enviar mais fotos, vídeos e localização antes de finalizar.",
+            "",
+            "O que deseja fazer agora?",
+            "",
+            *menu_lines,
+            "",
+            "A visita ainda não foi finalizada.",
+        ]
+    )
     return "\n".join(
         [
             "📄 Prévia do relatório enviada.",
@@ -3120,10 +3234,123 @@ def _visita_midia_atualizada_message(title: str) -> str:
     return "\n\n".join([title, _visita_preview_outdated_hint()])
 
 
+def _start_visita_media_delete(visita: dict, media_type: str) -> str:
+    if str(visita.get("status") or "") == "fechada":
+        return "Esta visita já foi finalizada. Não é possível apagar mídias."
+    visita_id = int(visita["id"])
+    medias = _visita_numbered_media(visita_id, media_type)
+    if not medias:
+        noun = "fotos" if media_type == "foto" else "vídeos"
+        return f"Esta visita ainda não possui {noun} para apagar."
+    visitas_service.atualizar_campo(visita_id, "estado_fluxo", f"aguardando_exclusao_{media_type}")
+    return _visita_delete_media_list_message(visita_id, media_type)
+
+
+def _visita_delete_media_list_message(visita_id: int, media_type: str, invalid: bool = False) -> str:
+    medias = _visita_numbered_media(visita_id, media_type)
+    if not medias:
+        noun = "fotos" if media_type == "foto" else "vídeos"
+        return f"Esta visita ainda não possui {noun} para apagar."
+    title = "Fotos da visita:" if media_type == "foto" else "Vídeos da visita:"
+    label = "foto" if media_type == "foto" else "vídeo"
+    lines = []
+    if invalid:
+        lines.extend(["Número inválido. Responda com um número válido.", ""])
+    lines.extend([title])
+    for media in medias:
+        number = int(media.get("numero_relatorio") or 1)
+        comment = media.get("comentario") or media.get("legenda") or "Sem comentário informado."
+        prefix = f"{number}. {'Foto' if media_type == 'foto' else 'Vídeo'} {number}"
+        if comment == "Sem comentário informado.":
+            detail = comment
+        else:
+            detail_name = "comentário" if media_type == "foto" else "legenda"
+            detail = f"{detail_name}: {comment}"
+        file_name = Path(str(media.get("caminho_arquivo") or "")).name
+        if file_name:
+            detail = f"{detail} ({file_name})"
+        elif media_type == "video" and media.get("tamanho_bytes") not in (None, ""):
+            detail = f"{detail} ({_format_visita_media_size(media.get('tamanho_bytes'))})"
+        lines.append(f"{prefix} â€” {detail}")
+    lines.extend(["", f"Responda com o número da {label} que deseja apagar.", "Digite \"cancelar\" para voltar à revisão."])
+    return "\n".join(lines)
+
+
+def _visita_numbered_media(visita_id: int, media_type: str) -> list[dict]:
+    medias = visitas_service.listar_midias_por_tipo(visita_id, media_type)
+    numbered = []
+    for index, media in enumerate(medias, start=1):
+        item = dict(media)
+        item["numero_relatorio"] = index
+        numbered.append(item)
+    return numbered
+
+
+def _visita_media_by_current_number(visita_id: int, media_type: str, value: str) -> dict | None:
+    try:
+        selected = int(str(value or "").strip())
+    except ValueError:
+        return None
+    if selected < 1:
+        return None
+    for media in _visita_numbered_media(visita_id, media_type):
+        if int(media.get("numero_relatorio") or 0) == selected:
+            return media
+    return None
+
+
+def _delete_visita_media(visita: dict, media_id: int) -> dict | None:
+    if str(visita.get("status") or "") == "fechada":
+        return None
+    visita_id = int(visita["id"])
+    media = visitas_service.obter_midia(media_id)
+    if media is None or int(media.get("visita_id") or 0) != visita_id:
+        return None
+    removed = visitas_service.remover_midia(visita_id, media_id)
+    if removed is None:
+        return None
+    _cleanup_removed_visita_media(removed)
+    return removed
+
+
+def _cleanup_removed_visita_media(media: dict) -> None:
+    local_path = Path(str(media.get("caminho_arquivo") or "").strip())
+    if str(local_path) not in {"", "."} and local_path.is_file():
+        try:
+            local_path.unlink()
+        except OSError as exc:
+            logger.warning("Nao foi possivel remover arquivo local da visita: arquivo=%s erro=%s", local_path, exc)
+    storage_key = str(media.get("storage_key") or "").strip().lstrip("/")
+    if str(media.get("tipo") or "") == "video" and storage_key.startswith("visitas/"):
+        try:
+            delete_storage_file(storage_key)
+        except (ObjectStorageError, Exception) as exc:
+            logger.warning("Nao foi possivel remover video da visita no storage: storage_key=%s erro=%s", storage_key, exc)
+
+
+def _format_visita_media_size(value: object) -> str:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 def _visita_closed_media_message_if_applicable(sender_phone: str) -> str | None:
     visita = visitas_service.obter_ultima_visita(sender_phone)
     if visita is not None and visita.get("status") == "fechada":
         return VISITA_CLOSED_MEDIA_MESSAGE
+    return None
+
+
+def _visita_finalizada_delete_media_message_if_applicable(sender_phone: str) -> str | None:
+    visita = visitas_service.obter_ultima_visita(sender_phone)
+    if visita is not None and visita.get("status") == "fechada":
+        return "Esta visita já foi finalizada. Não é possível apagar mídias."
     return None
 
 

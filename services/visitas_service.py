@@ -567,6 +567,46 @@ class VisitasTecnicasService:
             ).fetchone()
         return int((row or {"total": 0})["total"] or 0)
 
+    def listar_midias_por_tipo(self, visita_id: int, tipo: str) -> list[dict]:
+        self.ensure_schema()
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM visita_midias
+                WHERE visita_id = ? AND tipo = ?
+                ORDER BY enviado_em, id
+                """,
+                (int(visita_id), _clean(tipo)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remover_midia(self, visita_id: int, midia_id: int) -> dict | None:
+        self.ensure_schema()
+        now = _now()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM visita_midias
+                WHERE visita_id = ? AND id = ?
+                """,
+                (int(visita_id), int(midia_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            media = dict(row)
+            connection.execute(
+                "DELETE FROM visita_midias WHERE visita_id = ? AND id = ?",
+                (int(visita_id), int(midia_id)),
+            )
+            connection.execute(
+                "UPDATE visitas_tecnicas SET atualizado_em = ? WHERE id = ?",
+                (now, int(visita_id)),
+            )
+            connection.commit()
+        return media
+
     def proxima_midia_pendente(self, visita_id: int, tipo: str | None = None) -> dict | None:
         self.ensure_schema()
         type_clause = ""
