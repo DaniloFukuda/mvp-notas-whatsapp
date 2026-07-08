@@ -80,7 +80,7 @@ def upload_file(
         or "application/octet-stream"
     )
     client = create_spaces_client(config)
-    extra_args = {"ContentType": detected_content_type}
+    extra_args = {"ContentType": detected_content_type, "ACL": "public-read"}
     with path.open("rb") as file_obj:
         client.upload_fileobj(
             file_obj,

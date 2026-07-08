@@ -1,5 +1,6 @@
 import base64
 import sys
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -107,6 +108,43 @@ def test_build_visita_pdf_com_foto(tmp_path):
     text = _extract_pdf_text(content)
     assert "Registros fotográficos" in text
     assert "Talhão norte" in text
+    assert "Latitude / Longitude" not in text
+    assert "https://maps.google.com/?q=-15.0019124,-50.7714295" not in text
+
+
+def test_build_visita_pdf_foto_exibe_comentario_sem_gps_individual(tmp_path):
+    image_path = tmp_path / "talhao.png"
+    image_path.write_bytes(base64.b64decode(_ONE_PIXEL_PNG))
+
+    content = visitas_pdf_service.build_visita_pdf(
+        {
+            "id": 9,
+            "fazenda": "Fazenda Imperial",
+            "midias": [
+                {
+                    "tipo": "foto",
+                    "legenda": "Talhão norte",
+                    "comentario": "Vazamento no registro",
+                    "caminho_arquivo": str(image_path),
+                    "latitude": -15.0019124,
+                    "longitude": -50.7714295,
+                    "maps_url": "https://maps.google.com/?q=-15.0019124,-50.7714295",
+                }
+            ],
+            "latitude_principal": -15.0019124,
+            "longitude_principal": -50.7714295,
+            "maps_url_principal": "https://maps.google.com/?q=-15.0019124,-50.7714295",
+        }
+    )
+
+    text = _extract_pdf_text(content)
+    photo_section = text.split("Registros fotográficos", 1)[1]
+    assert "Comentário" in photo_section
+    assert "Vazamento no registro" in photo_section
+    assert "Latitude / Longitude" not in photo_section
+    assert "GPS" not in photo_section
+    assert "Localizações e pontos de referência" in text
+    assert "Abrir no Google Maps" in text
 
 
 def test_build_visita_pdf_com_video_public_url_separado_de_fotos(tmp_path):
@@ -168,6 +206,31 @@ def test_build_visita_pdf_com_localizacao():
     text = _extract_pdf_text(content)
     assert "Localizações e pontos de referência" in text
     assert "Abrir no Google Maps" in text
+
+
+def test_build_visita_pdf_converte_horarios_utc_para_brt(monkeypatch):
+    monkeypatch.setattr(
+        visitas_pdf_service,
+        "_now_utc",
+        lambda: datetime(2026, 7, 8, 1, 25, tzinfo=timezone.utc),
+    )
+
+    content = visitas_pdf_service.build_visita_pdf(
+        {
+            "id": 10,
+            "fazenda": "Fazenda Imperial",
+            "criado_em": "2026-07-08T01:25:00",
+            "fechado_em": "2026-07-08T02:05:00+00:00",
+            "midias": [],
+            "localizacoes": [],
+            "dados_coletados": [],
+        }
+    )
+
+    text = _extract_pdf_text(content)
+    assert "07/07/2026 22:25 BRT" in text
+    assert "07/07/2026 23:05 BRT" in text
+    assert "08/07/2026 01:25" not in text
 
 
 def test_build_visita_pdf_com_dados_coletados():

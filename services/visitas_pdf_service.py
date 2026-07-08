@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -32,11 +33,16 @@ WHITE = colors.white
 ROW_ALT = colors.HexColor("#FBFDFB")
 
 CONTENT_WIDTH = 18 * cm
+try:
+    REPORT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    REPORT_TIMEZONE = timezone(timedelta(hours=-3), name="BRT")
+REPORT_TIMEZONE_LABEL = "BRT"
 
 
 def build_visita_pdf(visita_data: dict) -> bytes:
     output = BytesIO()
-    generated_at = datetime.now().strftime("%d/%m/%Y %H:%M")
+    generated_at = _format_datetime(_now_utc())
     document = SimpleDocTemplate(
         output,
         pagesize=A4,
@@ -418,8 +424,7 @@ def _media_card(media: dict, styles: dict) -> KeepTogether:
 
     meta_rows = [
         ["Arquivo", file_name],
-        ["Latitude / Longitude", f"{_number(media.get('latitude'))} / {_number(media.get('longitude'))}"],
-        ["GPS", _maps_link(_text(media.get("maps_url")), styles, show_url=False)],
+        ["Comentário", _text(media.get("comentario")) or "Sem comentário informado."],
     ]
     body.append(_key_value_table(meta_rows, styles))
     card = Table([[body]], colWidths=[CONTENT_WIDTH], hAlign="LEFT")
@@ -691,10 +696,36 @@ def _format_date(value: object) -> str:
 
 
 def _format_datetime(value: object) -> str:
-    text = _text(value)
-    if not text:
+    parsed = _parse_datetime_as_utc(value)
+    if parsed is None:
         return "-"
-    normalized = text.replace("T", " ")
-    date_part = _format_date(normalized[:10])
-    time_part = normalized[11:16] if len(normalized) >= 16 else ""
-    return f"{date_part} {time_part}".strip()
+    local_dt = parsed.astimezone(REPORT_TIMEZONE)
+    return f"{local_dt:%d/%m/%Y %H:%M} {REPORT_TIMEZONE_LABEL}"
+
+
+def _parse_datetime_as_utc(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = _text(value)
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            normalized = text.replace("T", " ")
+            for date_format in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(normalized[:19], date_format)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)

@@ -89,9 +89,32 @@ def test_upload_sends_file_to_bucket_and_key(monkeypatch, tmp_path):
             "bucket": "lucre-agro-midias",
             "key": "tests/sample.txt",
             "content": b"sample",
-            "extra_args": {"ContentType": "text/plain"},
+            "extra_args": {"ContentType": "text/plain", "ACL": "public-read"},
         }
     ]
+
+
+def test_upload_usa_acl_publica_para_evitar_access_denied(monkeypatch, tmp_path):
+    _set_spaces_env(monkeypatch)
+    fake_boto3 = _FakeBoto3()
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    local_file = tmp_path / "video.mp4"
+    local_file.write_bytes(b"video")
+
+    result = object_storage_service.upload_file(
+        local_file,
+        "visitas/2026/07/08/31/videos/video.mp4",
+        content_type="video/mp4",
+    )
+
+    assert fake_boto3.created_client.uploads[0]["extra_args"] == {
+        "ContentType": "video/mp4",
+        "ACL": "public-read",
+    }
+    assert result["public_url"] == (
+        "https://lucre-agro-midias.sfo3.digitaloceanspaces.com/"
+        "visitas/2026/07/08/31/videos/video.mp4"
+    )
 
 
 def test_upload_returns_metadata(monkeypatch, tmp_path):

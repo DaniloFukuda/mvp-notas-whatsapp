@@ -1983,6 +1983,98 @@ def test_visita_duas_fotos_em_fila_e_bloqueia_fechamento():
         api_whatsapp.visitas_service = original_visitas
 
 
+def test_visita_duas_fotos_comentario_direto_na_primeira_e_pula_segunda():
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            first = api_whatsapp.handle_visitas_media_message(
+                sender, "image", "wamid.1", str(Path(temp_dir) / "foto1.jpg")
+            )
+            second = api_whatsapp.handle_visitas_media_message(
+                sender, "image", "wamid.2", str(Path(temp_dir) / "foto2.jpg")
+            )
+            next_reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "Vazamento no registro da Foto 1",
+            )
+            done = api_whatsapp.handle_rdv_text_message(sender, "pular")
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            assert "Foto 1 recebida" in first
+            assert "Foto 2 recebida" in second
+            assert "comentario da Foto 1" in second
+            assert "Foto 2" in next_reply
+            assert "Fotos salvas" in done
+            assert [media["comentario"] for media in saved["midias"]] == [
+                "Vazamento no registro da Foto 1",
+                "Sem comentario informado.",
+            ]
+            assert [media["comentario_status"] for media in saved["midias"]] == [
+                "resolvido",
+                "resolvido",
+            ]
+    finally:
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_fotos_em_fila_nao_disparam_fallback_generico():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_download = api_whatsapp.download_media
+    original_send_text = api_whatsapp.send_whatsapp_text
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+            sent = []
+
+            def fake_download(media_id, destino):
+                Path(destino).write_bytes(b"foto")
+                return Path(destino)
+
+            api_whatsapp.download_media = fake_download
+            api_whatsapp.send_whatsapp_text = lambda to, message: sent.append((to, message))
+
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.foto.1",
+                    "type": "image",
+                    "timestamp": "1780000000",
+                    "image": {"id": "foto-1", "mime_type": "image/jpeg"},
+                }
+            )
+            api_whatsapp._handle_whatsapp_message(
+                {
+                    "from": sender,
+                    "id": "wamid.foto.2",
+                    "type": "image",
+                    "timestamp": "1780000001",
+                    "image": {"id": "foto-2", "mime_type": "image/jpeg"},
+                }
+            )
+
+            replies = [message for _, message in sent]
+            assert len(visitas.obter_visita_completa(visita["id"])["midias"]) == 2
+            assert all(
+                "Recebi sua mensagem, mas por enquanto consigo processar apenas imagem ou documento."
+                not in reply
+                for reply in replies
+            )
+            assert any("Foto 2 recebida" in reply for reply in replies)
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.download_media = original_download
+        api_whatsapp.send_whatsapp_text = original_send_text
+        api_whatsapp.visita_active_states.clear()
+
+
 def test_visita_tres_fotos_mantem_fila_de_comentarios():
     original_visitas = api_whatsapp.visitas_service
     try:

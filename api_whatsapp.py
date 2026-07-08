@@ -1103,6 +1103,16 @@ def _handle_whatsapp_message(message: dict) -> None:
         _safe_send_text(sender_phone, reply)
         return
 
+    open_visit = visitas_service.obter_visita_aberta(sender_phone)
+    if (
+        open_visit is not None
+        and _visita_state_accepts_media(open_visit)
+        and message_type in ("image", "document")
+        and not media_id
+    ):
+        _safe_send_text(sender_phone, "Nao consegui salvar essa midia da visita. Tente enviar novamente.")
+        return
+
     if message_type not in ("image", "document") or not media_id:
         _safe_send_text(
             sender_phone,
@@ -1110,7 +1120,6 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
-    open_visit = visitas_service.obter_visita_aberta(sender_phone)
     if open_visit is not None and _visita_state_accepts_media(open_visit):
         destination = _build_media_destination(
             sender_phone=sender_phone,
@@ -2037,7 +2046,15 @@ def handle_visitas_text_message(
         if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
             visitas_service.salvar_comentario_foto(pending["id"], "Sem comentario informado.")
             return True, _visita_proxima_midia_ou_finaliza(open_visit["id"], review_mode=review_mode)
-        return True, "Responda 1 para comentar ou 2 para continuar sem comentario nesta foto."
+        validation = validate_visit_field("comentario_foto", text)
+        if not validation.ok:
+            return True, validation.error
+        visitas_service.salvar_comentario_foto(pending["id"], validation.value)
+        return True, _visita_proxima_midia_ou_finaliza(
+            open_visit["id"],
+            review_mode=review_mode,
+            resolved_message="✅ Comentário salvo.",
+        )
 
     if state in {"aguardando_texto_comentario_foto", "aguardando_texto_comentario_foto_revisao"}:
         review_mode = state.endswith("_revisao")
@@ -2530,11 +2547,10 @@ def _visita_foto_comentario_message(media: dict) -> str:
         [
             f"Foto {index} adicionada ao relatorio.",
             "",
-            "Deseja adicionar um comentario para esta foto?",
+            f"Envie o comentario da Foto {index} ou digite \"pular\".",
             "",
             "1 - Sim, quero comentar",
             "2 - Nao, continuar sem comentario",
-            "Ou digite \"pular\".",
         ]
     )
 
