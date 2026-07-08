@@ -1434,7 +1434,7 @@ def test_visita_preencher_campos():
             api_whatsapp.handle_rdv_text_message(sender, "nao informado")
             tamanho = api_whatsapp.handle_rdv_text_message(sender, "https://maps.google.com/?q=-15,-50")
             descricao = api_whatsapp.handle_rdv_text_message(sender, "500 hectares")
-            assert "tamanho total" in tamanho.lower()
+            assert "Qual a área total da fazenda?" in tamanho
             assert "Descrição da visita" in descricao
             assert "Você pode responder digitando o texto ou enviando um áudio." in descricao
             assert "o sistema fará a transcrição automaticamente." in descricao
@@ -1460,6 +1460,55 @@ def test_visita_preencher_campos():
             assert visita["area"] == "500 hectares"
             assert visita["descricao_visita"] == "Apresentacao de produtos ao cliente"
             assert "Pedido de 300T" in visita["observacoes_gerais"]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_pergunta_area_total_nao_usa_texto_antigo():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+
+            api_whatsapp.handle_rdv_text_message(sender, "visita")
+            api_whatsapp.handle_rdv_text_message(sender, "Fazenda Imperial")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            api_whatsapp.handle_rdv_text_message(sender, "pular")
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender,
+                "https://maps.google.com/?q=-15,-50",
+            )
+
+            assert "Qual a área total da fazenda?" in reply
+            assert "Qual área, talhão ou local da propriedade foi visitado?" not in reply
+            assert "área, talhão ou local" not in reply.lower()
+            assert "Área/local visitado" not in reply
+            assert visitas.obter_visita_aberta(sender)["estado_fluxo"] == "aguardando_area"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_visita_area_total_pode_ser_ignorada_com_aliases():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        for skip_text in ("pular", "não sei", "sem informação"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                _, visitas, sender = _install_services(temp_dir)
+                visita = visitas.iniciar_visita(sender)
+                visitas.atualizar_campo(visita["id"], "estado_fluxo", "aguardando_area")
+
+                reply = api_whatsapp.handle_rdv_text_message(sender, skip_text)
+                saved = visitas.obter_visita_aberta(sender)
+
+                assert "Descrição da visita" in reply
+                assert saved["estado_fluxo"] == "aguardando_descricao_visita"
+                assert not saved["area"]
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -1559,7 +1608,7 @@ def test_visita_pede_localizacao_explicitamente_e_aceita_endereco():
             visita = visitas.obter_visita_aberta(sender)
             assert "localização da fazenda/propriedade" in reply
             assert "Compartilhar a localização pelo WhatsApp" in reply
-            assert "tamanho total" in next_reply.lower()
+            assert "Qual a área total da fazenda?" in next_reply
             assert visita["localizacao_texto"] == "Estrada municipal, 10 km depois da ponte"
             assert not visita["maps_url_principal"]
             assert visita["estado_fluxo"] == "aguardando_area"
@@ -1585,7 +1634,7 @@ def test_visita_localizacao_pode_ser_ignorada_com_aliases():
                 reply = api_whatsapp.handle_rdv_text_message(sender, skip_text)
 
                 visita = visitas.obter_visita_aberta(sender)
-                assert "tamanho total" in reply.lower()
+                assert "Qual a área total da fazenda?" in reply
                 assert not visita["localizacao_texto"]
                 assert visita["estado_fluxo"] == "aguardando_area"
     finally:
@@ -1609,7 +1658,7 @@ def test_visita_localizacao_nativa_durante_etapa_salva_e_avanca():
 
             saved = visitas.obter_visita_completa(visita["id"])
             assert "Localização salva" in reply
-            assert "tamanho total" in reply.lower()
+            assert "Qual a área total da fazenda?" in reply
             assert saved["estado_fluxo"] == "aguardando_area"
             assert saved["maps_url_principal"] == (
                 "https://maps.google.com/?q=-15.0019124,-50.7714295"
@@ -2096,6 +2145,52 @@ def test_video_durante_revisao_anexa_salva_legenda_e_nao_finaliza():
         api_whatsapp.visita_media_service = original_media_service
         api_whatsapp.download_media = original_download
         api_whatsapp.send_whatsapp_document = original_sender
+        api_whatsapp.visita_active_states.clear()
+
+
+def test_dois_videos_em_sequencia_mantem_fila_de_legendas():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    original_media_service = api_whatsapp.visita_media_service
+    original_download = api_whatsapp.download_media
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender)
+            visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
+
+            def fake_download(media_id, destino):
+                Path(destino).write_bytes(b"video")
+                return Path(destino)
+
+            api_whatsapp.download_media = fake_download
+            api_whatsapp.visita_media_service = _FakeVideoMediaService()
+
+            first = api_whatsapp.handle_visitas_video_message(sender, "video-1", "video/mp4")
+            second = api_whatsapp.handle_visitas_video_message(sender, "video-2", "video/mp4")
+            next_reply = api_whatsapp.handle_rdv_text_message(sender, "Legenda do video 1")
+            done = api_whatsapp.handle_rdv_text_message(sender, "pular")
+
+            saved = visitas.obter_visita_completa(visita["id"])
+            assert "Vídeo recebido e anexado" in first
+            assert "Vídeo recebido e anexado" in second
+            assert "Vídeo 1" in second
+            assert "Vídeo 2" in next_reply
+            assert "Fotos salvas" in done
+            assert [media["comentario"] for media in saved["midias"]] == [
+                "Legenda do video 1",
+                "Sem comentario informado.",
+            ]
+            assert [media["comentario_status"] for media in saved["midias"]] == [
+                "resolvido",
+                "resolvido",
+            ]
+            assert visitas.obter_visita(visita["id"])["estado_fluxo"] == "visita_aberta"
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+        api_whatsapp.visita_media_service = original_media_service
+        api_whatsapp.download_media = original_download
         api_whatsapp.visita_active_states.clear()
 
 

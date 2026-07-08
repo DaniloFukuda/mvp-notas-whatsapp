@@ -188,7 +188,7 @@ VISITA_FLOW_STEPS = {
     "aguardando_telefone_proprietario": ("telefone_proprietario", "Qual o nome do gerente ou responsável local pela propriedade?"),
     "aguardando_gerente": ("gerente", "Qual o telefone do gerente ou responsável local?"),
     "aguardando_telefone_gerente": ("telefone_gerente", "📍 Envie a localização da fazenda/propriedade.\n\nVocê pode:\n- Compartilhar a localização pelo WhatsApp\n- Enviar um link do Google Maps\n- Digitar o endereço ou referência\n- Digitar \"pular\" se não tiver essa informação agora"),
-    "aguardando_localizacao": ("localizacao_texto", "📏 Qual é o tamanho total da fazenda/propriedade?\n\nExemplos:\n500 hectares\n120 alqueires\n35 hectares\nNão sei\nPular"),
+    "aguardando_localizacao": ("localizacao_texto", "📏 Qual a área total da fazenda?\n\nExemplos:\n500 hectares\n120 alqueires\n35 hectares\nPular"),
     "aguardando_area": ("area", ""),
 }
 VISITA_DESCRICAO_MESSAGE = "\n".join(
@@ -1111,17 +1111,7 @@ def _handle_whatsapp_message(message: dict) -> None:
         return
 
     open_visit = visitas_service.obter_visita_aberta(sender_phone)
-    if open_visit is not None and open_visit.get("estado_fluxo") in {
-        "visita_aberta",
-        "aguardando_revisao_final",
-        "corrigindo_dados_propriedade",
-        "corrigindo_observacoes",
-        "corrigindo_comentario_foto",
-        "aguardando_decisao_comentario_foto",
-        "aguardando_decisao_comentario_foto_revisao",
-        "aguardando_texto_comentario_foto",
-        "aguardando_texto_comentario_foto_revisao",
-    }:
+    if open_visit is not None and _visita_state_accepts_media(open_visit):
         destination = _build_media_destination(
             sender_phone=sender_phone,
             media_id=media_id,
@@ -1981,23 +1971,24 @@ def handle_visitas_text_message(
     state = str(open_visit.get("estado_fluxo") or "")
     if state.startswith("aguardando_legenda_video:") or state.startswith("aguardando_legenda_video_revisao:"):
         review_mode = state.startswith("aguardando_legenda_video_revisao:")
-        media_id = int(state.split(":", 1)[1])
+        pending = visitas_service.proximo_video_pendente(open_visit["id"])
+        if pending is None:
+            return True, _visita_proxima_midia_ou_finaliza(open_visit["id"], review_mode=review_mode)
+        if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
+            visitas_service.salvar_comentario_midia(pending["id"], "Sem comentario informado.")
+            return True, _visita_proxima_midia_ou_finaliza(
+                open_visit["id"],
+                review_mode=review_mode,
+                resolved_message="✅ Legenda salva para o vídeo.",
+            )
         validation = validate_visit_field("comentario_foto", text)
         if not validation.ok:
             return True, validation.error
-        visitas_service.salvar_comentario_midia(media_id, validation.value)
-        visitas_service.atualizar_campo(
+        visitas_service.salvar_comentario_midia(pending["id"], validation.value)
+        return True, _visita_proxima_midia_ou_finaliza(
             open_visit["id"],
-            "estado_fluxo",
-            "aguardando_revisao_final" if review_mode else "visita_aberta",
-        )
-        if review_mode:
-            return True, _visita_midia_atualizada_message("✅ Legenda salva para o vídeo.")
-        return True, "\n".join(
-            [
-                "Legenda salva para o vídeo.",
-                "Você pode enviar outro vídeo, foto, observação, localização ou fechar a visita.",
-            ]
+            review_mode=review_mode,
+            resolved_message="✅ Legenda salva para o vídeo.",
         )
 
     if state == "aguardando_descricao_visita":
@@ -2045,7 +2036,7 @@ def handle_visitas_text_message(
             return True, f"Digite o comentario da Foto {pending.get('indice') or 1}:"
         if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
             visitas_service.salvar_comentario_foto(pending["id"], "Sem comentario informado.")
-            return True, _visita_proxima_foto_ou_finaliza(open_visit["id"], review_mode=review_mode)
+            return True, _visita_proxima_midia_ou_finaliza(open_visit["id"], review_mode=review_mode)
         return True, "Responda 1 para comentar ou 2 para continuar sem comentario nesta foto."
 
     if state in {"aguardando_texto_comentario_foto", "aguardando_texto_comentario_foto_revisao"}:
@@ -2058,11 +2049,18 @@ def handle_visitas_text_message(
                 "aguardando_revisao_final" if review_mode else "visita_aberta",
             )
             return True, _visita_midia_atualizada_message("Fotos salvas no relatório.") if review_mode else "Fotos salvas no relatorio."
+        if normalized_text in VISITA_FOTO_PULAR_COMMANDS:
+            visitas_service.salvar_comentario_foto(pending["id"], "Sem comentario informado.")
+            return True, _visita_proxima_midia_ou_finaliza(open_visit["id"], review_mode=review_mode)
         validation = validate_visit_field("comentario_foto", text)
         if not validation.ok:
             return True, validation.error
         visitas_service.salvar_comentario_foto(pending["id"], validation.value)
-        return True, _visita_proxima_foto_ou_finaliza(open_visit["id"], review_mode=review_mode)
+        return True, _visita_proxima_midia_ou_finaliza(
+            open_visit["id"],
+            review_mode=review_mode,
+            resolved_message="✅ Comentário salvo.",
+        )
 
     if state == "aguardando_revisao_final":
         if normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS:
@@ -2299,19 +2297,19 @@ def handle_visitas_media_message(
         legenda=caption,
     )
     if message_type == "image":
-        review_mode = str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
-        visitas_service.atualizar_campo(
-            open_visit["id"],
-            "estado_fluxo",
-            "aguardando_decisao_comentario_foto_revisao" if review_mode else "aguardando_decisao_comentario_foto",
-        )
-        pending = visitas_service.proxima_foto_pendente(open_visit["id"]) or media
+        review_mode = _visita_state_is_review_media_queue(open_visit)
+        pending = visitas_service.proxima_midia_pendente(open_visit["id"]) or media
+        _set_visita_pending_media_state(open_visit["id"], pending, review_mode=review_mode)
         fazenda = open_visit.get("fazenda") or "visita em andamento"
-        saved_message = "✅ Foto anexada à visita." if review_mode else f"Foto salva na visita {fazenda}."
+        saved_message = (
+            f"✅ Foto anexada à visita. Foto {media.get('indice') or 1} recebida."
+            if review_mode
+            else f"✅ Foto {media.get('indice') or 1} recebida. Foto salva na visita {fazenda}."
+        )
         return "\n\n".join(
             [
                 saved_message,
-                _visita_foto_comentario_message(pending),
+                _visita_pending_media_message(pending),
                 _visita_preview_outdated_hint() if review_mode else "",
             ]
         ).strip()
@@ -2334,7 +2332,7 @@ def handle_visitas_video_message(
         return _visita_closed_media_message_if_applicable(sender_phone) or VISITA_VIDEO_NO_OPEN_MESSAGE
     if not _visita_state_accepts_media(open_visit):
         return "Continue preenchendo a visita técnica atual antes de anexar vídeos."
-    review_mode = str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
+    review_mode = _visita_state_is_review_media_queue(open_visit)
 
     limit = visita_media_service.video_limit_per_visit()
     current_count = visitas_service.contar_midias_por_tipo(open_visit["id"], "video")
@@ -2366,11 +2364,8 @@ def handle_visitas_video_message(
             tamanho_bytes=upload.get("size_bytes"),
             mime_type=upload.get("content_type") or mime_type,
         )
-        visitas_service.atualizar_campo(
-            open_visit["id"],
-            "estado_fluxo",
-            f"aguardando_legenda_video_revisao:{media['id']}" if review_mode else f"aguardando_legenda_video:{media['id']}",
-        )
+        pending = visitas_service.proxima_midia_pendente(open_visit["id"]) or media
+        _set_visita_pending_media_state(open_visit["id"], pending, review_mode=review_mode)
     except VideoTooLargeError:
         return _visita_video_too_large_message()
     except (VideoUploadError, OSError, RuntimeError) as exc:
@@ -2385,18 +2380,18 @@ def handle_visitas_video_message(
 
     return "\n".join(
         [
-            "✅ Vídeo recebido e anexado à visita.",
-            "Agora envie uma legenda rápida para esse vídeo.",
+            f"✅ Vídeo recebido e anexado à visita. Vídeo {_visita_media_display_index(media)}.",
+            _visita_pending_media_message(pending),
             "Depois da legenda, a prévia anterior ficará desatualizada." if review_mode else "",
             "Digite \"prévia\" para gerar o relatório atualizado antes de finalizar." if review_mode else "",
-            "Exemplo: Área com falha perto da entrada da fazenda.",
         ]
     ).strip()
 
 
 def _visita_state_accepts_media(visita: dict) -> bool:
     state = str(visita.get("estado_fluxo") or "")
-    return state in {
+    return (
+        state in {
         "visita_aberta",
         "aguardando_revisao_final",
         "corrigindo_dados_propriedade",
@@ -2406,7 +2401,17 @@ def _visita_state_accepts_media(visita: dict) -> bool:
         "aguardando_decisao_comentario_foto_revisao",
         "aguardando_texto_comentario_foto",
         "aguardando_texto_comentario_foto_revisao",
-    }
+        }
+        or state.startswith("aguardando_legenda_video:")
+        or state.startswith("aguardando_legenda_video_revisao:")
+    )
+
+
+def _visita_state_is_review_media_queue(visita: dict) -> bool:
+    state = str(visita.get("estado_fluxo") or "")
+    return state == "aguardando_revisao_final" or state.endswith("_revisao") or state.startswith(
+        "aguardando_legenda_video_revisao:"
+    )
 
 
 def _visita_video_too_large_message() -> str:
@@ -2520,7 +2525,7 @@ def _normalize_optional_visit_value(value: str) -> str:
 
 
 def _visita_foto_comentario_message(media: dict) -> str:
-    index = media.get("indice") or 1
+    index = _visita_media_display_index(media)
     return "\n".join(
         [
             f"Foto {index} adicionada ao relatorio.",
@@ -2529,32 +2534,97 @@ def _visita_foto_comentario_message(media: dict) -> str:
             "",
             "1 - Sim, quero comentar",
             "2 - Nao, continuar sem comentario",
+            "Ou digite \"pular\".",
         ]
     )
 
 
-def _visita_proxima_foto_ou_finaliza(visita_id: int, review_mode: bool = False) -> str:
-    pending = visitas_service.proxima_foto_pendente(visita_id)
-    if pending is not None:
-        visitas_service.atualizar_campo(
-            visita_id,
-            "estado_fluxo",
-            "aguardando_decisao_comentario_foto_revisao" if review_mode else "aguardando_decisao_comentario_foto",
+def _visita_video_legenda_message(media: dict) -> str:
+    index = _visita_media_display_index(media)
+    return "\n".join(
+        [
+            f"Agora envie uma legenda rápida para o Vídeo {index} ou digite \"pular\".",
+            "Exemplo: Área com falha perto da entrada da fazenda.",
+        ]
+    )
+
+
+def _visita_pending_media_message(media: dict) -> str:
+    if str(media.get("tipo") or "") == "video":
+        return _visita_video_legenda_message(media)
+    return _visita_foto_comentario_message(media)
+
+
+def _visita_media_display_index(media: dict) -> int:
+    if str(media.get("tipo") or "") != "video":
+        return int(media.get("indice") or 1)
+    visita_id = media.get("visita_id")
+    media_id = int(media.get("id") or 0)
+    if not visita_id or not media_id:
+        return int(media.get("indice") or 1)
+    resumo = visitas_service.obter_visita_completa(int(visita_id)) or {}
+    videos = [
+        item
+        for item in resumo.get("midias") or []
+        if str(item.get("tipo") or "") == "video"
+    ]
+    videos.sort(key=lambda item: (str(item.get("enviado_em") or ""), int(item.get("id") or 0)))
+    for index, item in enumerate(videos, start=1):
+        if int(item.get("id") or 0) == media_id:
+            return index
+    return int(media.get("indice") or 1)
+
+
+def _set_visita_pending_media_state(visita_id: int, media: dict, review_mode: bool = False) -> None:
+    if str(media.get("tipo") or "") == "video":
+        state = (
+            f"aguardando_legenda_video_revisao:{media['id']}"
+            if review_mode
+            else f"aguardando_legenda_video:{media['id']}"
         )
-        return _visita_foto_comentario_message(pending)
+    else:
+        state = (
+            "aguardando_decisao_comentario_foto_revisao"
+            if review_mode
+            else "aguardando_decisao_comentario_foto"
+        )
+    visitas_service.atualizar_campo(visita_id, "estado_fluxo", state)
+
+
+def _visita_proxima_midia_ou_finaliza(
+    visita_id: int,
+    review_mode: bool = False,
+    resolved_message: str | None = None,
+) -> str:
+    pending = visitas_service.proxima_midia_pendente(visita_id)
+    if pending is not None:
+        _set_visita_pending_media_state(visita_id, pending, review_mode=review_mode)
+        parts = []
+        if resolved_message:
+            parts.append(resolved_message)
+        parts.append(_visita_pending_media_message(pending))
+        return "\n\n".join(parts)
     if review_mode:
         visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_revisao_final")
-        return _visita_midia_atualizada_message("✅ Comentário salvo.")
+        return _visita_midia_atualizada_message(resolved_message or "✅ Mídias atualizadas.")
     visitas_service.atualizar_campo(visita_id, "estado_fluxo", "visita_aberta")
-    return "\n".join(
+    lines = []
+    if resolved_message:
+        lines.extend([resolved_message, ""])
+    lines.extend(
         [
             "Fotos salvas no relatorio.",
             "",
-            "Voce pode continuar enviando fotos, adicionar mais informacoes ou finalizar a visita.",
+            "Voce pode continuar enviando fotos, videos, adicionar mais informacoes ou finalizar a visita.",
             "",
             "Para finalizar, envie: fechar visita",
         ]
     )
+    return "\n".join(lines)
+
+
+def _visita_proxima_foto_ou_finaliza(visita_id: int, review_mode: bool = False) -> str:
+    return _visita_proxima_midia_ou_finaliza(visita_id, review_mode=review_mode)
 
 
 def _parse_visita_area(text: str) -> float | None:

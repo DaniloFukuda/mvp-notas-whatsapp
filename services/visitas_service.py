@@ -567,22 +567,34 @@ class VisitasTecnicasService:
             ).fetchone()
         return int((row or {"total": 0})["total"] or 0)
 
-    def proxima_foto_pendente(self, visita_id: int) -> dict | None:
+    def proxima_midia_pendente(self, visita_id: int, tipo: str | None = None) -> dict | None:
         self.ensure_schema()
+        type_clause = ""
+        values: list = [int(visita_id)]
+        if tipo:
+            type_clause = "AND tipo = ?"
+            values.append(_clean(tipo))
         with closing(self._connect()) as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM visita_midias
                 WHERE visita_id = ?
-                  AND tipo = 'foto'
+                  AND tipo IN ('foto', 'video')
                   AND COALESCE(comentario_status, '') = 'pendente'
+                  {type_clause}
                 ORDER BY COALESCE(indice, id), id
                 LIMIT 1
                 """,
-                (int(visita_id),),
+                tuple(values),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def proxima_foto_pendente(self, visita_id: int) -> dict | None:
+        return self.proxima_midia_pendente(visita_id, "foto")
+
+    def proximo_video_pendente(self, visita_id: int) -> dict | None:
+        return self.proxima_midia_pendente(visita_id, "video")
 
     def existem_fotos_pendentes(self, visita_id: int) -> bool:
         return self.proxima_foto_pendente(visita_id) is not None
