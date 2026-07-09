@@ -20,6 +20,7 @@ from services.rdv_service import (
     RDVService,
     calculate_month_reference,
     calculate_week_reference,
+    parse_receipt_date,
 )
 from services.rdv_excel_service import (
     build_monthly_rdv_workbook,
@@ -392,6 +393,12 @@ INTERACTIVE_COMMAND_IDS = {
     "visita_apagar_video_cancelar": "cancelar",
     "visita_confirmar_apagar_midia_sim": "sim",
     "visita_confirmar_apagar_midia_nao": "nao",
+    "rdv_review_confirm": "1",
+    "rdv_review_edit_value": "2",
+    "rdv_review_edit_date": "3",
+    "rdv_review_edit_category": "4",
+    "rdv_review_edit_comment": "5",
+    "rdv_review_cancel": "6",
 }
 INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
 MAIN_MENU_MESSAGE = "\n".join(
@@ -542,6 +549,11 @@ KM_CLEAR_SUCCESS = (
     "Quilometragens limpas com sucesso. Nenhuma viagem está em aberto."
 )
 RDV_WAITING_RECEIPT_STATE = "rdv_waiting_receipt"
+RDV_REVIEW_CONFIRM_STATE = "rdv_review_confirm"
+RDV_REVIEW_EDIT_VALUE_STATE = "rdv_review_edit_value"
+RDV_REVIEW_EDIT_DATE_STATE = "rdv_review_edit_date"
+RDV_REVIEW_EDIT_CATEGORY_STATE = "rdv_review_edit_category"
+RDV_REVIEW_EDIT_COMMENT_STATE = "rdv_review_edit_comment"
 INVALID_RDV_RECEIPT_MESSAGE = (
     "Não consegui identificar esse arquivo como comprovante.\n\n"
     "Envie uma foto ou PDF legível de nota, cupom, recibo ou comprovante.\n"
@@ -576,6 +588,7 @@ visita_edit_states: dict[str, int] = {}
 visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
 rdv_comment_states: dict[str, dict] = {}
+rdv_receipt_review_states: dict[str, dict] = {}
 _audio_transcription_service: AudioTranscriptionService | None = None
 _audio_transcription_review_service = AudioTranscriptionReviewService()
 _audio_transcription_intelligence_service = AudioTranscriptionIntelligenceService(
@@ -754,6 +767,30 @@ def send_whatsapp_list_message(
             _mask_phone(to),
         )
         send_whatsapp_text(to, fallback_text)
+
+
+def send_rdv_review_menu_interactive(to: str, pending: dict) -> None:
+    message = _rdv_review_message(pending)
+    send_whatsapp_list_message(
+        to=to,
+        header="RDV",
+        body=f"{message}\n\nToque no menu abaixo para confirmar ou editar.",
+        button_text="Revisar RDV",
+        sections=[
+            {
+                "title": "Revisao obrigatoria",
+                "rows": [
+                    {"id": "rdv_review_confirm", "title": "Confirmar e salvar"},
+                    {"id": "rdv_review_edit_value", "title": "Editar valor"},
+                    {"id": "rdv_review_edit_date", "title": "Editar data"},
+                    {"id": "rdv_review_edit_category", "title": "Editar categoria"},
+                    {"id": "rdv_review_edit_comment", "title": "Editar comentario"},
+                    {"id": "rdv_review_cancel", "title": "Cancelar lancamento"},
+                ],
+            }
+        ],
+        fallback_text=_rdv_review_fallback_message(pending),
+    )
 
 
 def send_whatsapp_button_message(
@@ -1286,7 +1323,7 @@ def _handle_whatsapp_message(message: dict) -> None:
             )
             _safe_send_text(sender_phone, INVALID_RDV_RECEIPT_MESSAGE)
             return
-        rdv_expense = _register_received_media_as_rdv(
+        pending_review = _start_rdv_receipt_review(
             sender_phone=sender_phone,
             caminho_arquivo=str(downloaded_path),
             whatsapp_message_id=message_id,
@@ -1296,22 +1333,28 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
     except Exception:
         logger.exception(
-            "Erro ao registrar despesa RDV recebida pelo WhatsApp: message_id=%s",
+            "Erro ao iniciar revisao do RDV recebido pelo WhatsApp: message_id=%s",
             _mask_message_id(message_id),
         )
         _safe_send_text(
             sender_phone,
-            "Recebi o arquivo, mas nao consegui registrar a despesa. Tente novamente.",
+            "Recebi o arquivo, mas nao consegui iniciar a revisao. Tente novamente.",
         )
         return
     logger.info(
-        "Comprovante RDV registrado: from=%s message_id=%s rdv_id=%s",
+        "Comprovante RDV aguardando revisao: from=%s message_id=%s fonte=%s",
         _mask_phone(sender_phone),
         _mask_message_id(message_id),
-        rdv_expense.get("id"),
+        pending_review.get("source"),
     )
-    whatsapp_menu_states.pop(sender_phone, None)
-    _safe_send_text(sender_phone, _rdv_received_message(rdv_expense))
+    try:
+        send_rdv_review_menu_interactive(sender_phone, pending_review)
+    except Exception:
+        logger.exception(
+            "Falha ao enviar menu de revisao RDV; usando texto para %s",
+            _mask_phone(sender_phone),
+        )
+        _safe_send_text(sender_phone, _rdv_review_fallback_message(pending_review))
 
 
 def handle_rdv_text_message(
@@ -1363,6 +1406,15 @@ def handle_rdv_text_message(
     ):
         whatsapp_menu_states.pop(sender_phone, None)
         return RDV_RECEIPT_CANCEL_MESSAGE
+
+    review_handled, review_reply = _handle_rdv_receipt_review_message(
+        sender_phone,
+        text,
+        normalized,
+        is_audio_transcription=is_audio_transcription,
+    )
+    if review_handled:
+        return review_reply
 
     rdv_service.cancel_legacy_km_launches_by_phone(sender_phone)
     global_command_handled, global_reply = _handle_global_rdv_command(
@@ -3927,6 +3979,8 @@ def _format_optional_number(value: object) -> str:
 def clear_rdv_sessions() -> None:
     """Compatibilidade com os testes da etapa anterior; o fluxo agora e persistente."""
     whatsapp_menu_states.clear()
+    rdv_receipt_review_states.clear()
+    rdv_comment_states.clear()
     standalone_transcription_modes.clear()
     visita_edit_states.clear()
     visita_active_states.clear()
@@ -4252,6 +4306,261 @@ def _rdv_document_fallback_message() -> str:
         "Nao consegui enviar o arquivo agora. "
         "Tente novamente mais tarde ou baixe pelo painel."
     )
+
+
+def _start_rdv_receipt_review(
+    sender_phone: str,
+    caminho_arquivo: str,
+    whatsapp_message_id: str,
+    message_type: str,
+    received_at: str | datetime | None,
+    analysis: dict,
+) -> dict:
+    collaborator = rdv_service.get_collaborator_by_phone(sender_phone)
+    if collaborator is None:
+        raise ValueError("Remetente nao cadastrado como colaborador RDV.")
+    input_type = message_type if message_type in {"image", "document"} else "document"
+    pending = {
+        "collaborator_id": collaborator["id"],
+        "collaborator": collaborator["nome"],
+        "phone": sender_phone,
+        "input_type": {"image": "imagem", "document": "documento"}[input_type],
+        "file_path": caminho_arquivo,
+        "whatsapp_message_id": whatsapp_message_id,
+        "received_at": received_at,
+        "analysis": dict(analysis or {}),
+        "valor": analysis.get("valor_detectado"),
+        "data": analysis.get("data_detectada") or "",
+        "categoria": "outro",
+        "comentario": _receipt_default_observation(),
+        "source": _analysis_source_label(analysis),
+        "status": RDV_REVIEW_CONFIRM_STATE,
+    }
+    rdv_receipt_review_states[sender_phone] = pending
+    whatsapp_menu_states[sender_phone] = RDV_REVIEW_CONFIRM_STATE
+    logger.info(
+        "RDV pendente de revisao criado: from=%s message_id=%s fonte=%s reasons=%s",
+        _mask_phone(sender_phone),
+        _mask_message_id(whatsapp_message_id),
+        pending["source"],
+        (analysis or {}).get("reasons"),
+    )
+    return pending
+
+
+def _get_rdv_receipt_review(sender_phone: str) -> dict | None:
+    pending = rdv_receipt_review_states.get(sender_phone)
+    if not pending:
+        if whatsapp_menu_states.get(sender_phone) in {
+            RDV_REVIEW_CONFIRM_STATE,
+            RDV_REVIEW_EDIT_VALUE_STATE,
+            RDV_REVIEW_EDIT_DATE_STATE,
+            RDV_REVIEW_EDIT_CATEGORY_STATE,
+            RDV_REVIEW_EDIT_COMMENT_STATE,
+        }:
+            whatsapp_menu_states.pop(sender_phone, None)
+        return None
+    return pending
+
+
+def _clear_rdv_receipt_review(sender_phone: str) -> None:
+    rdv_receipt_review_states.pop(sender_phone, None)
+    if whatsapp_menu_states.get(sender_phone) in {
+        RDV_REVIEW_CONFIRM_STATE,
+        RDV_REVIEW_EDIT_VALUE_STATE,
+        RDV_REVIEW_EDIT_DATE_STATE,
+        RDV_REVIEW_EDIT_CATEGORY_STATE,
+        RDV_REVIEW_EDIT_COMMENT_STATE,
+    }:
+        whatsapp_menu_states.pop(sender_phone, None)
+
+
+def _rdv_review_message(pending: dict) -> str:
+    return "\n".join(
+        [
+            "Revise o RDV antes de salvar",
+            "",
+            f"Data: {_format_date_br(pending.get('data')) or '-'}",
+            f"Valor: {_format_brl_text(pending.get('valor'))}",
+            f"Categoria: {_category_label(pending.get('categoria') or 'outro')}",
+            f"Comentario: {pending.get('comentario') or '-'}",
+            f"Fonte da leitura: {pending.get('source') or '-'}",
+        ]
+    )
+
+
+def _rdv_review_fallback_message(pending: dict) -> str:
+    return "\n".join(
+        [
+            _rdv_review_message(pending),
+            "",
+            "Toque no menu abaixo para confirmar ou editar.",
+            "",
+            "1. Confirmar e salvar",
+            "2. Editar valor",
+            "3. Editar data",
+            "4. Editar categoria",
+            "5. Editar comentario",
+            "6. Cancelar lancamento",
+        ]
+    )
+
+
+def _analysis_source_label(analysis: dict | None) -> str:
+    source = str((analysis or {}).get("origem_valor") or "").strip().lower()
+    if source == "qr_code":
+        return "QR Code"
+    if source == "ocr":
+        return "OCR"
+    reasons = {str(reason or "") for reason in (analysis or {}).get("reasons") or []}
+    if "qr_code_detectado" in reasons:
+        return "QR Code"
+    if any(reason.startswith("valor_encontrado_ocr") for reason in reasons):
+        return "OCR"
+    return "Manual"
+
+
+def _source_to_origin_value(source: str) -> str:
+    normalized = _normalize_caption(source)
+    if normalized == "qr code":
+        return "qr_code"
+    if normalized == "ocr":
+        return "ocr"
+    return "manual"
+
+
+def _receipt_default_observation() -> str:
+    return "comprovante recebido pelo WhatsApp"
+
+
+def _handle_rdv_receipt_review_message(
+    sender_phone: str,
+    text: str,
+    normalized: str,
+    *,
+    is_audio_transcription: bool = False,
+) -> tuple[bool, str | None]:
+    pending = _get_rdv_receipt_review(sender_phone)
+    if pending is None:
+        return False, None
+
+    state = whatsapp_menu_states.get(sender_phone) or RDV_REVIEW_CONFIRM_STATE
+    if normalized in {"cancelar", "sair"}:
+        _clear_rdv_receipt_review(sender_phone)
+        return True, RDV_RECEIPT_CANCEL_MESSAGE
+
+    if state == RDV_REVIEW_EDIT_VALUE_STATE:
+        value = _parse_rdv_value(text)
+        if value is None:
+            return True, "Valor invalido. Informe somente o valor, por exemplo: 125,50"
+        pending["valor"] = value
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_CONFIRM_STATE
+        return True, _rdv_review_fallback_message(pending)
+
+    if state == RDV_REVIEW_EDIT_DATE_STATE:
+        try:
+            receipt_date = parse_receipt_date(text)
+        except ValueError:
+            return True, "Data invalida. Informe a data do comprovante no formato 11/06/2026."
+        pending["data"] = receipt_date.isoformat()
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_CONFIRM_STATE
+        return True, _rdv_review_fallback_message(pending)
+
+    if state == RDV_REVIEW_EDIT_CATEGORY_STATE:
+        category = _match_numbered_choice(text, RDV_CATEGORIES)
+        if category is None:
+            return True, _category_prompt("Categoria invalida.")
+        pending["categoria"] = category
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_CONFIRM_STATE
+        return True, _rdv_review_fallback_message(pending)
+
+    if state == RDV_REVIEW_EDIT_COMMENT_STATE:
+        comment = str(text or "").strip()
+        if not is_audio_transcription and normalized in {"3", "sem comentario", "pular"}:
+            comment = ""
+        pending["comentario"] = comment
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_CONFIRM_STATE
+        return True, _rdv_review_fallback_message(pending)
+
+    selected = {
+        "1": "confirm",
+        "confirmar": "confirm",
+        "confirmar e salvar": "confirm",
+        "2": "edit_value",
+        "editar valor": "edit_value",
+        "3": "edit_date",
+        "editar data": "edit_date",
+        "4": "edit_category",
+        "editar categoria": "edit_category",
+        "5": "edit_comment",
+        "editar comentario": "edit_comment",
+        "6": "cancel",
+        "cancelar lancamento": "cancel",
+    }.get(normalized)
+    if selected == "confirm":
+        return True, _confirm_rdv_receipt_review(sender_phone, pending)
+    if selected == "edit_value":
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_VALUE_STATE
+        return True, "Informe o valor correto. Exemplo: 150,00"
+    if selected == "edit_date":
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_DATE_STATE
+        return True, "Informe a data correta do comprovante. Exemplo: 06/07/2026"
+    if selected == "edit_category":
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_CATEGORY_STATE
+        return True, _category_prompt("Escolha a categoria correta.")
+    if selected == "edit_comment":
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_COMMENT_STATE
+        return True, "Digite o comentario correto ou envie um audio."
+    if selected == "cancel":
+        _clear_rdv_receipt_review(sender_phone)
+        return True, RDV_RECEIPT_CANCEL_MESSAGE
+    return True, _rdv_review_fallback_message(pending)
+
+
+def _confirm_rdv_receipt_review(sender_phone: str, pending: dict) -> str:
+    value = _parse_rdv_value(str(pending.get("valor") or ""))
+    if value is None:
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_VALUE_STATE
+        return "Valor invalido ou ausente. Informe o valor correto. Exemplo: 150,00"
+    try:
+        receipt_date = parse_receipt_date(pending.get("data") or "")
+    except ValueError:
+        whatsapp_menu_states[sender_phone] = RDV_REVIEW_EDIT_DATE_STATE
+        return "Data invalida ou ausente. Informe a data do comprovante no formato 11/06/2026."
+
+    analysis = dict(pending.get("analysis") or {})
+    analysis.update(
+        {
+            "valor_detectado": value,
+            "data_detectada": receipt_date.isoformat(),
+            "origem_valor": _source_to_origin_value(pending.get("source") or ""),
+        }
+    )
+    expense = rdv_service.create_whatsapp_receipt(
+        collaborator_id=pending["collaborator_id"],
+        phone=sender_phone,
+        input_type=pending["input_type"],
+        file_path=pending["file_path"],
+        whatsapp_message_id=pending["whatsapp_message_id"],
+        received_at=pending.get("received_at"),
+        observation=pending.get("comentario") or "",
+        analysis=analysis,
+    )
+    expense = rdv_service.complete_launch_category(expense["id"], pending["categoria"])
+    if pending.get("comentario") != expense.get("observacao"):
+        expense = rdv_service.save_launch_observation(
+            expense["id"],
+            pending.get("comentario") or "",
+        )
+    _clear_rdv_receipt_review(sender_phone)
+    logger.info(
+        "RDV revisado confirmado: from=%s message_id=%s rdv_id=%s fonte=%s",
+        _mask_phone(sender_phone),
+        _mask_message_id(pending.get("whatsapp_message_id") or ""),
+        expense.get("id"),
+        pending.get("source"),
+    )
+    return "\n".join(_rdv_completed_lines(expense))
 
 
 def _register_received_media_as_rdv(

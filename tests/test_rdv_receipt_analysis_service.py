@@ -84,3 +84,20 @@ def test_rejects_future_date_from_ocr_text():
 
     assert result.valor_detectado == 80.0
     assert result.data_detectada == ""
+
+
+def test_ocr_value_prioritizes_total_over_small_unit_values():
+    result = RDVReceiptAnalysisService().analyze_text(
+        """
+        POSTO EXEMPLO
+        GASOLINA COMUM
+        QTD LITROS 25,10
+        VALOR UNITARIO R$ 5,99
+        SUBTOTAL R$ 7,00
+        VALOR TOTAL R$ 150,00
+        TOTAL A PAGAR 150,00
+        """,
+        source="ocr",
+    )
+
+    assert result.valor_detectado == 150.0

@@ -456,6 +456,12 @@ def _extract_value(text: str) -> float | None:
         before = text[max(0, match.start() - 80) : match.start()]
         after = text[match.end() : match.end() + 80]
         context = f"{before} {after}"
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        if line_end == -1:
+            line_end = len(text)
+        line_context = text[line_start:line_end]
+        normalized_context = _strip_accents(f"{line_context} {context}").lower()
         score = 0
         if match.group("currency"):
             score += 100
@@ -465,10 +471,30 @@ def _extract_value(text: str) -> float | None:
             flags=re.IGNORECASE,
         ):
             score += 45
+        if re.search(
+            r"\b(total\s+a\s+pagar|valor\s+total|total\s+geral|valor\s+pago)\b",
+            normalized_context,
+            flags=re.IGNORECASE,
+        ):
+            score += 140
+        elif re.search(r"\b(total|pagamento|pago|pagar)\b", normalized_context):
+            score += 80
+        if re.search(
+            r"\b(unitario|unit|qtde|qtd|quantidade|litro|litr|subtotal)\b",
+            normalized_context,
+        ):
+            score -= 70
         if "," in raw_value or re.search(r"\.\d{2}$", raw_value):
             score += 20
         if value >= 1:
             score += 5
+        if value < 10 and not re.search(
+            r"\b(total\s+a\s+pagar|valor\s+total|total\s+geral|valor\s+pago|pago)\b",
+            normalized_context,
+        ):
+            score -= 60
+        if value >= 50:
+            score += 15
         candidates.append((score, -match.start("value"), value))
 
     if not candidates:

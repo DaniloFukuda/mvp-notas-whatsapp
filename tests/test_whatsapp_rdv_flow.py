@@ -285,7 +285,10 @@ def test_rdv_excel_commands_support_month_week_and_specific_references():
                 sender,
                 api_whatsapp.calculate_month_reference(api_whatsapp.date.today()),
             )
-            assert monthly[1] == (sender, "2026-06")
+            assert monthly[1] == (
+                sender,
+                api_whatsapp.calculate_month_reference(api_whatsapp.date.today()),
+            )
             assert monthly[2] == (sender, "2026-06")
             assert weekly[0] == (
                 sender,
@@ -462,10 +465,11 @@ def test_invalid_document_receipt_does_not_create_launch():
         api_whatsapp.whatsapp_menu_states.clear()
 
 
-def test_valid_receipt_after_invalid_file_continues_flow():
+def test_valid_receipt_after_invalid_file_enters_review_before_saving():
     original_service = api_whatsapp.rdv_service
     original_download = api_whatsapp.download_media
     original_sender = api_whatsapp.send_whatsapp_text
+    original_review_menu = api_whatsapp.send_rdv_review_menu_interactive
     original_analyzer = api_whatsapp.rdv_receipt_analysis_service
     original_message_check = api_whatsapp._was_whatsapp_message_processed
     original_image_check = api_whatsapp._was_whatsapp_image_processed_for_sender
@@ -482,6 +486,11 @@ def test_valid_receipt_after_invalid_file_continues_flow():
             api_whatsapp.download_media = lambda media_id, destino: downloaded
             api_whatsapp.send_whatsapp_text = lambda phone, text: sent_messages.append(
                 (phone, text)
+            )
+            api_whatsapp.send_rdv_review_menu_interactive = (
+                lambda phone, pending: sent_messages.append(
+                    (phone, api_whatsapp._rdv_review_fallback_message(pending))
+                )
             )
             api_whatsapp.rdv_receipt_analysis_service = _ValidReceiptAnalyzer()
             api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
@@ -507,11 +516,24 @@ def test_valid_receipt_after_invalid_file_continues_flow():
             )
 
             launches = service.list_launches()
+            assert launches == []
+            assert (
+                api_whatsapp.whatsapp_menu_states[sender]
+                == api_whatsapp.RDV_REVIEW_CONFIRM_STATE
+            )
+            assert api_whatsapp.rdv_receipt_review_states[sender]["valor"] == 80
+            assert "Revise o RDV antes de salvar" in sent_messages[-1][1]
+            assert "Fonte da leitura: OCR" in sent_messages[-1][1]
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "1")
+
+            launches = service.list_launches()
             assert len(launches) == 1
-            assert launches[0]["status_fluxo"] == "aguardando_categoria"
+            assert launches[0]["status_fluxo"] == "completo"
             assert launches[0]["valor"] == 80
+            assert "RDV registrado com sucesso." in reply
             assert sender not in api_whatsapp.whatsapp_menu_states
-            assert "Comprovante recebido." in sent_messages[-1][1]
+            assert sender not in api_whatsapp.rdv_receipt_review_states
     finally:
         api_whatsapp.rdv_service = original_service
         api_whatsapp.download_media = original_download
@@ -520,6 +542,143 @@ def test_valid_receipt_after_invalid_file_continues_flow():
         api_whatsapp._was_whatsapp_message_processed = original_message_check
         api_whatsapp._was_whatsapp_image_processed_for_sender = original_image_check
         api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.rdv_receipt_review_states.clear()
+
+
+def test_receipt_review_edits_fields_before_confirming():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            api_whatsapp._start_rdv_receipt_review(
+                sender_phone=sender,
+                caminho_arquivo="comprovante.jpg",
+                whatsapp_message_id="wamid.review.edit",
+                message_type="image",
+                received_at="06/07/2026 10:00",
+                analysis=_ValidReceiptAnalyzer().analyze_file("x").to_dict(),
+            )
+
+            assert "Informe o valor correto" in api_whatsapp.handle_rdv_text_message(
+                sender, "2"
+            )
+            assert "Valor: R$ 150,00" in api_whatsapp.handle_rdv_text_message(
+                sender, "150,00"
+            )
+            assert "Informe a data correta" in api_whatsapp.handle_rdv_text_message(
+                sender, "3"
+            )
+            assert "Data: 06/07/2026" in api_whatsapp.handle_rdv_text_message(
+                sender, "06/07/2026"
+            )
+            assert "Escolha a categoria correta" in api_whatsapp.handle_rdv_text_message(
+                sender, "4"
+            )
+            assert "Categoria: Combustivel" in api_whatsapp.handle_rdv_text_message(
+                sender, "1"
+            )
+            assert "Digite o comentario correto" in api_whatsapp.handle_rdv_text_message(
+                sender, "5"
+            )
+            assert "abastecimento viagem fazenda" in api_whatsapp.handle_rdv_text_message(
+                sender, "abastecimento viagem fazenda"
+            )
+
+            final = api_whatsapp.handle_rdv_text_message(sender, "1")
+
+            expense = service.list_launches()[0]
+            assert "RDV registrado com sucesso." in final
+            assert expense["valor"] == 150
+            assert expense["data_despesa"] == "2026-07-06"
+            assert expense["categoria"] == "combustivel"
+            assert expense["observacao"] == "abastecimento viagem fazenda"
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.rdv_receipt_review_states.clear()
+
+
+def test_receipt_review_cancel_does_not_create_launch():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            api_whatsapp._start_rdv_receipt_review(
+                sender_phone=sender,
+                caminho_arquivo="comprovante.jpg",
+                whatsapp_message_id="wamid.review.cancel",
+                message_type="image",
+                received_at="06/07/2026 10:00",
+                analysis=_ValidReceiptAnalyzer().analyze_file("x").to_dict(),
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "6")
+
+            assert reply == api_whatsapp.RDV_RECEIPT_CANCEL_MESSAGE
+            assert service.list_launches() == []
+            assert sender not in api_whatsapp.rdv_receipt_review_states
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.rdv_receipt_review_states.clear()
+
+
+def test_receipt_review_interactive_list_reply_maps_to_confirm():
+    original_service = api_whatsapp.rdv_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = RDVService(Path(temp_dir) / "rdv.db")
+            api_whatsapp.rdv_service = service
+            collaborator = service.get_collaborator_by_phone("5500000000001")
+            sender = collaborator["telefone_whatsapp"]
+            api_whatsapp._start_rdv_receipt_review(
+                sender_phone=sender,
+                caminho_arquivo="comprovante.jpg",
+                whatsapp_message_id="wamid.review.interactive",
+                message_type="image",
+                received_at="06/07/2026 10:00",
+                analysis=_ValidReceiptAnalyzer().analyze_file("x").to_dict(),
+            )
+            text = api_whatsapp._extract_text(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "list_reply": {
+                            "id": "rdv_review_confirm",
+                            "title": "Confirmar e salvar",
+                        }
+                    },
+                }
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, text)
+
+            assert text == "1"
+            assert "RDV registrado com sucesso." in reply
+            assert len(service.list_launches()) == 1
+    finally:
+        api_whatsapp.rdv_service = original_service
+        api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.rdv_receipt_review_states.clear()
+
+
+def test_receipt_review_source_labels_qr_and_ocr():
+    qr = RDVReceiptAnalysisResult(
+        valor_detectado=150,
+        data_detectada="2026-07-06",
+        origem_valor="qr_code",
+        reasons=["qr_code_detectado", "valor_encontrado_qr_code"],
+    ).to_dict()
+    ocr = _ValidReceiptAnalyzer().analyze_file("x").to_dict()
+
+    assert api_whatsapp._analysis_source_label(qr) == "QR Code"
+    assert api_whatsapp._analysis_source_label(ocr) == "OCR"
 
 
 def test_cancelar_clears_waiting_receipt_state():
