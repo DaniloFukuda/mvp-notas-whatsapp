@@ -16,7 +16,7 @@ CATEGORIES = (
     "manutencao",
     "outro",
 )
-COLLABORATORS = ("Marcelo", "Henrique", "Anderson", "Danilo", "Outro")
+COLLABORATORS = ("Marcelo", "Henrique Saraiva", "Anderson", "Danilo", "Outro")
 REVIEW_STATUSES = ("pendente", "aprovado", "rejeitado")
 FLOW_STATUSES = (
     "pendente",
@@ -66,8 +66,11 @@ INPUT_TYPES = ("texto", "imagem", "documento")
 DEMO_COLLABORATORS = (
     ("Danilo", "5500000000001"),
     ("Marcelo", "5500000000002"),
-    ("Henrique", "5500000000003"),
+    ("Henrique Saraiva", "5500000000003"),
     ("Anderson", "5500000000004"),
+)
+COLLABORATOR_RENAMES = (
+    ("Henrique", "Henrique Saraiva", "5500000000003"),
 )
 RDV_COLUMNS = (
     "id",
@@ -207,6 +210,7 @@ class RDVService:
                 ON rdv_despesas (telefone_origem, status_fluxo, id)
                 """
             )
+            self._apply_collaborator_renames(connection)
             self._seed_demo_collaborators(connection)
             connection.commit()
 
@@ -1344,6 +1348,18 @@ class RDVService:
             """,
             [(name, phone, now) for name, phone in DEMO_COLLABORATORS],
         )
+
+    def _apply_collaborator_renames(self, connection: sqlite3.Connection) -> None:
+        for old_name, new_name, phone in COLLABORATOR_RENAMES:
+            connection.execute(
+                """
+                UPDATE rdv_colaboradores
+                SET nome = ?
+                WHERE telefone_whatsapp = ?
+                  AND nome = ?
+                """,
+                (new_name, phone, old_name),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)

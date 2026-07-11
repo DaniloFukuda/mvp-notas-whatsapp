@@ -19,7 +19,7 @@ def main() -> None:
         assert {item["nome"] for item in collaborators} == {
             "Danilo",
             "Marcelo",
-            "Henrique",
+            "Henrique Saraiva",
             "Anderson",
         }
         assert {item["telefone_whatsapp"] for item in collaborators} == {
@@ -49,6 +49,7 @@ def main() -> None:
         assert service.get_open_launch_by_phone(demo["telefone_whatsapp"])["id"] == pending["id"]
 
         service.save_launch_value(pending["id"], "120,50")
+        service.save_launch_receipt_date(pending["id"], "09/06/2026")
         completed = service.complete_launch_category(pending["id"], "alimentacao")
         assert completed["status_fluxo"] == "completo"
         assert completed["valor"] == 120.5

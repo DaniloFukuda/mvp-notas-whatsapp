@@ -1,6 +1,7 @@
 import tempfile
 import pytest
 import sys
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -9,14 +10,109 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.rdv_service import (
+    DEMO_COLLABORATORS,
     RDVService,
     calculate_month_reference,
     calculate_week_reference,
 )
 
 
+LEGACY_HENRIQUE_NAME = "Henrique"
+HENRIQUE_SARAIVA_NAME = "Henrique Saraiva"
+
+
+def _henrique_phone() -> str:
+    return next(
+        phone for name, phone in DEMO_COLLABORATORS if name == HENRIQUE_SARAIVA_NAME
+    )
+
+
+def _collaborators_with_phone(service: RDVService, phone: str) -> list[dict]:
+    return [
+        item
+        for item in service.list_collaborators(active_only=False)
+        if item["telefone_whatsapp"] == phone
+    ]
+
+
+def _rename_seeded_henrique(service: RDVService, name: str) -> tuple[int, str]:
+    phone = _henrique_phone()
+    current = service.get_collaborator_by_phone(phone)
+    with closing(service._connect()) as connection:
+        connection.execute(
+            "UPDATE rdv_colaboradores SET nome = ? WHERE id = ?",
+            (name, current["id"]),
+        )
+        connection.commit()
+    return current["id"], phone
+
+
 def test_calculate_month_reference_returns_year_month():
     assert calculate_month_reference(date(2026, 6, 14)) == "2026-06"
+
+
+def test_new_database_seeds_only_one_henrique_saraiva():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv.db")
+        phone = _henrique_phone()
+        collaborator = service.get_collaborator_by_phone(phone)
+
+        assert collaborator["nome"] == HENRIQUE_SARAIVA_NAME
+        assert collaborator["telefone_whatsapp"] == phone
+        assert len(_collaborators_with_phone(service, phone)) == 1
+
+
+def test_legacy_henrique_is_renamed_once_without_duplicate_or_history_rewrite():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "rdv_legacy_name.db"
+        service = RDVService(db_path)
+        service.init_database()
+        legacy_id, legacy_phone = _rename_seeded_henrique(service, LEGACY_HENRIQUE_NAME)
+
+        with closing(service._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO rdv_despesas (
+                    colaborador_id, colaborador, telefone_origem, tipo_entrada,
+                    data_despesa, semana_referencia, categoria, valor,
+                    origem, status_fluxo, status_revisao, recebido_em,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'texto', '2026-06-16', '2026-W25',
+                    'alimentacao', 10, 'whatsapp', 'completo', 'pendente',
+                    '2026-06-16T10:00:00', '2026-06-16T10:00:00',
+                    '2026-06-16T10:00:00')
+                """,
+                (legacy_id, LEGACY_HENRIQUE_NAME, legacy_phone),
+            )
+            connection.commit()
+
+        service.init_database()
+        service.init_database()
+        collaborator = service.get_collaborator_by_phone(legacy_phone)
+        historical = service.get_expense(1)
+
+        assert collaborator["id"] == legacy_id
+        assert collaborator["nome"] == HENRIQUE_SARAIVA_NAME
+        assert collaborator["telefone_whatsapp"] == legacy_phone
+        assert len(_collaborators_with_phone(service, legacy_phone)) == 1
+        assert historical["colaborador_id"] == legacy_id
+        assert historical["colaborador"] == LEGACY_HENRIQUE_NAME
+
+
+def test_henrique_rename_does_not_overwrite_manual_name():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = RDVService(Path(temp_dir) / "rdv_manual_name.db")
+        service.init_database()
+        collaborator_id, phone = _rename_seeded_henrique(service, "Henrique Manual")
+
+        service.init_database()
+        service.init_database()
+        collaborator = service.get_collaborator_by_phone(phone)
+
+        assert collaborator["id"] == collaborator_id
+        assert collaborator["nome"] == "Henrique Manual"
+        assert collaborator["telefone_whatsapp"] == phone
+        assert len(_collaborators_with_phone(service, phone)) == 1
 
 
 def test_service_starts_trip_waiting_for_origin_and_completes_with_route():

@@ -74,7 +74,7 @@ A exportacao Excel semanal fica em
 `/ciclus/rdv/relatorio-semanal.xlsx` e gera as abas `Lancamentos`,
 `Resumo por Colaborador`, `Resumo por Categoria` e `Pendencias`.
 
-O cadastro inicial cria Danilo, Marcelo, Henrique e Anderson com telefones
+O cadastro inicial cria Danilo, Marcelo, Henrique Saraiva e Anderson com telefones
 deliberadamente ficticios. Em um ambiente real, esses telefones devem ser
 substituidos no cadastro persistente, sem incluir dados pessoais no codigo.
 

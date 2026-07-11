@@ -201,7 +201,7 @@ def main() -> None:
             }
             assert collaborator_rows["Danilo"] == (265.4, 2, 120, 0)
             assert collaborator_rows["Marcelo"] == (380, 1, 0, 1)
-            assert collaborator_rows["Henrique"] == (0, 1, 0, 1)
+            assert collaborator_rows["Henrique Saraiva"] == (0, 1, 0, 1)
 
             categories = workbook["Resumo por Categoria"]
             assert _headers(categories) == (
@@ -215,7 +215,7 @@ def main() -> None:
             assert pending.max_row == 3
             assert {pending["B2"].value, pending["B3"].value} == {
                 "Marcelo",
-                "Henrique",
+                "Henrique Saraiva",
             }
             assert "demo_hotel.pdf" in {pending["R2"].value, pending["R3"].value}
             assert all(

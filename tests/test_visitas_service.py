@@ -101,7 +101,7 @@ def test_listar_visitas_validas_global():
         service.fechar_visita(primeira["id"])
         segunda = service.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
         service.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
-        cancelada = service.iniciar_visita("5500000000003", tecnico_nome="Henrique")
+        cancelada = service.iniciar_visita("5500000000003", tecnico_nome="Henrique Saraiva")
         service.atualizar_campo(cancelada["id"], "fazenda", "Fazenda Cancelada")
         service.cancelar_visita(cancelada["id"])
 
