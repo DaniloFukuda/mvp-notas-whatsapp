@@ -77,6 +77,7 @@ def main() -> None:
                 observation="aguardando conferencia",
             )
             service.save_launch_value(second["id"], "380,00")
+            service.save_launch_receipt_date(second["id"], "10/06/2026")
             service.complete_launch_category(second["id"], "hospedagem")
             service.mark_launch_for_review(second["id"])
 
@@ -85,6 +86,10 @@ def main() -> None:
                 phone=henrique["telefone_whatsapp"],
                 km_start="50000",
                 received_at="2026-06-10T19:00:00",
+            )
+            service.save_km_origin(open_trip["id"], "Formosa")
+            open_trip = service.save_km_destination(
+                open_trip["id"], "Fazenda Santa Rita"
             )
             assert open_trip["status_fluxo"] == "viagem_em_andamento"
 
@@ -119,38 +124,25 @@ def main() -> None:
             assert tuple(workbook.sheetnames) == EXPECTED_SHEETS
 
             launches = workbook["Lancamentos"]
-            assert _headers(launches) == (
-                "Data",
+            assert _headers(launches)[0:6] == (
+                "Data do comprovante",
+                "Data de envio",
                 "Colaborador",
                 "Telefone",
                 "Categoria",
                 "Valor",
-                "Fornecedor detectado",
-                "Data detectada",
-                "Origem do valor",
-                "Chave de acesso / QR Code / URL",
-                "Cidade origem",
-                "Cidade destino",
-                "KM inicial",
-                "KM final",
-                "KM rodado",
-                "Status",
-                "Observacao",
-                "Tipo de entrada",
-                "Comprovante/arquivo",
-                "Recebido em",
             )
             assert launches.max_row == 5
             assert launches.freeze_panes == "A2"
             assert launches.auto_filter.ref == launches.dimensions
-            assert launches["E2"].number_format == 'R$ #,##0.00'
+            assert launches["F2"].number_format == 'R$ #,##0.00'
             assert launches["A2"].number_format == "dd/mm/yyyy"
-            assert launches["S2"].number_format == "dd/mm/yyyy hh:mm"
+            assert launches["B2"].number_format == "dd/mm/yyyy hh:mm"
             assert {
-                launches["R2"].value,
-                launches["R3"].value,
-                launches["R4"].value,
-                launches["R5"].value,
+                launches["S2"].value,
+                launches["S3"].value,
+                launches["S4"].value,
+                launches["S5"].value,
             } == {
                 "demo_combustivel.jpg",
                 "demo_hotel.pdf",
@@ -159,32 +151,32 @@ def main() -> None:
             detected_row = next(
                 row
                 for row in range(2, launches.max_row + 1)
-                if launches.cell(row, 18).value == "demo_combustivel.jpg"
+                if launches.cell(row, 19).value == "demo_combustivel.jpg"
             )
-            assert launches.cell(detected_row, 6).value == "POSTO FICTICIO LTDA"
-            assert launches.cell(detected_row, 7).number_format == "dd/mm/yyyy"
-            assert launches.cell(detected_row, 8).value == "Ocr"
-            assert launches.cell(detected_row, 9).value == "1" * 44
+            assert launches.cell(detected_row, 7).value == "POSTO FICTICIO LTDA"
+            assert launches.cell(detected_row, 8).number_format == "dd/mm/yyyy"
+            assert launches.cell(detected_row, 9).value == "Ocr"
+            assert launches.cell(detected_row, 10).value == "1" * 44
             km_row = next(
                 row
                 for row in range(2, launches.max_row + 1)
-                if launches.cell(row, 10).value == "Ribeirao Preto"
+                if launches.cell(row, 11).value == "Ribeirao Preto"
             )
-            assert launches.cell(km_row, 11).value == "Sertaozinho"
-            assert launches.cell(km_row, 12).value == 1000
-            assert launches.cell(km_row, 13).value == 1120
-            assert launches.cell(km_row, 14).value == 120
+            assert launches.cell(km_row, 12).value == "Sertaozinho"
+            assert launches.cell(km_row, 13).value == 1000
+            assert launches.cell(km_row, 14).value == 1120
+            assert launches.cell(km_row, 15).value == 120
             open_trip_row = next(
                 row
                 for row in range(2, launches.max_row + 1)
-                if launches.cell(row, 12).value == 50000
+                if launches.cell(row, 13).value == 50000
             )
-            assert launches.cell(open_trip_row, 10).value is None
-            assert launches.cell(open_trip_row, 11).value is None
-            assert launches.cell(open_trip_row, 12).value == 50000
-            assert launches.cell(open_trip_row, 13).value is None
+            assert launches.cell(open_trip_row, 11).value == "Formosa"
+            assert launches.cell(open_trip_row, 12).value == "Fazenda Santa Rita"
+            assert launches.cell(open_trip_row, 13).value == 50000
             assert launches.cell(open_trip_row, 14).value is None
-            assert "Viagem Em Andamento" in launches.cell(open_trip_row, 15).value
+            assert launches.cell(open_trip_row, 15).value is None
+            assert "Viagem Em Andamento" in launches.cell(open_trip_row, 16).value
 
             collaborators = workbook["Resumo por Colaborador"]
             assert _headers(collaborators) == (
@@ -199,7 +191,7 @@ def main() -> None:
                 row[0].value: tuple(cell.value for cell in row[1:])
                 for row in collaborators.iter_rows(min_row=2)
             }
-            assert collaborator_rows["Danilo"] == (265.4, 2, 120, 0)
+            assert collaborator_rows["Danilo"] == (215.4, 2, 120, 0)
             assert collaborator_rows["Marcelo"] == (380, 1, 0, 1)
             assert collaborator_rows["Henrique Saraiva"] == (0, 1, 0, 1)
 
@@ -209,18 +201,18 @@ def main() -> None:
                 "Total em R$",
                 "Quantidade",
             )
-            assert categories.max_row == 5
+            assert categories.max_row == 3
 
             pending = workbook["Pendencias"]
             assert pending.max_row == 3
-            assert {pending["B2"].value, pending["B3"].value} == {
+            assert {pending["C2"].value, pending["C3"].value} == {
                 "Marcelo",
                 "Henrique Saraiva",
             }
-            assert "demo_hotel.pdf" in {pending["R2"].value, pending["R3"].value}
+            assert "demo_hotel.pdf" in {pending["S2"].value, pending["S3"].value}
             assert all(
                 cell.value != "demo_combustivel.jpg"
-                for cell in pending["R"][1:]
+                for cell in pending["S"][1:]
             )
             assert pending.freeze_panes == "A2"
             assert pending.auto_filter.ref == pending.dimensions
