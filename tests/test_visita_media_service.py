@@ -1,4 +1,5 @@
 import sys
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -37,6 +38,22 @@ def test_validate_video_file_rejeita_acima_do_limite(monkeypatch, tmp_path):
 
     with pytest.raises(VideoTooLargeError):
         VisitaMediaService().validate_video_file(video)
+
+
+def test_video_limit_per_visit_default_e_configuravel(monkeypatch):
+    monkeypatch.delenv("VIDEO_MAX_PER_VISITA", raising=False)
+    assert VisitaMediaService().video_limit_per_visit() == 10
+
+    monkeypatch.setenv("VIDEO_MAX_PER_VISITA", "12")
+    assert VisitaMediaService().video_limit_per_visit() == 12
+
+
+def test_calculate_video_sha256_usa_conteudo_do_arquivo(tmp_path):
+    video = tmp_path / "video.mp4"
+    content = b"video qualquer"
+    video.write_bytes(content)
+
+    assert VisitaMediaService().calculate_video_sha256(video) == hashlib.sha256(content).hexdigest()
 
 
 def test_upload_visit_video_chama_object_storage(monkeypatch, tmp_path):

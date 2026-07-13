@@ -135,6 +135,7 @@ class VisitasTecnicasService:
                     "public_url": "TEXT",
                     "tamanho_bytes": "INTEGER",
                     "mime_type": "TEXT",
+                    "video_hash": "TEXT",
                 },
             )
             connection.execute(
@@ -489,6 +490,7 @@ class VisitasTecnicasService:
         public_url: str | None = None,
         tamanho_bytes: int | None = None,
         mime_type: str | None = None,
+        video_hash: str | None = None,
     ) -> dict:
         self.ensure_schema()
         maps_url = (
@@ -505,8 +507,8 @@ class VisitasTecnicasService:
                     visita_id, tipo, media_id_whatsapp, caminho_arquivo, legenda,
                     latitude, longitude, maps_url, indice, comentario,
                     comentario_status, storage_key, public_url, tamanho_bytes,
-                    mime_type, enviado_em
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    mime_type, video_hash, enviado_em
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(visita_id),
@@ -524,6 +526,7 @@ class VisitasTecnicasService:
                     _clean(public_url),
                     int(tamanho_bytes) if tamanho_bytes is not None else None,
                     _clean(mime_type),
+                    _clean(video_hash),
                     now,
                 ),
             )
@@ -537,7 +540,7 @@ class VisitasTecnicasService:
                 SELECT id, visita_id, tipo, media_id_whatsapp, caminho_arquivo,
                        legenda, latitude, longitude, maps_url, indice, comentario,
                        comentario_status, storage_key, public_url, tamanho_bytes,
-                       mime_type, enviado_em
+                       mime_type, video_hash, enviado_em
                 FROM visita_midias
                 WHERE id = ?
                 """,
@@ -566,6 +569,25 @@ class VisitasTecnicasService:
                 (int(visita_id), _clean(tipo)),
             ).fetchone()
         return int((row or {"total": 0})["total"] or 0)
+
+    def existe_video_hash(self, visita_id: int, video_hash: str) -> bool:
+        self.ensure_schema()
+        safe_hash = _clean(video_hash)
+        if not safe_hash:
+            return False
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM visita_midias
+                WHERE visita_id = ?
+                  AND tipo = 'video'
+                  AND video_hash = ?
+                LIMIT 1
+                """,
+                (int(visita_id), safe_hash),
+            ).fetchone()
+        return row is not None
 
     def listar_midias_por_tipo(self, visita_id: int, tipo: str) -> list[dict]:
         self.ensure_schema()

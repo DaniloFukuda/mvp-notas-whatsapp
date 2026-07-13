@@ -2538,11 +2538,6 @@ def handle_visitas_video_message(
         return "Continue preenchendo a visita técnica atual antes de anexar vídeos."
     review_mode = _visita_state_is_review_media_queue(open_visit)
 
-    limit = visita_media_service.video_limit_per_visit()
-    current_count = visitas_service.contar_midias_por_tipo(open_visit["id"], "video")
-    if current_count >= limit:
-        return _visita_video_limit_message(limit)
-
     destination = _build_media_destination(
         sender_phone=sender_phone,
         media_id=media_id,
@@ -2551,6 +2546,16 @@ def handle_visitas_video_message(
     downloaded_path = destination
     try:
         downloaded_path = download_media(media_id, destination)
+        visita_media_service.validate_video_file(downloaded_path)
+        video_hash = visita_media_service.calculate_video_sha256(downloaded_path)
+        if visitas_service.existe_video_hash(open_visit["id"], video_hash):
+            return _visita_video_duplicate_message()
+
+        limit = visita_media_service.video_limit_per_visit()
+        current_count = visitas_service.contar_midias_por_tipo(open_visit["id"], "video")
+        if current_count >= limit:
+            return _visita_video_limit_message(limit)
+
         upload = visita_media_service.upload_visit_video(
             visita_id=open_visit["id"],
             local_path=downloaded_path,
@@ -2567,6 +2572,7 @@ def handle_visitas_video_message(
             public_url=upload.get("public_url"),
             tamanho_bytes=upload.get("size_bytes"),
             mime_type=upload.get("content_type") or mime_type,
+            video_hash=video_hash,
         )
         pending = visitas_service.proxima_midia_pendente(open_visit["id"]) or media
         _set_visita_pending_media_state(open_visit["id"], pending, review_mode=review_mode)
@@ -2632,8 +2638,23 @@ def _visita_video_limit_message(limit: int | None = None) -> str:
     max_videos = int(limit or video_max_per_visita())
     return "\n".join(
         [
-            f"⚠️ Esta visita já atingiu o limite de {max_videos} vídeos.",
-            "Para manter o relatório leve, finalize esta visita ou use fotos/observações.",
+            "⚠️ Esta visita já atingiu o limite de vídeos permitido.",
+            "",
+            f"Limite atual: {max_videos} vídeos por visita.",
+            "",
+            "Se precisar adicionar mais vídeos, fale com o administrador para aumentar o limite.",
+        ]
+    )
+
+
+def _visita_video_duplicate_message() -> str:
+    return "\n".join(
+        [
+            "⚠️ Este vídeo parece já ter sido enviado nesta visita.",
+            "",
+            "Para evitar duplicidade, ele não foi anexado novamente.",
+            "",
+            "Você pode enviar outro vídeo ou continuar o preenchimento da visita.",
         ]
     )
 

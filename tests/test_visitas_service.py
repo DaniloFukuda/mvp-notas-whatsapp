@@ -152,3 +152,22 @@ def test_remover_midia_remove_apenas_da_visita_e_retorna_metadados():
         assert removed["id"] == foto["id"]
         assert service.listar_midias_por_tipo(visita["id"], "foto") == []
         assert len(service.listar_midias_por_tipo(outra["id"], "foto")) == 1
+
+
+def test_video_hash_detecta_duplicidade_apenas_na_mesma_visita():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = VisitasTecnicasService(Path(temp_dir) / "visitas.db")
+        visita = service.iniciar_visita("5500000000001")
+        outra = service.iniciar_visita("5500000000002")
+
+        video = service.adicionar_midia(
+            visita["id"],
+            "video",
+            storage_key="visitas/video-1.mp4",
+            video_hash="sha256-video",
+        )
+
+        assert video["video_hash"] == "sha256-video"
+        assert service.existe_video_hash(visita["id"], "sha256-video")
+        assert not service.existe_video_hash(outra["id"], "sha256-video")
+        assert not service.existe_video_hash(visita["id"], "")

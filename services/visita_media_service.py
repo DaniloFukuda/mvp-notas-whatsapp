@@ -1,3 +1,4 @@
+import hashlib
 import os
 from datetime import date
 from pathlib import Path
@@ -34,6 +35,13 @@ class VisitaMediaService:
         if size > self.video_max_bytes():
             raise VideoTooLargeError("video_acima_do_limite")
         return size
+
+    def calculate_video_sha256(self, local_path: str | Path) -> str:
+        digest = hashlib.sha256()
+        with Path(local_path).open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def build_video_storage_key(
         self,
@@ -85,7 +93,7 @@ def video_max_seconds() -> int:
 
 
 def video_max_per_visita() -> int:
-    return int(_positive_float(os.getenv("VIDEO_MAX_PER_VISITA"), 3.0))
+    return int(_positive_float(os.getenv("VIDEO_MAX_PER_VISITA"), 10.0))
 
 
 def _positive_float(value: object, default: float) -> float:
