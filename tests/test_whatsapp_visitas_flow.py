@@ -33,6 +33,39 @@ def _extract_pdf_text(content):
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+def _create_test_visit(
+    visitas,
+    index,
+    *,
+    fazenda=None,
+    data_visita=None,
+    status="fechada",
+    tecnico_nome=None,
+    gerente=None,
+):
+    visita = visitas.criar_visita(
+        f"5500000009{index:03d}",
+        tecnico_nome=tecnico_nome or f"Tecnico {index}",
+        fazenda=fazenda or f"Fazenda {index:02d}",
+        estado_fluxo="visita_aberta",
+    )
+    visitas.atualizar_campo(visita["id"], "data_visita", data_visita or f"2026-07-{index:02d}")
+    visitas.atualizar_campo(visita["id"], "gerente", gerente or f"Gerente {index}")
+    if status == "fechada":
+        visita = visitas.fechar_visita(visita["id"])
+    elif status != "aberta":
+        visitas.atualizar_campo(visita["id"], "status", status)
+    return visitas.obter_visita(visita["id"])
+
+
+def _ids_in_message_text(text):
+    return [
+        int(line.split(" ", 1)[0][1:])
+        for line in text.splitlines()
+        if line.startswith("#")
+    ]
+
+
 def test_visita_iniciar_fluxo():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
@@ -1500,6 +1533,217 @@ def test_fazendas_visitadas_exclui_canceladas():
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
         api_whatsapp.send_whatsapp_document = original_sender
+
+
+def test_listar_visitas_textual_inclui_mais_de_dez_sem_deduplicar_fazenda():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, _sender = _install_services(temp_dir)
+            created = []
+            for index in range(1, 19):
+                created.append(
+                    _create_test_visit(
+                        visitas,
+                        index,
+                        fazenda="Fazenda Repetida" if index in {3, 14} else f"Fazenda {index:02d}",
+                        data_visita=f"2026-07-{index:02d}",
+                        status="aberta" if index % 5 == 0 else "fechada",
+                    )
+                )
+
+            messages = api_whatsapp._listar_visitas_messages("visitas")
+            text = "\n\n".join(messages)
+            ids = _ids_in_message_text(text)
+
+            assert "Visitas tÃ©cnicas encontradas: 18" in messages[0]
+            assert len(ids) == 18
+            assert len(set(ids)) == 18
+            assert ids[0] == created[-1]["id"]
+            assert ids[-1] == created[0]["id"]
+            assert text.count("Fazenda Repetida") == 2
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_listar_visitas_textual_nao_envia_limite_fixo(monkeypatch):
+    calls = []
+
+    class FakeVisitasService:
+        def listar_visitas_validas(self, **kwargs):
+            calls.append(kwargs)
+            return {"visitas": []}
+
+    monkeypatch.setattr(api_whatsapp, "visitas_service", FakeVisitasService())
+
+    assert api_whatsapp._listar_visitas_messages("visitas") == [
+        api_whatsapp.NO_VALID_VISITA_MESSAGE
+    ]
+    assert calls == [{}]
+
+
+def test_listar_visitas_abertas_e_hoje_sem_limite():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, _sender = _install_services(temp_dir)
+            today = api_whatsapp.date.today().isoformat()
+            abertas = [
+                _create_test_visit(visitas, index, data_visita=today, status="aberta")
+                for index in range(1, 13)
+            ]
+            fechada_hoje = _create_test_visit(
+                visitas,
+                30,
+                data_visita=today,
+                status="fechada",
+                fazenda="Fazenda Fechada Hoje",
+            )
+            _create_test_visit(
+                visitas,
+                31,
+                data_visita="2026-01-01",
+                status="fechada",
+                fazenda="Fazenda Antiga",
+            )
+
+            abertas_text = "\n\n".join(api_whatsapp._listar_visitas_messages("visitas abertas"))
+            hoje_text = "\n\n".join(api_whatsapp._listar_visitas_messages("visitas hoje"))
+            abertas_ids = _ids_in_message_text(abertas_text)
+            hoje_ids = _ids_in_message_text(hoje_text)
+
+            assert "Visitas abertas encontradas: 12" in abertas_text
+            assert len(abertas_ids) == 12
+            assert fechada_hoje["id"] not in abertas_ids
+            assert "Visitas tÃ©cnicas encontradas hoje: 13" in hoje_text
+            assert len(hoje_ids) == 13
+            assert fechada_hoje["id"] in hoje_ids
+            assert all(item["id"] in hoje_ids for item in abertas)
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_listar_visitas_sem_resultado_preserva_mensagem():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _install_services(temp_dir)
+            assert api_whatsapp._listar_visitas_messages("visitas") == [
+                api_whatsapp.NO_VALID_VISITA_MESSAGE
+            ]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_listar_visitas_pagina_por_tamanho_sem_cortar_blocos_e_instrucoes_so_no_final():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, _sender = _install_services(temp_dir)
+            for index in range(1, 31):
+                _create_test_visit(
+                    visitas,
+                    index,
+                    fazenda=f"Fazenda Com Nome Muito Longo Para Testar Paginacao {index:02d}",
+                    data_visita=f"2026-07-{index:02d}",
+                    gerente=f"Gerente Com Nome Longo {index:02d}",
+                )
+
+            messages = api_whatsapp._listar_visitas_messages("visitas")
+            text = "\n\n".join(messages)
+            ids = _ids_in_message_text(text)
+
+            assert len(messages) > 1
+            assert all(len(message) <= api_whatsapp.VISITA_LIST_MESSAGE_MAX_CHARS for message in messages)
+            assert len(ids) == 30
+            assert len(set(ids)) == 30
+            assert ids == sorted(ids, reverse=True)
+            for message in messages:
+                for block in message.split("\n\n"):
+                    if block.startswith("#"):
+                        assert "Status:" in block
+                        assert "Gerente:" in block
+            assert sum("Para gerar PDF individual" in message for message in messages) == 1
+            assert sum("Para buscar por fazenda" in message for message in messages) == 1
+            assert "Para gerar PDF individual" in messages[-1]
+            assert "Para buscar por fazenda" in messages[-1]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_listar_visitas_fluxo_envia_cada_parte_por_texto(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            for index in range(1, 31):
+                _create_test_visit(
+                    visitas,
+                    index,
+                    fazenda=f"Fazenda Longa Para Envio Parcelado {index:02d}",
+                    data_visita=f"2026-07-{index:02d}",
+                )
+            sent = []
+            monkeypatch.setattr(
+                api_whatsapp,
+                "send_whatsapp_text",
+                lambda to, message: sent.append((to, message)),
+            )
+
+            reply = api_whatsapp.handle_rdv_text_message(sender, "visitas")
+
+            expected = api_whatsapp._listar_visitas_messages("visitas")
+            assert reply is None
+            assert sent == [(sender, message) for message in expected]
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
+
+
+def test_listar_visitas_fluxo_propaga_erro_meta_sem_retry_ou_fallback(monkeypatch):
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            for index in range(1, 31):
+                _create_test_visit(
+                    visitas,
+                    index,
+                    fazenda=f"Fazenda Longa Para Falha Parcial {index:02d}",
+                    data_visita=f"2026-07-{index:02d}",
+                )
+            calls = []
+            error = api_whatsapp.WhatsAppSendError(
+                category="TIMEOUT",
+                retryable=True,
+                fallback_allowed=False,
+                message_kind="text",
+            )
+
+            def fake_send(to, message):
+                calls.append((to, message))
+                if len(calls) == 2:
+                    raise error
+
+            monkeypatch.setattr(api_whatsapp, "send_whatsapp_text", fake_send)
+
+            with pytest.raises(api_whatsapp.WhatsAppSendError):
+                api_whatsapp.handle_rdv_text_message(sender, "visitas")
+
+            assert len(calls) == 2
+    finally:
+        api_whatsapp.rdv_service = original_rdv
+        api_whatsapp.visitas_service = original_visitas
 
 
 def test_planilha_visitas_global():

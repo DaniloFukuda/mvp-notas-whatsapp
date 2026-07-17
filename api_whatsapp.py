@@ -1968,7 +1968,12 @@ def handle_visitas_text_message(
         return True, None
 
     if _is_listar_visitas_command(normalized_text):
-        return True, _listar_visitas_message(normalized_text)
+        messages = _listar_visitas_messages(normalized_text)
+        if messages == [NO_VALID_VISITA_MESSAGE]:
+            return True, NO_VALID_VISITA_MESSAGE
+        for message in messages:
+            send_whatsapp_text(sender_phone, message)
+        return True, None
 
     if (
         open_visit is not None
@@ -3706,8 +3711,17 @@ def _is_listar_visitas_command(normalized_text: str) -> bool:
     return normalized_text in report_aliases(handler="visit_list")
 
 
+VISITA_LIST_MESSAGE_MAX_CHARS = 3500
+
+
 def _listar_visitas_message(normalized_text: str) -> str:
-    filters = {"limite": 10}
+    """Compatibilidade: junta as partes geradas pela listagem paginada."""
+    return "\n\n".join(_listar_visitas_messages(normalized_text))
+
+
+
+def _listar_visitas_messages(normalized_text: str) -> list[str]:
+    filters = {}
     if normalized_text == "visitas hoje":
         filters["periodo"] = "hoje"
     if normalized_text == "visitas abertas":
@@ -3715,31 +3729,62 @@ def _listar_visitas_message(normalized_text: str) -> str:
     data = visitas_service.listar_visitas_validas(**filters)
     visitas = data.get("visitas") or []
     if not visitas:
-        return NO_VALID_VISITA_MESSAGE
+        return [NO_VALID_VISITA_MESSAGE]
 
-    title = (
-        "Visitas abertas encontradas:"
-        if normalized_text == "visitas abertas"
-        else "Visitas técnicas encontradas:"
-    )
-    lines = [title, ""]
-    for visita in visitas:
-        lines.extend(_format_visita_list_item(visita, detailed=True))
-        lines.append("")
-    lines.extend(
+    title = _visita_list_title(normalized_text, len(visitas))
+    visit_blocks = [
+        "\n".join(_format_visita_list_item(visita, detailed=True))
+        for visita in visitas
+    ]
+    instructions = "\n".join(
         [
             "Para gerar PDF individual de uma visita, envie:",
-            f"relatório visita {visitas[0]['id']}",
+            f"relatÃ³rio visita {visitas[0]['id']}",
             "",
-        ]
-    )
-    lines.extend(
-        [
             "Para buscar por fazenda, envie:",
-            f"relatório fazenda {visitas[0].get('fazenda') or 'Nome da Fazenda'}",
+            f"relatÃ³rio fazenda {visitas[0].get('fazenda') or 'Nome da Fazenda'}",
         ]
     )
-    return "\n".join(lines).strip()
+    return _chunk_visita_list_messages(title, visit_blocks, instructions)
+
+
+def _visita_list_title(normalized_text: str, total: int) -> str:
+    if normalized_text == "visitas abertas":
+        return f"Visitas abertas encontradas: {total}"
+    if normalized_text == "visitas hoje":
+        return f"Visitas tÃ©cnicas encontradas hoje: {total}"
+    return f"Visitas tÃ©cnicas encontradas: {total}"
+
+
+def _chunk_visita_list_messages(
+    title: str,
+    visit_blocks: list[str],
+    instructions: str,
+    max_chars: int = VISITA_LIST_MESSAGE_MAX_CHARS,
+) -> list[str]:
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    for block in visit_blocks:
+        candidate = current + [block]
+        if current and len("\n\n".join([title, *candidate, instructions])) > max_chars:
+            chunks.append(current)
+            current = [block]
+            continue
+        current = candidate
+    if current:
+        chunks.append(current)
+
+    total_parts = len(chunks)
+    messages: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        header = title
+        if total_parts > 1:
+            header = f"{title}\nParte {index} de {total_parts}"
+        parts = [header, *chunk]
+        if index == total_parts:
+            parts.append(instructions)
+        messages.append("\n\n".join(parts).strip())
+    return messages
 
 
 def _format_visita_list_item(visita: dict, detailed: bool = False) -> list[str]:
