@@ -529,9 +529,14 @@ def test_lista_interativa_faz_fallback_textual_quando_meta_recusa():
     original_post = api_whatsapp._post_whatsapp_message_payload
     original_text = api_whatsapp.send_whatsapp_text
     try:
+        error = api_whatsapp.WhatsAppSendError(
+            category="INVALID_PAYLOAD",
+            fallback_allowed=True,
+            message_kind="interactive.list",
+        )
         api_whatsapp._post_whatsapp_message_payload = (
             lambda payload, recipient, message_type: (_ for _ in ()).throw(
-                RuntimeError("Meta recusou")
+                error
             )
         )
         api_whatsapp.send_whatsapp_text = (

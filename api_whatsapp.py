@@ -72,6 +72,8 @@ from services.visita_validation import (
     visita_observacao_total_max_chars,
 )
 from services.visitas_service import VisitasTecnicasService, normalize_phone
+from services.whatsapp_meta_client import send_payload as send_meta_whatsapp_payload
+from services.whatsapp_meta_error_service import WhatsAppSendError
 
 
 try:
@@ -684,63 +686,27 @@ def download_media(media_id: str, destino: str | Path) -> Path:
 
 
 def send_whatsapp_text(to: str, message: str) -> None:
-    requests = _requests_module()
-    token = _whatsapp_access_token()
-    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
-    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
     message_type = "text"
     recipient = str(to or "").strip()
     recipient_strategy = "destinatario via from/wa_id do webhook"
     if not recipient:
         raise RuntimeError("Destinatario WhatsApp nao informado.")
 
-    try:
-        response = requests.post(
-            f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "messaging_product": "whatsapp",
-                "to": recipient,
-                "type": message_type,
-                "text": {"body": message},
-            },
-            timeout=20,
-        )
-    except Exception:
-        logger.exception(
-            "Erro de rede ao enviar resposta WhatsApp: to=%s type=%s estrategia=%s",
-            _mask_phone(recipient),
-            message_type,
-            recipient_strategy,
-        )
-        raise
-
+    _post_whatsapp_message_payload(
+        {
+            "messaging_product": "whatsapp",
+            "to": recipient,
+            "type": message_type,
+            "text": {"body": message},
+        },
+        recipient,
+        message_type,
+    )
     logger.info(
-        "Resposta da Meta ao envio WhatsApp: status_code=%s to=%s type=%s estrategia=%s",
-        response.status_code,
+        "Mensagem WhatsApp enviada com sucesso: to=%s type=%s estrategia=%s",
         _mask_phone(recipient),
         message_type,
         recipient_strategy,
-    )
-    if response.status_code >= 400:
-        logger.error(
-            "Erro da Meta ao enviar resposta WhatsApp: status_code=%s to=%s type=%s estrategia=%s body=%s",
-            response.status_code,
-            _mask_phone(recipient),
-            message_type,
-            recipient_strategy,
-            _safe_response_body(response),
-        )
-        response.raise_for_status()
-        return
-
-    logger.info(
-        "Mensagem WhatsApp enviada com sucesso: status_code=%s to=%s",
-        response.status_code,
-        _mask_phone(recipient),
     )
 
 
@@ -761,10 +727,13 @@ def send_whatsapp_list_message(
     )
     try:
         _post_whatsapp_message_payload(payload, to, "interactive.list")
-    except Exception:
-        logger.exception(
-            "Falha ao enviar lista interativa; usando fallback texto para %s",
+    except WhatsAppSendError as exc:
+        if not exc.fallback_allowed:
+            raise
+        logger.warning(
+            "Falha permanente ao enviar lista interativa; usando fallback texto: to=%s category=%s",
             _mask_phone(to),
+            exc.category,
         )
         send_whatsapp_text(to, fallback_text)
 
@@ -1005,28 +974,17 @@ def _post_whatsapp_message_payload(payload: dict, recipient: str, message_type: 
     token = _whatsapp_access_token()
     phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
     api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
-    response = requests.post(
-        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
+    send_meta_whatsapp_payload(
+        payload,
+        token=token,
+        phone_number_id=phone_number_id,
+        api_version=api_version,
         timeout=20,
+        requests_module=requests,
+        message_kind=message_type,
     )
-    if response.status_code >= 400:
-        logger.error(
-            "Erro da Meta ao enviar mensagem interativa: status_code=%s to=%s type=%s body=%s",
-            response.status_code,
-            _mask_phone(recipient),
-            message_type,
-            _safe_response_body(response),
-        )
-        response.raise_for_status()
-
     logger.info(
-        "Mensagem interativa WhatsApp enviada: status_code=%s to=%s type=%s",
-        response.status_code,
+        "Mensagem WhatsApp enviada via cliente Meta: to=%s type=%s",
         _mask_phone(recipient),
         message_type,
     )
@@ -1080,17 +1038,8 @@ def send_whatsapp_document(
         raise RuntimeError("Destinatario WhatsApp nao informado.")
 
     media_id = upload_whatsapp_document(content, filename, mime_type)
-    requests = _requests_module()
-    token = _whatsapp_access_token()
-    phone_number_id = _required_env("WHATSAPP_PHONE_NUMBER_ID")
-    api_version = os.getenv("WHATSAPP_GRAPH_API_VERSION", DEFAULT_GRAPH_API_VERSION)
-    response = requests.post(
-        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json={
+    _post_whatsapp_message_payload(
+        {
             "messaging_product": "whatsapp",
             "to": recipient,
             "type": "document",
@@ -1100,20 +1049,12 @@ def send_whatsapp_document(
                 "filename": filename,
             },
         },
-        timeout=20,
+        recipient,
+        "document",
     )
-    if response.status_code >= 400:
-        logger.error(
-            "Erro da Meta ao enviar Excel RDV: status_code=%s to=%s body=%s",
-            response.status_code,
-            _mask_phone(recipient),
-            _safe_response_body(response),
-        )
-        response.raise_for_status()
 
     logger.info(
-        "Excel RDV enviado pelo WhatsApp: status_code=%s to=%s",
-        response.status_code,
+        "Excel RDV enviado pelo WhatsApp: to=%s",
         _mask_phone(recipient),
     )
 
@@ -1349,10 +1290,13 @@ def _handle_whatsapp_message(message: dict) -> None:
     )
     try:
         send_rdv_review_menu_interactive(sender_phone, pending_review)
-    except Exception:
-        logger.exception(
-            "Falha ao enviar menu de revisao RDV; usando texto para %s",
+    except WhatsAppSendError as exc:
+        if not exc.fallback_allowed:
+            raise
+        logger.warning(
+            "Falha permanente ao enviar menu de revisao RDV; usando texto: to=%s category=%s",
             _mask_phone(sender_phone),
+            exc.category,
         )
         _safe_send_text(sender_phone, _rdv_review_fallback_message(pending_review))
 
@@ -2012,6 +1956,8 @@ def handle_visitas_text_message(
     if _is_planilha_visitas_command(normalized_text):
         try:
             _send_visitas_excel(sender_phone, normalized_text)
+        except WhatsAppSendError:
+            raise
         except Exception as exc:
             logger.exception(
                 "Falha ao enviar Excel de visitas pelo WhatsApp: to=%s erro=%s",
@@ -2037,6 +1983,8 @@ def handle_visitas_text_message(
         except ValueError as exc:
             if str(exc) == "visita_cancelada":
                 return True, CANCELED_VISITA_REPORT_MESSAGE
+            raise
+        except WhatsAppSendError:
             raise
         except Exception as exc:
             logger.exception(
@@ -4167,6 +4115,8 @@ def _handle_global_rdv_command(
                 _send_weekly_rdv_excel(sender_phone, week=report_request["reference"])
             else:
                 _send_monthly_rdv_excel(sender_phone, month=report_request["reference"])
+        except WhatsAppSendError:
+            raise
         except Exception as exc:
             logger.exception(
                 "Falha ao enviar Excel RDV pelo WhatsApp: to=%s erro=%s",
@@ -4182,6 +4132,8 @@ def _handle_global_rdv_command(
                 _send_weekly_rdv_pdf(sender_phone, week=report_request["reference"])
             else:
                 _send_monthly_rdv_pdf(sender_phone, month=report_request["reference"])
+        except WhatsAppSendError:
+            raise
         except Exception as exc:
             logger.exception(
                 "Falha ao enviar PDF RDV pelo WhatsApp: to=%s erro=%s",
@@ -5385,10 +5337,13 @@ def _send_rdv_reply(to: str, command_text: str, reply: str) -> None:
                 confirm_title="Limpar KM",
             )
             return
-    except Exception:
-        logger.exception(
-            "Falha ao enviar mensagem interativa; usando fallback texto para %s",
+    except WhatsAppSendError as exc:
+        if not exc.fallback_allowed:
+            raise
+        logger.warning(
+            "Falha permanente ao enviar mensagem interativa; usando fallback texto: to=%s category=%s",
             _mask_phone(to),
+            exc.category,
         )
 
     _safe_send_text(to, reply)

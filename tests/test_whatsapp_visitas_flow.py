@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 from pypdf import PdfReader
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -623,10 +624,15 @@ def test_visita_revisao_final_envia_menu_interativo_e_parser_list_reply(monkeypa
 
 def test_visita_revisao_final_menu_interativo_fallback_textual(monkeypatch):
     sent_texts = []
+    error = api_whatsapp.WhatsAppSendError(
+        category="INVALID_PAYLOAD",
+        fallback_allowed=True,
+        message_kind="interactive.list",
+    )
     monkeypatch.setattr(
         api_whatsapp,
         "send_whatsapp_list_message",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("Meta recusou")),
+        lambda **kwargs: (_ for _ in ()).throw(error),
     )
     monkeypatch.setattr(
         api_whatsapp,
@@ -638,6 +644,32 @@ def test_visita_revisao_final_menu_interativo_fallback_textual(monkeypatch):
     api_whatsapp._send_rdv_reply("5500000000001", "fechar visita", reply)
 
     assert sent_texts == [("5500000000001", reply)]
+
+
+def test_visita_revisao_final_menu_interativo_timeout_nao_faz_fallback_textual(monkeypatch):
+    sent_texts = []
+    error = api_whatsapp.WhatsAppSendError(
+        category="TIMEOUT",
+        retryable=True,
+        fallback_allowed=False,
+        message_kind="interactive.list",
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "send_whatsapp_list_message",
+        lambda **kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "send_whatsapp_text",
+        lambda to, message: sent_texts.append((to, message)),
+    )
+
+    reply = api_whatsapp._visita_revisao_final_message()
+    with pytest.raises(api_whatsapp.WhatsAppSendError):
+        api_whatsapp._send_rdv_reply("5500000000001", "fechar visita", reply)
+
+    assert sent_texts == []
 
 
 def test_visita_apagar_foto_usa_botoes_e_confirma_sim_por_interactive(monkeypatch):
