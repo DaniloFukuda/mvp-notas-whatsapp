@@ -47,6 +47,12 @@ from services.audio_transcription_intelligence_service import (
     IntelligentTranscriptionResult,
     transcription_review_default_mode,
 )
+from services.visita_summary_service import (
+    VisitaSummary,
+    VisitaSummaryResult,
+    VisitaSummaryService,
+)
+from services.visita_summary_llm_adapter import VisitaSummaryLlmAdapter
 from services.report_catalog import (
     interactive_report_commands,
     parse_rdv_report_command,
@@ -591,6 +597,11 @@ visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
 rdv_comment_states: dict[str, dict] = {}
 rdv_receipt_review_states: dict[str, dict] = {}
+# Estado temporario (em memoria, sem persistencia) da confirmacao do resumo de
+# visita gerado por IA a partir de um audio. Indexado pelo telefone normalizado.
+visita_summary_confirmation_states: dict[str, dict] = {}
+# Servico isolado de resumo de visita (flag VISITA_SUMMARY_ENABLED desligada por padrao).
+_visita_summary_service = VisitaSummaryService(VisitaSummaryLlmAdapter())
 _audio_transcription_service: AudioTranscriptionService | None = None
 _audio_transcription_review_service = AudioTranscriptionReviewService()
 _audio_transcription_intelligence_service = AudioTranscriptionIntelligenceService(
@@ -1315,6 +1326,15 @@ def handle_rdv_text_message(
         )
 
     normalized = _normalize_caption(text)
+
+    # Intercepta a escolha do resumo de IA de visita (se houver confirmacao
+    # pendente). Nao afeta RDV/comprovantes/avulso: o estado de confirmacao so
+    # existe para audio de descricao/observacao de visita. Se nao houver estado
+    # pendente, devolve None e o fluxo normal continua.
+    summary_reply = _handle_visita_summary_confirmation(sender_phone, text)
+    if summary_reply is not None:
+        return summary_reply
+
     menu_state = whatsapp_menu_states.get(sender_phone)
     if menu_state in {
         STANDALONE_TRANSCRIPTION_MODE_STATE,
@@ -1681,6 +1701,22 @@ def handle_whatsapp_audio_message(
     reviewed = _review_audio_transcription_for_sender(sender_phone, transcription)
     final_text = reviewed.reviewed_text or transcription
 
+    # Resumo de IA controlado por flag: so para audio de descricao/observacao
+    # de visita. Se o resumo for preparado, mostra a previsualizacao e pausa
+    # o fluxo de salvamento até o usuario escolher. Caso contrario (flag off,
+    # falha ou estado invalido), mantem o fluxo anterior inalterado.
+    visit = _get_active_visita_for_phone(sender_phone)
+    visit_state = str((visit or {}).get("estado_fluxo") or "")
+    summary_preview = _maybe_prepare_visita_audio_summary(
+        sender_phone,
+        visit,
+        visit_state,
+        final_text,
+        media_id,
+    )
+    if summary_preview is not None:
+        return summary_preview
+
     reply = handle_rdv_text_message(
         sender_phone,
         final_text,
@@ -1802,6 +1838,157 @@ def _transcription_context_for_sender(sender_phone: str) -> str:
     visit = _get_active_visita_for_phone(sender_phone)
     state = str((visit or {}).get("estado_fluxo") or "")
     return VISITA_AUDIO_REVIEW_CONTEXT_BY_STATE.get(state, "relatorio_campo")
+
+
+# Estados de visita que aceitam resumo de IA a partir de audio.
+_VISITA_SUMMARY_AUDIO_STATES = {
+    "aguardando_descricao_visita",
+    "aguardando_edicao_descricao",
+    "aguardando_observacoes_gerais",
+    "aguardando_adicao_observacao",
+    "aguardando_reescrita_observacoes",
+}
+_VISITA_SUMMARY_DESTINATION_BY_STATE = {
+    "aguardando_descricao_visita": "descricao",
+    "aguardando_edicao_descricao": "descricao",
+    "aguardando_observacoes_gerais": "observacoes",
+    "aguardando_adicao_observacao": "observacoes",
+    "aguardando_reescrita_observacoes": "observacoes",
+}
+
+
+def _visita_summary_destination_for_state(state: str) -> str | None:
+    return _VISITA_SUMMARY_DESTINATION_BY_STATE.get(state)
+
+
+def _summary_to_text(summary: VisitaSummary) -> str:
+    """Formata o resumo estruturado como texto unico para confirmacao/salvar."""
+    parts = [
+        f"Assunto principal: {summary.assunto_principal}",
+        f"Necessidades: {summary.necessidades}",
+        f"Decisoes: {summary.decisoes}",
+        f"Pendencias: {summary.pendencias}",
+        f"Proximos passos: {summary.proximos_passos}",
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _maybe_prepare_visita_audio_summary(
+    sender_phone: str,
+    visit: dict | None,
+    state: str,
+    reviewed_text: str,
+    media_id: str,
+) -> str | None:
+    """Prepara (opcionalmente) o resumo de IA a partir de um audio de visita.
+
+    Retorna a mensagem de previsualizacao do resumo se:
+    - houver visita ativa;
+    - o estado for de audio de descricao/observacao de visita;
+    - VISITA_SUMMARY_ENABLED estiver ativo;
+    - o resumo for gerado e validado com sucesso.
+
+    Em qualquer outra situacao (flag desligada, falha, resposta invalida,
+    ausencia de visita/estado invalido), retorna None para que o fluxo
+    anterior (salvar a transcricao revisada) continue intacto.
+    """
+    if visit is None:
+        return None
+    if state not in _VISITA_SUMMARY_AUDIO_STATES:
+        return None
+    destination = _visita_summary_destination_for_state(state)
+    if destination is None:
+        return None
+
+    # O servico ja respeita VISITA_SUMMARY_ENABLED internamente; a chamada a
+    # generate() simplesmente retorna fallback (sem chamar provider) se off.
+    result: VisitaSummaryResult = _visita_summary_service.generate(reviewed_text)
+    if not result.ok or result.summary is None:
+        return None
+
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return None
+    visita_summary_confirmation_states[phone] = {
+        "visita_id": int(visit.get("id")),
+        "destination": destination,
+        "original_state": state,
+        "reviewed_text": reviewed_text,
+        "summary_text": _summary_to_text(result.summary),
+        "media_id": media_id or "",
+    }
+    return _visita_summary_preview_message(result.summary, destination)
+
+
+def _visita_summary_preview_message(summary: VisitaSummary, destination: str) -> str:
+    label = "descricao da visita" if destination == "descricao" else "observacoes da visita"
+    return "\n".join(
+        [
+            "📋 Resumo sugerido para " + label + ":",
+            "",
+            f"Assunto principal: {summary.assunto_principal}",
+            f"Necessidades: {summary.necessidades}",
+            f"Decisoes: {summary.decisoes}",
+            f"Pendencias: {summary.pendencias}",
+            f"Proximos passos: {summary.proximos_passos}",
+            "",
+            "Responda com uma opcao:",
+            "1 - Usar o resumo sugerido",
+            "2 - Usar a transcricao revisada",
+            "3 - Reenviar o audio ou digitar o conteudo",
+        ]
+    )
+
+
+def _handle_visita_summary_confirmation(
+    sender_phone: str,
+    text: str,
+) -> str | None:
+    """Intercepta a escolha do usuario enquanto ha resumo pendente.
+
+    Retorna a resposta (ja salva no campo existente) ou None se nao houver
+    confirmacao pendente. Nunca interrompe o fluxo: se o estado nao existir,
+    devolve None e o fluxo normal de texto continua.
+    """
+    phone = normalize_phone(sender_phone)
+    if not phone or phone not in visita_summary_confirmation_states:
+        return None
+
+    pending = visita_summary_confirmation_states.pop(phone)
+    normalized = _normalize_caption(text)
+    choice = normalized.replace(" ", "").replace("-", "")
+
+    if choice in {"1", "usaresumo", "usarresumo"}:
+        chosen_text = pending.get("summary_text") or ""
+    elif choice in {"2", "usartranscricao", "usartranscricao", "usararevisada"}:
+        chosen_text = pending.get("reviewed_text") or ""
+    elif choice in {"3", "reenviar", "reenviaraudio", "cancelar"}:
+        return (
+            "Ok. Voce pode reenviar o audio ou digitar o conteudo diretamente "
+            "para a " + (
+                "descricao da visita." if pending.get("destination") == "descricao"
+                else "observacao da visita."
+            )
+        )
+    else:
+        # Escolha invalida: mantem o estado para o usuario tentar de novo.
+        visita_summary_confirmation_states[phone] = pending
+        return (
+            "Opcao invalida. Responda:\n"
+            "1 - Usar o resumo sugerido\n"
+            "2 - Usar a transcricao revisada\n"
+            "3 - Reenviar o audio ou digitar o conteudo"
+        )
+
+    if not chosen_text.strip():
+        return "Nao foi possivel recuperar o conteudo escolhido. Envie novamente."
+    # Reutiliza o fluxo existente de salvamento, como texto digitado normal.
+    handled, reply = handle_visitas_text_message(
+        sender_phone, chosen_text, is_audio_transcription=False
+    )
+    if handled:
+        return reply
+    return "Conteudo registrado."
 
 
 def _is_standalone_transcription_session(sender_phone: str) -> bool:
