@@ -5,15 +5,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
 
 import requests
 
-
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-5.4-mini"
-DEFAULT_TIMEOUT_SECONDS = 20.0
-DEFAULT_MAX_INPUT_CHARS = 12000
 
 AGRO_REVIEW_INSTRUCTIONS = """Transforme o texto fornecido em texto profissional, claro e fiel ao contexto.
 
@@ -94,7 +89,12 @@ def transcription_llm_review_enabled() -> bool:
 def review_transcription_with_llm(
     raw_text: str, context: str = "relatorio_agro"
 ) -> LlmReviewResult:
-    """Revisa apenas texto. O chamador aplica o fallback local em qualquer falha."""
+    """Revisa apenas texto. O chamador aplica o fallback local em qualquer falha.
+
+    Wrapper especifico de revisao: usa a camada generica de geracao de texto
+    (services.llm_text_generation_service) e aplica a heuristica de revisao
+    localmente, preservando o comportamento observavel anterior.
+    """
     raw = str(raw_text or "").strip()
     provider = os.getenv("TRANSCRIPTION_LLM_PROVIDER", "openai").strip().lower() or "openai"
     model = os.getenv("TRANSCRIPTION_LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
@@ -108,66 +108,22 @@ def review_transcription_with_llm(
         )
     if not raw:
         return fallback("Transcrição vazia.")
-    if provider != "openai":
-        return fallback(f"Provider de revisão LLM não suportado: {provider}.")
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        return fallback("OPENAI_API_KEY não configurada.")
+    from services.llm_text_generation_service import generate_text
 
-    max_chars = _positive_int_env(
-        "TRANSCRIPTION_LLM_MAX_INPUT_CHARS", DEFAULT_MAX_INPUT_CHARS
+    result = generate_text(
+        AGRO_REVIEW_INSTRUCTIONS,
+        f"Contexto: {context}\n\nTexto a revisar:\n{raw}",
     )
-    if len(raw) > max_chars:
-        return fallback(
-            f"Transcrição excede o limite de {max_chars} caracteres para revisão por LLM."
+    if not result.ok:
+        return LlmReviewResult(
+            False, result.provider, result.model, "", result.error_message, True
         )
-
-    timeout = _positive_float_env(
-        "TRANSCRIPTION_LLM_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
+    if _looks_like_bad_review(raw, result.output_text):
+        return fallback("OpenAI retornou uma revisão possivelmente corrompida.")
+    return LlmReviewResult(
+        True, result.provider, result.model, result.output_text
     )
-    payload = {
-        "model": model,
-        "instructions": AGRO_REVIEW_INSTRUCTIONS,
-        "input": f"Contexto: {context}\n\nTexto a revisar:\n{raw}",
-    }
-    try:
-        response = requests.post(
-            OPENAI_RESPONSES_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        output = _extract_output_text(response.json())
-        if not output:
-            return fallback("OpenAI retornou uma resposta vazia.")
-        if _looks_like_bad_review(raw, output):
-            return fallback("OpenAI retornou uma revisão possivelmente corrompida.")
-        return LlmReviewResult(True, provider, model, output)
-    except Exception as exc:
-        return fallback(f"Falha na revisão OpenAI: {type(exc).__name__}: {exc}")
-
-
-def _extract_output_text(data: Any) -> str:
-    if not isinstance(data, dict):
-        return ""
-    direct = str(data.get("output_text") or "").strip()
-    if direct:
-        return direct
-    parts: list[str] = []
-    for item in data.get("output") or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if isinstance(content, dict) and content.get("type") == "output_text":
-                text = str(content.get("text") or "").strip()
-                if text:
-                    parts.append(text)
-    return "\n".join(parts).strip()
 
 
 def _looks_like_bad_review(raw_text: str, output_text: str) -> bool:
@@ -226,19 +182,3 @@ def _unknown_word_ratio(raw_words: list[str], output_words: list[str]) -> float:
 
 def _normalize_word(word: str) -> str:
     return str(word or "").strip().lower()
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _positive_float_env(name: str, default: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)))
-        return value if value > 0 else default
-    except (TypeError, ValueError):
-        return default
