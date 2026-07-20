@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 from services.assistente_inteligente_provider import build_mock_provider
-
+from services.assistente_inteligente_openai_provider import (
+    AssistenteInteligenteOpenAIProvider,
+    build_openai_provider,
+)
 
 # Defaults seguros (valores ausentes usam estes).
 DEFAULT_PROVIDER = "mock"
@@ -120,12 +123,7 @@ class AssistenteInteligenteService:
         max_input_chars: int | None = None,
         max_history_turns: int | None = None,
     ) -> None:
-        self._provider = provider if provider is not None else build_mock_provider(
-            timeout_seconds=_env_float(
-                "ASSISTENTE_INTELIGENTE_TIMEOUT_SECONDS",
-                DEFAULT_TIMEOUT_SECONDS,
-            )
-        )
+        self._provider = provider if provider is not None else self._build_provider()
         self._max_input_chars = (
             max_input_chars
             if max_input_chars is not None
@@ -144,6 +142,31 @@ class AssistenteInteligenteService:
         )
         # Histórico em memória, por telefone normalizado. Nunca compartilhado.
         self._history: dict[str, List[AssistenteMessage]] = {}
+
+    # --- seleção de provider ------------------------------------------
+
+    @staticmethod
+    def _build_provider():
+        """Escolhe o provider por ASSISTENTE_INTELIGENTE_PROVIDER.
+
+        - ausente/"mock": MockAssistenteProvider (padrão);
+        - "openai": AssistenteInteligenteOpenAIProvider;
+        - inválido: provider de configuração inválida (NÃO usa o mock
+          como falsa resposta real; devolve erro controlado).
+        """
+        name = _env_str("ASSISTENTE_INTELIGENTE_PROVIDER", DEFAULT_PROVIDER).lower()
+        if name in ("", "mock"):
+            return build_mock_provider(
+                timeout_seconds=_env_float(
+                    "ASSISTENTE_INTELIGENTE_TIMEOUT_SECONDS",
+                    DEFAULT_TIMEOUT_SECONDS,
+                )
+            )
+        if name == "openai":
+            return build_openai_provider()
+        # Configuração inválida: não derruba; indica indisponibilidade
+        # de forma segura, sem fingir resposta real.
+        return _InvalidConfigProvider()
 
     # --- configuração -------------------------------------------------
 
@@ -254,4 +277,22 @@ class AssistenteInteligenteService:
             or self.provider_name,
             used_fallback=bool(getattr(response, "used_fallback", False)),
             error_message="",
+        )
+
+
+class _InvalidConfigProvider:
+    """Provider para configuração inválida de ASSISTENTE_INTELIGENTE_PROVIDER.
+
+    NÃO usa o MockAssistenteProvider como falsa resposta real.
+    Apenas indica indisponibilidade de forma segura, com used_fallback=True,
+    sem expor o nome interno, stack trace ou detalhes técnicos.
+    """
+
+    def generate(self, request) -> AssistenteResponse:  # noqa: ARG002
+        return AssistenteResponse(
+            ok=False,
+            text="",
+            provider="invalid-config",
+            used_fallback=True,
+            error_message="Provider de Assistente Inteligente não suportado.",
         )
