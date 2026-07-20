@@ -38,6 +38,10 @@ from services.audio_transcription_service import (
     AudioTranscriptionService,
     whisper_enabled_from_env,
 )
+from services.assistente_inteligente_service import (
+    AssistenteInteligenteService,
+    AssistenteRequest,
+)
 from services.audio_transcription_review_service import (
     AudioTranscriptionReviewService,
     ReviewedTranscription,
@@ -648,6 +652,11 @@ standalone_transcription_modes: dict[str, str] = {}
 # A sessão pode ser perdida apos o restart do servico (aceitavel no MVP).
 assistente_inteligente_states: dict[str, dict] = {}
 
+# Serviço isolado de conversa do Assistente Inteligente (Módulo 2A).
+# O handler NÃO conhece o provider; só chama generate(request). Provider
+# mock por padrão; nenhuma chamada externa ocorre nesta etapa.
+_assistente_inteligente_service = AssistenteInteligenteService()
+
 
 def _is_assistente_inteligente_enabled() -> bool:
     # Segue o padrao de _env_flag: ausencia da variavel => False.
@@ -698,6 +707,17 @@ def _has_operational_flow(sender_phone: str) -> bool:
     )
 
 
+def _assistente_exit(sender_phone: str) -> None:
+    phone = normalize_phone(sender_phone)
+    if phone:
+        assistente_inteligente_states.pop(phone, None)
+        # Limpa o historico daquele usuario ao sair (nao afeta outros).
+        try:
+            _assistente_inteligente_service.clear_history(phone)
+        except Exception:
+            pass
+
+
 def _handle_assistente_inteligente_message(sender_phone: str, text: str, normalized: str) -> str | None:
     # Chamado APENAS quando o Assistente ja esta ativo.
     # Intercepta antes dos fluxos de RDV/KM/visitas. Nunca chama API externa,
@@ -706,7 +726,16 @@ def _handle_assistente_inteligente_message(sender_phone: str, text: str, normali
         _assistente_exit(sender_phone)
         send_main_menu_interactive(sender_phone)
         return ASSISTENTE_INTELIGENTE_EXIT_MESSAGE
-    return ASSISTENTE_INTELIGENTE_SIMULATED_REPLY
+    # Encaminha o texto para o servico isolado de conversa (Modulo 2A).
+    # O handler nao conhece o provider; em falha o servico devolve fallback.
+    phone = normalize_phone(sender_phone) or sender_phone
+    response = _assistente_inteligente_service.generate(
+        AssistenteRequest(sender_key=phone, message=text)
+    )
+    if response is None or not str(getattr(response, "text", "") or "").strip():
+        # Fallback seguro se o servico nao devolver texto.
+        return ASSISTENTE_INTELIGENTE_SIMULATED_REPLY
+    return str(response.text)
 
 
 def _try_enter_assistente_inteligente(sender_phone: str, collaborator: dict) -> str | None:

@@ -136,7 +136,15 @@ def test_resposta_textual_simulada_no_modo(monkeypatch):
         try:
             api_whatsapp.handle_rdv_text_message(PHONE_OK, "assistente")
             reply = api_whatsapp.handle_rdv_text_message(PHONE_OK, "Qual o saldo?")
-            assert reply == api_whatsapp.ASSISTENTE_INTELIGENTE_SIMULATED_REPLY
+            # Modulo 2A: a resposta vem do servico isolado (provider mock),
+            # nao mais da constante fixa do handler. Comportamento visivel
+            # equivalente: resposta simulada e segura, sem expor a pergunta.
+            assert reply == (
+                "🤖 Recebi sua pergunta.\n\n"
+                "O canal do Assistente Inteligente está funcionando. A conexão com o "
+                "serviço de conversa será adicionada na próxima etapa.\n\n"
+                "Para voltar ao menu, envie *sair*."
+            )
             assert "saldo" not in reply
         finally:
             _restore(orig_r, orig_v)

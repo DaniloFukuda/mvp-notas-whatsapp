@@ -354,6 +354,11 @@ def test_payload_menu_principal_interativo():
             "title": "❓ Ajuda",
             "description": "Ver comandos e orientações",
         },
+        {
+            "id": "menu_assistente_inteligente",
+            "title": "🤖 Assistente Inteligente",
+            "description": "Canal de teste (modo simulado)",
+        },
     ]
 
 
