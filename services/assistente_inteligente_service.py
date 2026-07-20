@@ -30,6 +30,10 @@ from services.assistente_inteligente_openai_provider import (
     AssistenteInteligenteOpenAIProvider,
     build_openai_provider,
 )
+from services.assistente_inteligente_openrouter_provider import (
+    AssistenteInteligenteOpenRouterProvider,
+    build_openrouter_provider,
+)
 
 # Defaults seguros (valores ausentes usam estes).
 DEFAULT_PROVIDER = "mock"
@@ -164,6 +168,8 @@ class AssistenteInteligenteService:
             )
         if name == "openai":
             return build_openai_provider()
+        if name == "openrouter":
+            return build_openrouter_provider()
         # Configuração inválida: não derruba; indica indisponibilidade
         # de forma segura, sem fingir resposta real.
         return _InvalidConfigProvider()
