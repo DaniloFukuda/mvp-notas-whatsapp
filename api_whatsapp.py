@@ -78,6 +78,7 @@ from services.visita_validation import (
     visita_observacao_total_max_chars,
 )
 from services.visitas_service import VisitasTecnicasService, normalize_phone
+from services.visita_summary_service import _env_flag
 from services.whatsapp_meta_client import send_payload as send_meta_whatsapp_payload
 from services.whatsapp_meta_error_service import WhatsAppSendError
 
@@ -407,8 +408,35 @@ INTERACTIVE_COMMAND_IDS = {
     "rdv_review_edit_category": "4",
     "rdv_review_edit_comment": "5",
     "rdv_review_cancel": "6",
+    "menu_assistente_inteligente": "assistente",
 }
 INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
+# Assistente Inteligente Ciclus (Módulo 1): estado exclusivo, simulado, desligado.
+ASSISTENTE_INTELIGENTE_COMMANDS = {"assistente", "assistente inteligente"}
+ASSISTENTE_INTELIGENTE_EXIT_COMMANDS = {"sair", "menu", "cancelar", "voltar"}
+ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE = (
+    "⚠️ Você possui uma operação em andamento.\n\n"
+    "Conclua a operação atual ou envie *cancelar* para encerrá-la antes de abrir o Assistente Inteligente."
+)
+ASSISTENTE_INTELIGENTE_ENTRY_MESSAGE = (
+    "🤖 *Assistente Inteligente Ciclus*\n\n"
+    "Modo de teste ativado.\n\n"
+    "Envie uma pergunta em texto para validar o novo canal.\n"
+    "Para voltar ao sistema, envie *sair* ou *menu*."
+)
+ASSISTENTE_INTELIGENTE_SIMULATED_REPLY = (
+    "🤖 Recebi sua pergunta.\n\n"
+    "O canal do Assistente Inteligente está funcionando. A integração com as consultas da Ciclus será adicionada na próxima etapa.\n\n"
+    "Para voltar ao menu, envie *sair*."
+)
+ASSISTENTE_INTELIGENTE_MEDIA_REPLY = (
+    "🤖 Nesta primeira versão, o Assistente Inteligente aceita apenas mensagens de texto.\n\n"
+    "Envie sua pergunta em texto ou envie *sair* para voltar ao menu."
+)
+ASSISTENTE_INTELIGENTE_EXIT_MESSAGE = (
+    "✅ Assistente Inteligente encerrado.\n"
+    "Você voltou ao menu principal."
+)
 MAIN_MENU_MESSAGE = "\n".join(
     [
         "Olá! Sou o assistente da Ciclus Agro.",
@@ -465,6 +493,12 @@ MAIN_MENU_MESSAGE = "\n".join(
         "Comando:",
         "",
         "* transcrever áudio",
+        "",
+        "🤖 Assistente Inteligente",
+        "Canal de teste para perguntas gerais. Modo simulado.",
+        "Comando:",
+        "",
+        "* assistente",
         "",
         "Digite qualquer comando acima para começar.",
     ]
@@ -608,6 +642,84 @@ _audio_transcription_intelligence_service = AudioTranscriptionIntelligenceServic
     local_reviewer=_audio_transcription_review_service
 )
 standalone_transcription_modes: dict[str, str] = {}
+
+# Estado exclusivo do Assistente Inteligente Ciclus (Módulo 1).
+# Chaveado pelo telefone normalizado. Em memoria, sem persistencia.
+# A sessão pode ser perdida apos o restart do servico (aceitavel no MVP).
+assistente_inteligente_states: dict[str, dict] = {}
+
+
+def _is_assistente_inteligente_enabled() -> bool:
+    # Segue o padrao de _env_flag: ausencia da variavel => False.
+    return _env_flag("ASSISTENTE_INTELIGENTE_ENABLED", False)
+
+
+def _assistente_active(sender_phone: str) -> bool:
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return False
+    return bool((assistente_inteligente_states.get(phone) or {}).get("active"))
+
+
+def _assistente_enter(sender_phone: str, collaborator: dict) -> None:
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return
+    assistente_inteligente_states[phone] = {
+        "active": True,
+        "collaborator_id": int((collaborator or {}).get("id") or 0),
+    }
+
+
+def _assistente_exit(sender_phone: str) -> None:
+    phone = normalize_phone(sender_phone)
+    if phone:
+        assistente_inteligente_states.pop(phone, None)
+
+
+def _has_operational_flow(sender_phone: str) -> bool:
+    # Nao altera nenhum estado existente; apenas detecta conflito.
+    phone = normalize_phone(sender_phone)
+    if not phone:
+        return False
+    return (
+        phone in visita_edit_states
+        or phone in visita_active_states
+        or phone in visita_new_visit_states
+        or phone in rdv_comment_states
+        or phone in rdv_receipt_review_states
+        or phone in visita_summary_confirmation_states
+        or phone in standalone_transcription_modes
+        or whatsapp_menu_states.get(phone)
+        in {STANDALONE_TRANSCRIPTION_MODE_STATE, STANDALONE_TRANSCRIPTION_STATE}
+        or rdv_service.get_open_launch_by_phone(phone) is not None
+        or rdv_service.get_open_km_launch_by_phone(phone) is not None
+        or visitas_service.obter_visita_aberta(phone) is not None
+    )
+
+
+def _handle_assistente_inteligente_message(sender_phone: str, text: str, normalized: str) -> str | None:
+    # Chamado APENAS quando o Assistente ja esta ativo.
+    # Intercepta antes dos fluxos de RDV/KM/visitas. Nunca chama API externa,
+    # nao consulta banco alem da autorizacao e nao altera dados.
+    if normalized in ASSISTENTE_INTELIGENTE_EXIT_COMMANDS:
+        _assistente_exit(sender_phone)
+        send_main_menu_interactive(sender_phone)
+        return ASSISTENTE_INTELIGENTE_EXIT_MESSAGE
+    return ASSISTENTE_INTELIGENTE_SIMULATED_REPLY
+
+
+def _try_enter_assistente_inteligente(sender_phone: str, collaborator: dict) -> str | None:
+    # Tenta ativar o Assistente (comando textual ou item de menu).
+    # Nao entra se houver fluxo operacional em andamento.
+    if not _is_assistente_inteligente_enabled():
+        return None
+    if _assistente_active(sender_phone):
+        return None
+    if _has_operational_flow(sender_phone):
+        return ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE
+    _assistente_enter(sender_phone, collaborator)
+    return ASSISTENTE_INTELIGENTE_ENTRY_MESSAGE
 
 
 @router.get("/webhook/whatsapp")
@@ -791,58 +903,67 @@ def send_whatsapp_button_message(
 
 
 def send_main_menu_interactive(to: str) -> None:
+    sections = [
+        {
+            "title": "Menu principal",
+            "rows": [
+                {
+                    "id": "menu_rdv_receipt",
+                    "title": "🧾 Lançar comprovante",
+                    "description": "Enviar foto ou PDF",
+                },
+                {
+                    "id": "menu_km",
+                    "title": "🚗 Registrar KM",
+                    "description": "Iniciar ou finalizar viagem",
+                },
+                {
+                    "id": "menu_visit_start",
+                    "title": "🌱 Nova visita técnica",
+                    "description": "Registrar fazenda visitada",
+                },
+                {
+                    "id": "menu_audio_transcription",
+                    "title": "🎙️ Transcrever áudio",
+                    "description": "Receber a transcrição em texto",
+                },
+                {
+                    "id": "menu_rdv_summary",
+                    "title": "📊 Resumo RDV",
+                    "description": "Ver resumo mensal",
+                },
+                {
+                    "id": "menu_rdv_excel",
+                    "title": "📎 Planilha RDV",
+                    "description": "Receber Excel mensal",
+                },
+                {
+                    "id": "menu_reports",
+                    "title": "📋 Relatórios",
+                    "description": "Ver relatórios disponíveis",
+                },
+                {
+                    "id": "menu_help",
+                    "title": "❓ Ajuda",
+                    "description": "Ver comandos e orientações",
+                },
+            ],
+        },
+    ]
+    if _is_assistente_inteligente_enabled():
+        sections[0]["rows"].append(
+            {
+                "id": "menu_assistente_inteligente",
+                "title": "🤖 Assistente Inteligente",
+                "description": "Canal de teste (modo simulado)",
+            }
+        )
     send_whatsapp_list_message(
         to=to,
         header="🌱 Ciclus Agro",
         body="Escolha uma opção para continuar:",
         button_text="Abrir menu",
-        sections=[
-            {
-                "title": "Menu principal",
-                "rows": [
-                    {
-                        "id": "menu_rdv_receipt",
-                        "title": "🧾 Lançar comprovante",
-                        "description": "Enviar foto ou PDF",
-                    },
-                    {
-                        "id": "menu_km",
-                        "title": "🚗 Registrar KM",
-                        "description": "Iniciar ou finalizar viagem",
-                    },
-                    {
-                        "id": "menu_visit_start",
-                        "title": "🌱 Nova visita técnica",
-                        "description": "Registrar fazenda visitada",
-                    },
-                    {
-                        "id": "menu_audio_transcription",
-                        "title": "🎙️ Transcrever áudio",
-                        "description": "Receber a transcrição em texto",
-                    },
-                    {
-                        "id": "menu_rdv_summary",
-                        "title": "📊 Resumo RDV",
-                        "description": "Ver resumo mensal",
-                    },
-                    {
-                        "id": "menu_rdv_excel",
-                        "title": "📎 Planilha RDV",
-                        "description": "Receber Excel mensal",
-                    },
-                    {
-                        "id": "menu_reports",
-                        "title": "📋 Relatórios",
-                        "description": "Ver relatórios disponíveis",
-                    },
-                    {
-                        "id": "menu_help",
-                        "title": "❓ Ajuda",
-                        "description": "Ver comandos e orientações",
-                    },
-                ],
-            },
-        ],
+        sections=sections,
         fallback_text=MAIN_MENU_MESSAGE,
     )
 
@@ -1123,6 +1244,12 @@ def _handle_whatsapp_message(message: dict) -> None:
             _send_rdv_reply(sender_phone, text, reply)
         return
 
+    # Assistente Inteligente ativo: intercepta TODA midia nao textual antes
+    # dos handlers normais. Nao baixa a midia e nao toca visita/RDV/comprovante.
+    if _assistente_active(sender_phone):
+        _safe_send_text(sender_phone, ASSISTENTE_INTELIGENTE_MEDIA_REPLY)
+        return
+
     if message_type == "location":
         reply = handle_visitas_location_message(sender_phone, message.get("location") or {})
         if reply:
@@ -1388,6 +1515,14 @@ def handle_rdv_text_message(
     )
     if global_command_handled:
         return global_reply
+
+    if normalized in ASSISTENTE_INTELIGENTE_COMMANDS:
+        assistant_reply = _try_enter_assistente_inteligente(sender_phone, collaborator)
+        if assistant_reply is not None:
+            return assistant_reply
+
+    if _assistente_active(sender_phone):
+        return _handle_assistente_inteligente_message(sender_phone, text, normalized)
 
     if normalized in MENU_OPEN_COMMANDS:
         send_main_menu_interactive(sender_phone)
