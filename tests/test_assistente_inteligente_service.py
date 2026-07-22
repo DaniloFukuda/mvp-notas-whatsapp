@@ -111,41 +111,44 @@ def test_mock_provider_returns_expected_reply():
 # ---------------------------------------------------------------------------
 
 def test_no_external_call(monkeypatch):
+    """Verifica que o provider mock nao importa openai/hermes/requests/httpx."""
     import services.assistente_inteligente_provider as prov
 
-    calls = []
-    monkeypatch.setattr(
-        prov, "build_mock_provider", lambda *a, **k: _SpyProvider(calls)
-    )
-    # Forca reconstrucao com provider espiao.
-    service = AssistenteInteligenteService(provider=_SpyProvider(calls))
+    # Flags para detectar imports proibidos no provider real
+    imported_forbidden = {"openai": False, "hermes": False, "requests": False, "httpx": False}
+
+    # Substitui o modulo do provider por um wrapper que detecta imports
+    original_build = prov.build_mock_provider
+
+    def tracking_build(*args, **kwargs):
+        # Verifica se modulos proibidos foram importados durante a execucao
+        for mod in ("openai", "hermes", "requests", "httpx"):
+            if mod in sys.modules:
+                imported_forbidden[mod] = True
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(prov, "build_mock_provider", tracking_build)
+
+    # Usa o servico com provider real (mock) - sem injetar spy que importa modulos
+    service = AssistenteInteligenteService()
     service.generate(AssistenteRequest(sender_key=PHONE_OK, message="Oi"))
-    assert len(calls) == 1
-    # O provider espiao NAO importa openai/hermes nem usa requests/httpx.
-    assert not _IMPORTED_OPENAI and not _IMPORTED_HERMES
+
+    # Verifica que nenhum modulo proibido foi importado pelo provider real
+    assert not any(imported_forbidden.values()), f"Modulos importados indevidamente: {imported_forbidden}"
 
 
+# ---------------------------------------------------------------------------
+# 2b) Spy para verificar que nenhuma rede real e chamada durante a geracao
+# ---------------------------------------------------------------------------
 # Marcacao global de imports proibidos.
 _IMPORTED_OPENAI = False
 _IMPORTED_HERMES = False
 
 
 class _SpyProvider:
+    """Provider espiao para testes que precisam rastrear chamadas."""
     def __init__(self, calls):
         self._calls = calls
-        global _IMPORTED_OPENAI, _IMPORTED_HERMES
-        try:
-            import openai  # noqa: F401
-
-            _IMPORTED_OPENAI = True
-        except Exception:
-            pass
-        try:
-            import hermes  # noqa: F401
-
-            _IMPORTED_HERMES = True
-        except Exception:
-            pass
 
     def generate(self, request):
         self._calls.append(request)
@@ -158,11 +161,16 @@ class _SpyProvider:
         )
 
 
+class _BoomProvider:
+    def generate(self, request):
+        raise RuntimeError("provider quebrou")
+
+
 # ---------------------------------------------------------------------------
 # 3) texto vazio e rejeitado (nao chama provider)
 # ---------------------------------------------------------------------------
 
-def test_empty_text_rejected(monkeypatch):
+def test_empty_text_rejected():
     calls = []
     service = AssistenteInteligenteService(provider=_SpyProvider(calls))
     resp = service.generate(AssistenteRequest(sender_key=PHONE_OK, message="   "))

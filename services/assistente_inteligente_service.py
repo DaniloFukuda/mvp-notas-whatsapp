@@ -22,6 +22,7 @@ Este módulo:
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
@@ -33,6 +34,11 @@ from services.assistente_inteligente_openai_provider import (
 from services.assistente_inteligente_openrouter_provider import (
     AssistenteInteligenteOpenRouterProvider,
     build_openrouter_provider,
+)
+from services.assistente_inteligente_observability import (
+    record_request_start,
+    record_request_end,
+    get_metrics,
 )
 
 # Defaults seguros (valores ausentes usam estes).
@@ -237,6 +243,16 @@ class AssistenteInteligenteService:
             )
 
         history = self.get_history(sender_key)
+
+        # Observabilidade: registro de início
+        request_id = record_request_start(
+            sender_key=sender_key,
+            provider=self.provider_name,
+            input_chars=len(raw),
+            history_turns=len(history) // 2,
+        )
+
+        start_time = time.perf_counter()
         try:
             response = self._provider.generate(
                 AssistenteRequest(
@@ -247,6 +263,16 @@ class AssistenteInteligenteService:
             )
         except Exception:
             # Falha do provider NÃO deve propagar para o webhook.
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            record_request_end(
+                request_id=request_id,
+                success=False,
+                latency_ms=latency_ms,
+                output_chars=0,
+                used_fallback=True,
+                error_type="exception",
+                error_message="Falha temporária do provider.",
+            )
             return AssistenteResponse(
                 ok=False,
                 text=_FALLBACK_TEXT,
@@ -255,9 +281,20 @@ class AssistenteInteligenteService:
                 error_message="Falha temporária do provider.",
             )
 
+        latency_ms = (time.perf_counter() - start_time) * 1000
+
         if not getattr(response, "ok", False) or not str(
             getattr(response, "text", "") or ""
         ).strip():
+            record_request_end(
+                request_id=request_id,
+                success=False,
+                latency_ms=latency_ms,
+                output_chars=0,
+                used_fallback=True,
+                error_type="invalid_response",
+                error_message="Resposta vazia ou inválida do provider.",
+            )
             return AssistenteResponse(
                 ok=False,
                 text=_FALLBACK_TEXT,
@@ -275,6 +312,14 @@ class AssistenteInteligenteService:
             AssistenteMessage(role="assistant", text=str(response.text))
         )
         self._trim_history(sender_key)
+
+        record_request_end(
+            request_id=request_id,
+            success=True,
+            latency_ms=latency_ms,
+            output_chars=len(str(response.text)),
+            used_fallback=bool(getattr(response, "used_fallback", False)),
+        )
 
         return AssistenteResponse(
             ok=True,
