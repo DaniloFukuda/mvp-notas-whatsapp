@@ -1,13 +1,32 @@
+"""Transcrição de áudio com Whisper local (openai-whisper).
+
+Este módulo fornece o serviço principal de transcrição de áudio usando
+o modelo Whisper da OpenAI executado localmente. Suporta:
+- Limites de tamanho e duração configuráveis
+- Chunking automático de áudios longos
+- Preprocessamento opcional com ffmpeg
+- Cache de modelo em memória
+- Preservação de áudio falho para diagnóstico
+"""
+
+from __future__ import annotations
+
 import logging
 import math
 import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
+from services.audio_transcription_contract import (
+    AudioMetadata,
+    TranscriptionResult,
+    validate_anchors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +123,11 @@ class AudioTranscriptionService:
         )
 
     def transcrever(self, audio_path: str) -> str:
+        """Método compatível que retorna apenas o texto transcrito.
+
+        Mantido para compatibilidade com chamadores existentes.
+        Comportamento: levanta exceções em erro (como antes), retorna texto do modelo.
+        """
         path = Path(audio_path)
         duration_holder: list[float | None] = [None]
         try:
@@ -111,6 +135,198 @@ class AudioTranscriptionService:
         except Exception:
             self._preserve_failed_audio(path, duration_holder[0])
             raise
+
+    def transcrever_com_resultado(self, audio_path: str) -> TranscriptionResult:
+        """Transcreve áudio e retorna resultado completo com metadados.
+
+        Este é o novo método recomendado que fornece:
+        - raw_text (transcrição bruta do Whisper)
+        - reviewed_text (após revisão local, se habilitada)
+        - AudioMetadata com provider, modelo, duração, tamanho, chunks, etc.
+        - warnings e fallback info
+        - request_id para correlação
+        """
+        path = Path(audio_path)
+        request_id = uuid.uuid4().hex[:12]
+        warnings = []
+        used_fallback = False
+        preprocessed = False
+        chunk_count = 1
+        duration_seconds = 0.0
+
+        if not path.is_file():
+            return TranscriptionResult.failure(
+                error_code="FILE_NOT_FOUND",
+                error_message=f"Arquivo de áudio não encontrado: {path}",
+                metadata=AudioMetadata(request_id=request_id),
+            )
+
+        size_bytes = path.stat().st_size
+        if size_bytes > int(self.max_audio_mb * 1024 * 1024):
+            return TranscriptionResult.failure(
+                error_code="AUDIO_TOO_LARGE",
+                error_message=AUDIO_TOO_LONG_MESSAGE,
+                metadata=AudioMetadata(
+                    request_id=request_id,
+                    size_bytes=size_bytes,
+                    model_name=self.model_name,
+                    language=self.language,
+                ),
+            )
+
+        try:
+            duration_seconds = self._duration_probe(str(path))
+        except Exception as exc:
+            self._preserve_failed_audio(path, None)
+            return TranscriptionResult.failure(
+                error_code="DURATION_PROBE_FAILED",
+                error_message=f"Falha ao determinar duração: {exc}",
+                metadata=AudioMetadata(
+                    request_id=request_id,
+                    size_bytes=size_bytes,
+                    model_name=self.model_name,
+                    language=self.language,
+                ),
+                warnings=("preprocessing_failed",),
+            )
+
+        if duration_seconds <= 0:
+            self._preserve_failed_audio(path, None)
+            return TranscriptionResult.failure(
+                error_code="INVALID_DURATION",
+                error_message="Não foi possível determinar a duração do áudio.",
+                metadata=AudioMetadata(
+                    request_id=request_id,
+                    size_bytes=size_bytes,
+                    model_name=self.model_name,
+                    language=self.language,
+                ),
+            )
+
+        if duration_seconds > self.max_audio_seconds:
+            self._preserve_failed_audio(path, duration_seconds)
+            return TranscriptionResult.failure(
+                error_code="AUDIO_TOO_LONG",
+                error_message=AUDIO_TOO_LONG_MESSAGE,
+                metadata=AudioMetadata(
+                    request_id=request_id,
+                    size_bytes=size_bytes,
+                    duration_seconds=duration_seconds,
+                    model_name=self.model_name,
+                    language=self.language,
+                ),
+            )
+
+        model = self._load_model()
+        audio_path_for_transcribe = str(path)
+
+        # Preprocessamento se habilitado
+        if self.preprocess_audio:
+            with tempfile.TemporaryDirectory(prefix="whisper_preprocess_") as temp_dir:
+                wav_path = Path(temp_dir) / "audio_preprocessado.wav"
+                try:
+                    self._audio_preprocessor(str(path), str(wav_path))
+                    wav_size_bytes = wav_path.stat().st_size
+                    wav_duration = self._duration_probe(str(wav_path))
+                    if wav_size_bytes <= 0 or wav_duration <= 0:
+                        raise RuntimeError("WAV preprocessado vazio ou com duração inválida.")
+                    logger.info(
+                        "Áudio Whisper preprocessado: caminho=%s tamanho_bytes=%s duracao_segundos=%.3f",
+                        wav_path, wav_size_bytes, wav_duration
+                    )
+                    preprocessed = True
+                    audio_path_for_transcribe = str(wav_path)
+                    duration_seconds = wav_duration
+                except Exception as exc:
+                    logger.exception(
+                        "Falha no preprocessamento de áudio Whisper; "
+                        "usando arquivo original: arquivo=%s erro=%s",
+                        path, exc
+                    )
+                    warnings.append("preprocessing_failed")
+                    # Continua com arquivo original
+
+        # Transcrição com chunking se necessário
+        if duration_seconds <= self.chunk_seconds:
+            raw_text = self._transcribe_path(model, Path(audio_path_for_transcribe))
+        else:
+            chunk_count = math.ceil(duration_seconds / self.chunk_seconds)
+            warnings.append("chunking_used")
+            texts: list[str] = []
+            with tempfile.TemporaryDirectory(prefix="whisper_chunks_") as temp_dir:
+                for index in range(chunk_count):
+                    start = index * self.chunk_seconds
+                    chunk_duration = min(self.chunk_seconds, duration_seconds - start)
+                    chunk_path = Path(temp_dir) / f"chunk_{index:04d}.wav"
+                    self._chunk_extractor(str(path), str(chunk_path), start, chunk_duration)
+                    chunk_text = self._transcribe_path(model, chunk_path)
+                    if chunk_text:
+                        texts.append(chunk_text)
+            raw_text = " ".join(texts).strip()
+
+        # Se transcrição vazia, preserva áudio e retorna erro
+        if not raw_text:
+            self._preserve_failed_audio(path, duration_seconds)
+            return TranscriptionResult.failure(
+                error_code="EMPTY_TRANSCRIPTION",
+                error_message=TRANSCRIPTION_FAILED_MESSAGE,
+                metadata=AudioMetadata(
+                    request_id=request_id,
+                    provider="whisper_local",
+                    model_name=self.model_name,
+                    language=self.language,
+                    duration_seconds=duration_seconds,
+                    size_bytes=size_bytes,
+                    chunk_count=chunk_count,
+                    preprocessed=preprocessed,
+                ),
+                warnings=tuple(warnings + ["empty_transcription"]),
+            )
+
+        # Revisão local (rule-based) - sempre tenta
+        reviewed_text = raw_text
+        try:
+            from services.audio_transcription_review_service import (
+                AudioTranscriptionReviewService,
+                transcription_review_enabled,
+            )
+            if transcription_review_enabled():
+                reviewer = AudioTranscriptionReviewService()
+                result = reviewer.review(raw_text, context="relatorio_campo")
+                reviewed_text = result.reviewed_text or raw_text
+                if result.changed:
+                    warnings.extend(result.warnings)
+                    # Validação de âncoras
+                    is_safe, anchor_warnings = validate_anchors(raw_text, reviewed_text)
+                    if not is_safe:
+                        warnings.extend(anchor_warnings)
+                        # Em caso de âncoras perdidas, usa raw_text como reviewed
+                        reviewed_text = raw_text
+                        warnings.append("review_fallback")
+                        used_fallback = True
+        except Exception as exc:
+            logger.exception("Falha na revisão local; usando texto bruto: erro=%s", exc)
+            warnings.append("review_fallback")
+            used_fallback = True
+
+        metadata = AudioMetadata(
+            request_id=request_id,
+            provider="whisper_local",
+            model_name=self.model_name,
+            language=self.language,
+            duration_seconds=duration_seconds,
+            size_bytes=size_bytes,
+            chunk_count=chunk_count,
+            preprocessed=preprocessed,
+        )
+
+        return TranscriptionResult.success(
+            raw_text=raw_text,
+            reviewed_text=reviewed_text,
+            metadata=metadata,
+            used_fallback=used_fallback,
+            warnings=tuple(warnings),
+        )
 
     def _transcrever(self, path: Path, duration_holder: list[float | None]) -> str:
         if not path.is_file():
@@ -326,7 +542,7 @@ def _extract_audio_chunk(
             timeout=120,
         )
     except (
-        FileNotFoundError,
+        FileNotFoundFoundError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ) as exc:

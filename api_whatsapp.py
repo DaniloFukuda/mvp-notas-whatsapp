@@ -2204,7 +2204,9 @@ def _transcribe_audio_file(audio_path: Path) -> str:
         raise RuntimeError(f"Provider de transcricao nao suportado: {provider}")
     if _audio_transcription_service is None:
         _audio_transcription_service = AudioTranscriptionService.from_env()
-    return _audio_transcription_service.transcrever(str(audio_path))
+    # Usa novo método com resultado completo, mas retorna apenas o texto para compatibilidade
+    result = _audio_transcription_service.transcrever_com_resultado(str(audio_path))
+    return result.reviewed_text if result.ok else result.raw_text
 
 
 def _build_audio_transcription_destination(
