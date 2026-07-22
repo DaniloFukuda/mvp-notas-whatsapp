@@ -1273,6 +1273,17 @@ def _handle_whatsapp_message(message: dict) -> None:
             _send_rdv_reply(sender_phone, text, reply)
         return
 
+    # Contatos (contacts) - não processados em nenhum fluxo operacional.
+    # Resposta explícita sem acessar dados do contato, sem baixar mídia,
+    # sem chamar provider de IA, sem alterar estado.
+    if message_type == "contacts":
+        _safe_send_text(
+            sender_phone,
+            "📇 Recebi um contato, mas ainda não consigo processar esse tipo de mensagem. "
+            "Envie sua pergunta em texto ou digite *sair* para voltar ao menu."
+        )
+        return
+
     # Assistente Inteligente ativo: intercepta TODA midia nao textual antes
     # dos handlers normais. Nao baixa a midia e nao toca visita/RDV/comprovante.
     if _assistente_active(sender_phone):
