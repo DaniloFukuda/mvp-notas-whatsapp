@@ -1786,7 +1786,7 @@ def handle_rdv_audio_comment_message(
     )
     try:
         downloaded_path = download_media(media_id, destination)
-        transcription = _transcribe_audio_file(downloaded_path)
+        result = _transcribe_audio_with_result(downloaded_path)
     except Exception as exc:
         logger.exception(
             "Falha ao transcrever audio RDV: media_id=%s erro=%s",
@@ -1799,19 +1799,40 @@ def handle_rdv_audio_comment_message(
         if not _keep_audio_after_transcription():
             _safe_unlink(destination)
 
-    if not transcription:
+    if not result.ok:
         state["state"] = "awaiting_correction"
         return TRANSCRIPTION_FAILED_MESSAGE
 
-    reviewed = _review_transcription_in_revisada_mode(
-        transcription,
-        context="relatorio_campo",
-    )
-    final_text = reviewed.reviewed_text or transcription
+    # Avisos ao usuário
+    warnings = list(result.warnings) if result.warnings else []
+    user_warning = ""
+    if warnings:
+        has_suspicious = any(w.startswith("suspicious_") for w in warnings)
+        if has_suspicious:
+            user_warning = "\n\n⚠️ Identifiquei números, datas ou medidas que precisam de conferência. Revise o texto antes de confirmar."
+
+    raw_text = result.raw_text
+    reviewed_text = result.reviewed_text or raw_text
+    is_safe = not any(w.startswith("suspicious_") for w in warnings)
+
+    # Armazena ambos os textos e metadados no estado
     state["state"] = "awaiting_audio_confirmation"
-    state["raw_text"] = transcription
-    state["text"] = final_text
-    return _rdv_transcription_confirmation_message(final_text)
+    state["raw_text"] = raw_text
+    state["text"] = reviewed_text  # texto que será usado se confirmar
+    state["reviewed_text"] = reviewed_text
+    state["raw_text_full"] = raw_text
+    state["warnings"] = list(warnings) if warnings else []
+    state["used_fallback"] = result.used_fallback
+    state["request_id"] = result.metadata.request_id
+    state["is_safe"] = is_safe
+    state["user_warning"] = user_warning
+
+    # Se não for seguro, usa o raw_text como opção padrão na mensagem
+    display_text = reviewed_text if is_safe else raw_text
+    message = _rdv_transcription_confirmation_message(display_text)
+    if user_warning:
+        message += user_warning
+    return message
 
 
 def handle_whatsapp_audio_message(
@@ -1830,7 +1851,7 @@ def handle_whatsapp_audio_message(
         return "Recebi seu audio, mas a transcricao esta desativada. Pode digitar a informacao?"
 
     if not media_id:
-        return "N\u00e3o consegui entender esse \u00e1udio. Pode enviar novamente ou digitar a informa\u00e7\u00e3o?"
+        return "Nao consegui entender esse audio. Pode enviar novamente ou digitar a informacao?"
 
     destination = _build_audio_transcription_destination(
         sender_phone=sender_phone,
@@ -1840,7 +1861,7 @@ def handle_whatsapp_audio_message(
     downloaded_path = destination
     try:
         downloaded_path = download_media(media_id, destination)
-        transcription = _transcribe_audio_file(downloaded_path)
+        result = _transcribe_audio_with_result(downloaded_path)
     except AudioLimitExceededError as exc:
         logger.warning(
             "Audio WhatsApp acima do limite: media_id=%s erro=%s",
@@ -1860,8 +1881,20 @@ def handle_whatsapp_audio_message(
         if not _keep_audio_after_transcription():
             _safe_unlink(downloaded_path)
 
-    if not transcription:
+    if not result.ok:
         return TRANSCRIPTION_FAILED_MESSAGE
+
+    # Avisos ao usuário
+    warnings = list(result.warnings) if result.warnings else []
+    user_warning = ""
+    if warnings:
+        # Verifica se há warnings de alteração suspeita de números/datas/medidas
+        has_suspicious = any(w.startswith("suspicious_") for w in warnings)
+        if has_suspicious:
+            user_warning = "\n\n⚠️ Identifiquei números, datas ou medidas que precisam de conferência. Revise o texto antes de confirmar."
+
+    transcription = result.raw_text
+    reviewed_text = result.reviewed_text or transcription
 
     if standalone_mode:
         mode = standalone_transcription_modes.get(
@@ -1871,10 +1904,17 @@ def handle_whatsapp_audio_message(
             transcription,
             mode=mode,
         )
-        return _standalone_transcription_message(intelligent)
+        message = _standalone_transcription_message(intelligent)
+        if user_warning:
+            message += user_warning
+        return message
 
+    # Revisão local adicional (já feita no service, mas mantemos para compatibilidade)
     reviewed = _review_audio_transcription_for_sender(sender_phone, transcription)
     final_text = reviewed.reviewed_text or transcription
+    if user_warning:
+        # Adiciona aviso ao final da mensagem de confirmação
+        pass  # O aviso será adicionado na mensagem de confirmação
 
     # Resumo de IA controlado por flag: so para audio de descricao/observacao
     # de visita. Se o resumo for preparado, mostra a previsualizacao e pausa
@@ -1890,6 +1930,8 @@ def handle_whatsapp_audio_message(
         media_id,
     )
     if summary_preview is not None:
+        if user_warning:
+            summary_preview += user_warning
         return summary_preview
 
     reply = handle_rdv_text_message(
@@ -2207,6 +2249,17 @@ def _transcribe_audio_file(audio_path: Path) -> str:
     # Usa novo método com resultado completo, mas retorna apenas o texto para compatibilidade
     result = _audio_transcription_service.transcrever_com_resultado(str(audio_path))
     return result.reviewed_text if result.ok else result.raw_text
+
+
+def _transcribe_audio_with_result(audio_path: Path) -> "TranscriptionResult":
+    """Nova função que retorna o TranscriptionResult completo para os fluxos A2.2."""
+    global _audio_transcription_service
+    provider = os.getenv("AUDIO_TRANSCRIPTION_PROVIDER", "whisper_local").strip()
+    if provider != "whisper_local":
+        raise RuntimeError(f"Provider de transcricao nao suportado: {provider}")
+    if _audio_transcription_service is None:
+        _audio_transcription_service = AudioTranscriptionService.from_env()
+    return _audio_transcription_service.transcrever_com_resultado(str(audio_path))
 
 
 def _build_audio_transcription_destination(

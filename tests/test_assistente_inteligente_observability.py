@@ -200,21 +200,21 @@ def test_record_request_end_logs(caplog):
 # Health check
 # ---------------------------------------------------------------------------
 
-def test_health_check_disabled():
-    os.environ["ASSISTENTE_INTELIGENTE_ENABLED"] = "false"
+def test_health_check_disabled(monkeypatch):
+    monkeypatch.setenv("ASSISTENTE_INTELIGENTE_ENABLED", "false")
     health = health_check()
     assert health["config"]["enabled"] is False
 
 
-def test_health_check_enabled():
-    os.environ["ASSISTENTE_INTELIGENTE_ENABLED"] = "true"
+def test_health_check_enabled(monkeypatch):
+    monkeypatch.setenv("ASSISTENTE_INTELIGENTE_ENABLED", "true")
     health = health_check()
     assert health["config"]["enabled"] is True
 
 
-def test_health_check_provider_config():
-    os.environ["ASSISTENTE_INTELIGENTE_PROVIDER"] = "openai"
-    os.environ["ASSISTENTE_INTELIGENTE_MODEL"] = "gpt-4o"
+def test_health_check_provider_config(monkeypatch):
+    monkeypatch.setenv("ASSISTENTE_INTELIGENTE_PROVIDER", "openai")
+    monkeypatch.setenv("ASSISTENTE_INTELIGENTE_MODEL", "gpt-4o")
     health = health_check()
     assert health["config"]["provider"] == "openai"
     assert health["config"]["model"] == "gpt-4o"

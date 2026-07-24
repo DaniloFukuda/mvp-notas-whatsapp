@@ -20,6 +20,10 @@ from services.visitas_service import VisitasTecnicasService
 from services.llm_text_generation_service import LlmTextGenerationResult
 from services.visita_summary_service import VisitaSummaryService
 from services.visita_summary_llm_adapter import VisitaSummaryLlmAdapter
+from services.audio_transcription_contract import (
+    TranscriptionResult,
+    AudioMetadata,
+)
 
 SENDER = "5500000000001"
 
@@ -66,14 +70,35 @@ def _setup_visit(visitas, sender, state):
 
 
 def _run_audio(monkeypatch, tmp_path, sender, reviewed_text, state):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     downloaded = tmp_path / "visita.ogg"
     downloaded.write_bytes(b"audio")
     monkeypatch.setenv("WHISPER_ENABLED", "true")
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.success(
+        raw_text=reviewed_text,
+        reviewed_text=reviewed_text,
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
-        api_whatsapp, "_transcribe_audio_file", lambda path: reviewed_text
+        api_whatsapp, "download_media", lambda media_id, destination: downloaded
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
     monkeypatch.setattr(
         api_whatsapp,
@@ -214,6 +239,7 @@ def test_falha_resumo_fallback_salva_revisada(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_resumo_nao_afeta_transcricao_avulsa(monkeypatch, tmp_path):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     with tempfile.TemporaryDirectory() as temp_dir:
         original, visitas, sender = _install_services(temp_dir)
         _install_summary_service("assunto_principal: x\nnecessidades: y\n"
@@ -224,8 +250,25 @@ def test_resumo_nao_afeta_transcricao_avulsa(monkeypatch, tmp_path):
         monkeypatch.setattr(
             api_whatsapp, "download_media", lambda media_id, destination: downloaded
         )
+        mock_result = TranscriptionResult.success(
+            raw_text="usar o cadax",
+            reviewed_text="Usar o Codex",
+            metadata=AudioMetadata(
+                provider="whisper_local",
+                model_name="base",
+                language="pt",
+                duration_seconds=5.0,
+                size_bytes=1024,
+                chunk_count=1,
+                preprocessed=False,
+            ),
+            used_fallback=False,
+            warnings=(),
+        )
         monkeypatch.setattr(
-            api_whatsapp, "_transcribe_audio_file", lambda path: "usar o cadax"
+            api_whatsapp,
+            "_transcribe_audio_with_result",
+            lambda path: mock_result,
         )
         api_whatsapp.whatsapp_menu_states[
             sender

@@ -122,7 +122,7 @@ def test_opcao_de_transcricao_invalida_mostra_apenas_modos_publicos(
             _restore_services(original_rdv, original_visitas)
 
 
-@pytest.mark.parametrize(
+@ pytest.mark.parametrize(
     ("mode", "heading"),
     [
         ("literal", "🎙️ Transcrição literal:"),
@@ -130,6 +130,7 @@ def test_opcao_de_transcricao_invalida_mostra_apenas_modos_publicos(
     ],
 )
 def test_audio_avulso_usa_titulo_do_modo(monkeypatch, tmp_path, mode, heading):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     downloaded = tmp_path / f"{mode}.ogg"
     downloaded.write_bytes(b"audio")
     sender = "5500000000001"
@@ -137,8 +138,23 @@ def test_audio_avulso_usa_titulo_do_modo(monkeypatch, tmp_path, mode, heading):
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="usar cadax nos botes",
+        reviewed_text="Usar Codex nos botões.",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
-        api_whatsapp, "_transcribe_audio_file", lambda path: "usar cadax nos botes"
+        api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
     )
     api_whatsapp.whatsapp_menu_states[
         sender
@@ -180,6 +196,7 @@ def test_cancelar_ou_menu_sai_do_modo_avulso(monkeypatch):
 def test_audio_avulso_retorna_transcricao_sem_salvar_visita_ou_rdv(
     monkeypatch, tmp_path
 ):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     with tempfile.TemporaryDirectory() as temp_dir:
         rdv, visitas, sender, original_rdv, original_visitas = _install_services(temp_dir)
         downloaded = tmp_path / "audio.ogg"
@@ -189,15 +206,29 @@ def test_audio_avulso_retorna_transcricao_sem_salvar_visita_ou_rdv(
         monkeypatch.setattr(
             api_whatsapp, "download_media", lambda media_id, destination: downloaded
         )
+        mock_result = TranscriptionResult.success(
+            raw_text="Relatório falado transcrito com sucesso.",
+            reviewed_text="Relatório falado transcrito com sucesso.",
+            metadata=AudioMetadata(
+                provider="whisper_local",
+                model_name="base",
+                language="pt",
+                duration_seconds=5.0,
+                size_bytes=1024,
+                chunk_count=1,
+                preprocessed=False,
+            ),
+            used_fallback=False,
+            warnings=(),
+        )
         monkeypatch.setattr(
-            api_whatsapp,
-            "_transcribe_audio_file",
-            lambda path: "Relatório falado transcrito com sucesso.",
+            api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
         )
         try:
             api_whatsapp.whatsapp_menu_states[
                 sender
             ] = api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
+            api_whatsapp.standalone_transcription_modes[sender] = "revisada"
 
             reply = api_whatsapp.handle_whatsapp_audio_message(
                 sender, "media-audio", "audio/ogg"
@@ -215,8 +246,8 @@ def test_audio_avulso_retorna_transcricao_sem_salvar_visita_ou_rdv(
         finally:
             _restore_services(original_rdv, original_visitas)
 
-
 def test_audio_longo_avulso_retorna_texto_unido(monkeypatch, tmp_path):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     downloaded = tmp_path / "long.ogg"
     downloaded.write_bytes(b"fake-audio")
     sender = "5500000000001"
@@ -224,14 +255,28 @@ def test_audio_longo_avulso_retorna_texto_unido(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="parte um parte dois parte três",
+        reviewed_text="parte um parte dois parte três",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
-        api_whatsapp,
-        "_transcribe_audio_file",
-        lambda path: "parte um parte dois parte três",
+        api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
     )
     api_whatsapp.whatsapp_menu_states[
         sender
     ] = api_whatsapp.STANDALONE_TRANSCRIPTION_STATE
+    api_whatsapp.standalone_transcription_modes[sender] = "revisada"
     try:
         reply = api_whatsapp.handle_whatsapp_audio_message(
             sender, "media-long", "audio/ogg"
@@ -241,6 +286,7 @@ def test_audio_longo_avulso_retorna_texto_unido(monkeypatch, tmp_path):
         assert reply.lower().count("parte um") == 1
     finally:
         api_whatsapp.whatsapp_menu_states.clear()
+        api_whatsapp.standalone_transcription_modes.clear()
 
 
 def test_resposta_avulsa_muito_longa_e_enviada_em_partes(monkeypatch):
@@ -259,6 +305,7 @@ def test_resposta_avulsa_muito_longa_e_enviada_em_partes(monkeypatch):
 def test_erro_de_transcricao_avulsa_retorna_mensagem_amigavel(
     monkeypatch, tmp_path
 ):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     downloaded = tmp_path / "broken.ogg"
     downloaded.write_bytes(b"fake-audio")
     sender = "5500000000001"
@@ -266,10 +313,15 @@ def test_erro_de_transcricao_avulsa_retorna_mensagem_amigavel(
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.failure(
+        error_code="TRANSCRIPTION_FAILED",
+        error_message="Falha na transcrição",
+        raw_text="",
+    )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
-        lambda path: (_ for _ in ()).throw(RuntimeError("falha simulada")),
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
     api_whatsapp.whatsapp_menu_states[
         sender
@@ -288,6 +340,7 @@ def test_erro_de_transcricao_avulsa_retorna_mensagem_amigavel(
 def test_audio_avulso_acima_do_limite_retorna_mensagem_existente(
     monkeypatch, tmp_path
 ):
+    from services.audio_transcription_service import AudioLimitExceededError
     downloaded = tmp_path / "too-long.ogg"
     downloaded.write_bytes(b"fake-audio")
     sender = "5500000000001"
@@ -297,7 +350,7 @@ def test_audio_avulso_acima_do_limite_retorna_mensagem_existente(
     )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
+        "_transcribe_audio_with_result",
         lambda path: (_ for _ in ()).throw(
             AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
         ),

@@ -8,7 +8,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import api_whatsapp
 from services.rdv_service import RDVService
 from services.visitas_service import VisitasTecnicasService
-
+from services.audio_transcription_contract import (
+    TranscriptionResult,
+    AudioMetadata,
+)
 
 def _install_services(temp_dir):
     original = (api_whatsapp.rdv_service, api_whatsapp.visitas_service)
@@ -35,10 +38,25 @@ def test_audio_de_visita_salva_versao_revisada(monkeypatch, tmp_path):
         monkeypatch.setattr(
             api_whatsapp, "download_media", lambda media_id, destination: downloaded
         )
+        mock_result = TranscriptionResult.success(
+            raw_text="o contitor está alugado e os botes disponíveis",
+            reviewed_text="O contentor está alugado e os botões disponíveis.",
+            metadata=AudioMetadata(
+                provider="whisper_local",
+                model_name="base",
+                language="pt",
+                duration_seconds=5.0,
+                size_bytes=1024,
+                chunk_count=1,
+                preprocessed=False,
+            ),
+            used_fallback=False,
+            warnings=(),
+        )
         monkeypatch.setattr(
             api_whatsapp,
-            "_transcribe_audio_file",
-            lambda path: "o contitor está alugado e os botes disponíveis",
+            "_transcribe_audio_with_result",
+            lambda path: mock_result,
         )
         try:
             reply = api_whatsapp.handle_whatsapp_audio_message(
@@ -56,6 +74,7 @@ def test_audio_de_visita_salva_versao_revisada(monkeypatch, tmp_path):
 
 
 def test_falha_na_revisao_usa_transcricao_bruta(monkeypatch, tmp_path):
+    from services.audio_transcription_service import AudioLimitExceededError
     downloaded = tmp_path / "fallback.ogg"
     downloaded.write_bytes(b"audio")
     received = []
@@ -63,8 +82,26 @@ def test_falha_na_revisao_usa_transcricao_bruta(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="texto bruto original",
+        reviewed_text="texto revisado",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
-        api_whatsapp, "_transcribe_audio_file", lambda path: "texto bruto original"
+        api_whatsapp, "download_media", lambda media_id, destination: downloaded
+    )
+    monkeypatch.setattr(
+        api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
     )
     monkeypatch.setattr(
         api_whatsapp._audio_transcription_review_service,
@@ -95,8 +132,25 @@ def test_audio_avulso_indica_transcricao_revisada(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_whatsapp, "download_media", lambda media_id, destination: downloaded
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="usar o cadax",
+        reviewed_text="Usar o Codex",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
-        api_whatsapp, "_transcribe_audio_file", lambda path: "usar o cadax"
+        api_whatsapp,
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
     api_whatsapp.whatsapp_menu_states[
         sender

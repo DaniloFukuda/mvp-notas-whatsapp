@@ -4,11 +4,14 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import api_whatsapp
+from services.audio_transcription_contract import (
+    TranscriptionResult,
+    AudioMetadata,
+)
 from services.audio_transcription_service import (
     AUDIO_TOO_LONG_MESSAGE,
     TRANSCRIPTION_FAILED_MESSAGE,
@@ -45,7 +48,7 @@ def _completed_expense(service: RDVService, collaborator: dict, sender: str) -> 
     )
 
 
-@pytest.mark.parametrize(
+@ pytest.mark.parametrize(
     ("state", "context"),
     [
         ("aguardando_descricao_visita", "visita_descricao"),
@@ -78,10 +81,25 @@ def test_audio_de_visita_usa_sempre_modo_revisada(
         "download_media",
         lambda media_id, destination: downloaded,
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="texto bruto reconhecido pelo whisper",
+        reviewed_text="Texto revisado e pronto para o relatório da visita.",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
-        lambda path: "texto bruto reconhecido pelo whisper",
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
     calls = []
 
@@ -131,6 +149,7 @@ def test_audio_de_visita_salva_fallback_local_quando_llm_falha(
     monkeypatch,
     tmp_path,
 ):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     rdv = RDVService(tmp_path / "rdv.db")
     visitas = VisitasTecnicasService(tmp_path / "visitas.db")
     monkeypatch.setattr(api_whatsapp, "rdv_service", rdv)
@@ -151,10 +170,25 @@ def test_audio_de_visita_salva_fallback_local_quando_llm_falha(
         "download_media",
         lambda media_id, destination: downloaded,
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="texto bruto com erro",
+        reviewed_text="Texto corrigido pelo fallback local.",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
-        lambda path: "texto bruto com erro",
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
 
     class FallbackReviewer:
@@ -215,6 +249,7 @@ def test_audio_received_with_transcription_disabled_does_not_break(monkeypatch):
 
 
 def test_audio_transcription_enabled_saves_pending_comment_and_removes_temp_file(monkeypatch, tmp_path):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     original_sender = api_whatsapp.send_whatsapp_text
     original_download = api_whatsapp.download_media
     original_transcriber = api_whatsapp._transcribe_audio_file
@@ -237,12 +272,27 @@ def test_audio_transcription_enabled_saves_pending_comment_and_removes_temp_file
                 created_paths.append(path)
                 return path
 
-            def fake_transcribe(path):
-                assert Path(path).exists()
-                return "Visita ao cliente antes do abastecimento."
-
-            api_whatsapp.download_media = fake_download
-            api_whatsapp._transcribe_audio_file = fake_transcribe
+            mock_result = TranscriptionResult.success(
+                raw_text="Visita ao cliente antes do abastecimento.",
+                reviewed_text="Visita ao cliente antes do abastecimento.",
+                metadata=AudioMetadata(
+                    provider="whisper_local",
+                    model_name="base",
+                    language="pt",
+                    duration_seconds=5.0,
+                    size_bytes=1024,
+                    chunk_count=1,
+                    preprocessed=False,
+                ),
+                used_fallback=False,
+                warnings=(),
+            )
+            monkeypatch.setattr(
+                api_whatsapp, "download_media", fake_download
+            )
+            monkeypatch.setattr(
+                api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
+            )
 
             api_whatsapp._handle_whatsapp_message(
                 {
@@ -296,8 +346,27 @@ def test_audio_without_pending_rdv_comment_flows_as_text_message(monkeypatch, tm
                 created_paths.append(path)
                 return path
 
-            api_whatsapp.download_media = fake_download
-            api_whatsapp._transcribe_audio_file = lambda path: "visita"
+            mock_result = TranscriptionResult.success(
+                raw_text="visita",
+                reviewed_text="visita",
+                metadata=AudioMetadata(
+                    provider="whisper_local",
+                    model_name="base",
+                    language="pt",
+                    duration_seconds=5.0,
+                    size_bytes=1024,
+                    chunk_count=1,
+                    preprocessed=False,
+                ),
+                used_fallback=False,
+                warnings=(),
+            )
+            monkeypatch.setattr(
+                api_whatsapp, "download_media", fake_download
+            )
+            monkeypatch.setattr(
+                api_whatsapp, "_transcribe_audio_with_result", lambda path: mock_result
+            )
 
             api_whatsapp._handle_whatsapp_message(
                 {
@@ -324,6 +393,7 @@ def test_audio_without_pending_rdv_comment_flows_as_text_message(monkeypatch, tm
 
 
 def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     sender = "5500000000001"
     downloaded = tmp_path / "long.ogg"
     monkeypatch.setenv("WHISPER_ENABLED", "true")
@@ -333,10 +403,30 @@ def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
         "download_media",
         lambda media_id, destination: downloaded,
     )
+    mock_result = TranscriptionResult.success(
+        raw_text="primeiro chunk segundo chunk terceiro chunk",
+        reviewed_text="primeiro chunk segundo chunk terceiro chunk",
+        metadata=AudioMetadata(
+            provider="whisper_local",
+            model_name="base",
+            language="pt",
+            duration_seconds=5.0,
+            size_bytes=1024,
+            chunk_count=1,
+            preprocessed=False,
+        ),
+        used_fallback=False,
+        warnings=(),
+    )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
-        lambda path: "primeiro chunk segundo chunk terceiro chunk",
+        "download_media",
+        lambda media_id, destination: downloaded,
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_transcribe_audio_with_result",
+        lambda path: mock_result,
     )
     received = []
     monkeypatch.setattr(
@@ -359,6 +449,7 @@ def test_long_audio_final_text_is_used_by_webhook_flow(monkeypatch, tmp_path):
 
 
 def test_audio_over_limit_returns_friendly_message_without_breaking(monkeypatch, tmp_path):
+    from services.audio_transcription_service import AudioLimitExceededError
     downloaded = tmp_path / "too-long.ogg"
     downloaded.write_bytes(b"fake-audio")
     monkeypatch.setenv("WHISPER_ENABLED", "true")
@@ -369,7 +460,7 @@ def test_audio_over_limit_returns_friendly_message_without_breaking(monkeypatch,
     )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
+        "_transcribe_audio_with_result",
         lambda path: (_ for _ in ()).throw(
             AudioLimitExceededError(AUDIO_TOO_LONG_MESSAGE)
         ),
@@ -393,7 +484,7 @@ def test_transcription_error_returns_friendly_message(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         api_whatsapp,
-        "_transcribe_audio_file",
+        "_transcribe_audio_with_result",
         lambda path: (_ for _ in ()).throw(RuntimeError("falha simulada")),
     )
 
