@@ -13,6 +13,85 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from services import visitas_pdf_service
 
 
+def _visita_completa() -> dict:
+    return {
+        "id": 1,
+        "data_visita": "2026-06-17",
+        "tecnico_nome": "Danilo",
+        "telefone_origem": "5500000000001",
+        "fazenda": "Fazenda Imperial",
+        "proprietario": "Alexander Duarte Paniago",
+        "telefone_proprietario": "(61) 99999-8888",
+        "gerente": "Paulo Silva",
+        "telefone_gerente": "(61) 98888-7777",
+        "area": "500 hectares",
+        "localizacao_texto": "Fazenda Imperial, entrada principal",
+        "descricao_visita": "Inspeção do sistema de irrigação.\nLinha secundária revisada.",
+        "observacoes_gerais": "Vazamento próximo ao reservatório.\nRetornar após o reparo.",
+        "safra": "2025/2026",
+        "tipo_visita": "Comercial",
+        "area_hectares": 2299,
+        "area_alqueires": 950,
+        "latitude_principal": -15.0019124,
+        "longitude_principal": -50.7714295,
+        "maps_url_principal": "https://maps.google.com/?q=-15.0019124,-50.7714295",
+        "observacoes": "Pedido de 300T para 100ha.\nRetornar em julho.",
+        "status": "fechada",
+        "localizacoes": [
+            {
+                "descricao": "Tanque",
+                "latitude": -15.0019124,
+                "longitude": -50.7714295,
+                "maps_url": "https://maps.google.com/?q=-15.0019124,-50.7714295",
+            }
+        ],
+        "dados_coletados": [
+            {
+                "chave": "solo",
+                "valor": "corrigir acidez",
+                "observacao": "avaliar próxima visita",
+            }
+        ],
+    }
+
+
+def _long_text_visit() -> dict:
+    """Return a visit with very long description and observations that would exceed a single page."""
+    long_desc = "\n".join(
+        [
+            f"Linha {i}: Descrição detalhada da atividade realizada no campo durante a visita técnica. Inclui observações sobre solo, cultura, irrigação e equipamentos."
+            for i in range(1, 40)
+        ]
+    )
+    long_obs = "\n".join(
+        [
+            f"Observação {i}: Ponto de atenção identificado que requer acompanhamento na próxima visita."
+            for i in range(1, 30)
+        ]
+    )
+    long_dados = [
+        {
+            "chave": f"campo_{i}",
+            "valor": f"Valor muito longo para o campo {i} " + "x" * 200,
+            "observacao": f"Observação detalhada para o campo {i} " + "y" * 150,
+        }
+        for i in range(1, 12)
+    ]
+    return {
+        "id": 99,
+        "data_visita": "2026-07-15",
+        "tecnico_nome": "Teste Longo",
+        "telefone_origem": "5500000000099",
+        "fazenda": "Fazenda Teste Longo",
+        "descricao_visita": long_desc,
+        "observacoes_gerais": long_obs,
+        "observacoes": long_obs,
+        "dados_coletados": long_dados,
+        "midias": [],
+        "localizacoes": [],
+    }
+
+
 def test_build_visita_pdf_basico():
     content = visitas_pdf_service.build_visita_pdf(_visita_completa())
 
@@ -330,46 +409,61 @@ def test_build_visita_pdf_tolera_campos_vazios():
     assert "Registros fotográficos" in text
 
 
-def _visita_completa() -> dict:
-    return {
-        "id": 1,
-        "data_visita": "2026-06-17",
-        "tecnico_nome": "Danilo",
-        "telefone_origem": "5500000000001",
-        "fazenda": "Fazenda Imperial",
-        "proprietario": "Alexander Duarte Paniago",
-        "telefone_proprietario": "(61) 99999-8888",
-        "gerente": "Paulo Silva",
-        "telefone_gerente": "(61) 98888-7777",
-        "area": "500 hectares",
-        "localizacao_texto": "Fazenda Imperial, entrada principal",
-        "descricao_visita": "Inspeção do sistema de irrigação.\nLinha secundária revisada.",
-        "observacoes_gerais": "Vazamento próximo ao reservatório.\nRetornar após o reparo.",
-        "safra": "2025/2026",
-        "tipo_visita": "Comercial",
-        "area_hectares": 2299,
-        "area_alqueires": 950,
-        "latitude_principal": -15.0019124,
-        "longitude_principal": -50.7714295,
-        "maps_url_principal": "https://maps.google.com/?q=-15.0019124,-50.7714295",
-        "observacoes": "Pedido de 300T para 100ha.\nRetornar em julho.",
-        "status": "fechada",
-        "localizacoes": [
-            {
-                "descricao": "Tanque",
-                "latitude": -15.0019124,
-                "longitude": -50.7714295,
-                "maps_url": "https://maps.google.com/?q=-15.0019124,-50.7714295",
-            }
-        ],
-        "dados_coletados": [
-            {
-                "chave": "solo",
-                "valor": "corrigir acidez",
-                "observacao": "avaliar próxima visita",
-            }
-        ],
-    }
+def test_build_visita_pdf_descricao_muito_longa():
+    """Test that a visit with a very long description generates PDF without LayoutError."""
+    content = visitas_pdf_service.build_visita_pdf(_long_text_visit())
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    # PDF text extraction may uppercase some content
+    assert "FAZENDA TESTE LONGO" in text or "Fazenda Teste Longo" in text
+    assert "Linha 1:" in text
+    # Should generate multiple pages - verify we have at least some long content
+    reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) > 1
+    # Verify the content spans multiple pages by checking first and last pages have different content
+    page1_text = reader.pages[0].extract_text() or ""
+    last_page_text = reader.pages[-1].extract_text() or ""
+    assert page1_text != last_page_text
+
+
+def test_build_visita_pdf_observacoes_muito_longa():
+    """Test that a visit with very long observations generates PDF without LayoutError."""
+    visit = _visita_completa()
+    visit["observacoes_gerais"] = "\n".join([f"Observação extensa linha {i}." for i in range(1, 80)])
+    visit["observacoes"] = visit["observacoes_gerais"]
+
+    content = visitas_pdf_service.build_visita_pdf(visit)
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "Observação extensa linha 1." in text
+    assert "Observação extensa linha 79." in text
+    reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) > 1
+
+
+def test_build_visita_pdf_dados_coletados_longos():
+    """Test that a visit with many long collected data rows generates PDF without LayoutError."""
+    long_dados = [
+        {
+            "chave": f"parametro_{i}",
+            "valor": "Valor muito longo " + "z" * 300,
+            "observacao": "Obs detalhada " + "w" * 200,
+        }
+        for i in range(20)
+    ]
+    visit = _visita_completa()
+    visit["dados_coletados"] = long_dados
+
+    content = visitas_pdf_service.build_visita_pdf(visit)
+
+    assert content.startswith(b"%PDF")
+    text = _extract_pdf_text(content)
+    assert "parametro_1" in text
+    assert "parametro_19" in text
+    reader = PdfReader(BytesIO(content))
+    assert len(reader.pages) > 1
 
 
 def _extract_pdf_text(content: bytes) -> str:

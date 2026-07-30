@@ -9,6 +9,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
+    Flowable,
     Image,
     KeepTogether,
     Paragraph,
@@ -59,13 +60,13 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         _main_cards(visita_data, styles),
         Spacer(1, 0.35 * cm),
         *_section("Descrição da visita", styles),
-        _note_box(
+        _note_box_flowable(
             _text(visita_data.get("descricao_visita")) or "Descrição não informada.",
             styles,
         ),
         Spacer(1, 0.28 * cm),
         *_section("Observações gerais", styles),
-        _note_box(
+        _note_box_flowable(
             _text(visita_data.get("observacoes_gerais"))
             or _text(visita_data.get("observacoes"))
             or "Nenhuma observação geral informada.",
@@ -73,7 +74,7 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         ),
         Spacer(1, 0.28 * cm),
         *_section("Resumo da visita", styles),
-        _note_box(_executive_summary(visita_data), styles),
+        _note_box_flowable(_executive_summary(visita_data), styles),
         Spacer(1, 0.28 * cm),
     ]
 
@@ -403,6 +404,49 @@ def _note_box(text: str, styles: dict) -> Table:
         )
     )
     return table
+
+
+class _NoteBoxFlowable(Flowable):
+    """A flowable that renders a bordered box with text that can split across pages."""
+
+    def __init__(self, text: str, style: ParagraphStyle, width: float):
+        super().__init__()
+        self.text = text
+        self.style = style
+        self.width = width
+        self._paragraph = Paragraph(_escape_lines(text), style)
+
+    def wrap(self, availWidth, availHeight):
+        self._paragraph.wrap(self.width, availHeight)
+        return (self.width, self._paragraph.height + 16)  # 16 = 8 top + 8 bottom padding
+
+    def split(self, availWidth, availHeight):
+        # Allow the paragraph to split across pages
+        splits = self._paragraph.split(availWidth, availHeight - 16)
+        if splits:
+            return [self.__class__(split.getPlainText(), self.style, self.width) for split in splits]
+        return []
+
+    def draw(self):
+        canvas = self.canv
+        para_width = self.width - 18  # 9 left + 9 right padding
+        para_height = self._paragraph.height
+        y = 0  # draw from bottom up
+
+        # Draw background and border
+        canvas.setFillColor(ROW_ALT)
+        canvas.setStrokeColor(BORDER_GRAY)
+        canvas.setLineWidth(0.35)
+        canvas.roundRect(0, y, self.width, para_height + 16, 0, fill=1, stroke=1)
+
+        # Draw paragraph
+        self._paragraph.wrap(para_width, para_height)
+        self._paragraph.drawOn(canvas, 9, 8)  # 9 left padding, 8 bottom padding
+
+
+def _note_box_flowable(text: str, styles: dict) -> _NoteBoxFlowable:
+    """Create a flowable note box that can split across pages."""
+    return _NoteBoxFlowable(text, styles["BodyLarge"], CONTENT_WIDTH)
 
 
 def _media_card(media: dict, styles: dict) -> KeepTogether:

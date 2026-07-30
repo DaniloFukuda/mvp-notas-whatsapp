@@ -81,7 +81,7 @@ from services.visita_validation import (
     validate_visit_field,
     visita_observacao_total_max_chars,
 )
-from services.visitas_service import VisitasTecnicasService, normalize_phone
+from services.visitas_service import VisitasTecnicasService, normalize_phone, _now
 from services.visita_summary_service import _env_flag
 from services.whatsapp_meta_client import send_payload as send_meta_whatsapp_payload
 from services.whatsapp_meta_error_service import WhatsAppSendError
@@ -2581,6 +2581,30 @@ def handle_visitas_text_message(
 
     if state == "aguardando_revisao_final":
         if normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS:
+            # Generate PDF first to ensure it works before marking visit as closed
+            # Create a snapshot with the intended final state for the PDF
+            visita_completa = visitas_service.obter_visita_completa(open_visit["id"])
+            # Mark as closed in the snapshot for PDF generation
+            visita_snapshot = dict(visita_completa)
+            visita_snapshot["status"] = "fechada"
+            visita_snapshot["estado_fluxo"] = "fechada"
+            visita_snapshot["fechado_em"] = _now()
+            try:
+                build_visita_pdf(visita_snapshot)
+            except Exception:
+                # PDF generation failed - keep visit open and notify user
+                logger.exception(
+                    "Falha ao gerar PDF ao fechar visita %s, mantendo visita aberta",
+                    open_visit["id"],
+                )
+                _safe_send_text(
+                    sender_phone,
+                    "❌ Não foi possível gerar o PDF do relatório. O conteúdo pode ser muito extenso. "
+                    "A visita permanece aberta. Tente reduzir as descrições ou observações e tente fechar novamente.",
+                )
+                return True, _visita_revisao_final_message()
+
+            # PDF generated successfully, now close the visit
             closed = visitas_service.fechar_visita(open_visit["id"])
             _clear_active_visita(sender_phone, open_visit["id"])
             return True, _visita_finalizada_message(closed)
@@ -4257,12 +4281,29 @@ def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
     visita = _select_visita_for_pdf(command.visita_id)
     if visita is None:
         return False
-    _send_visita_pdf_data(sender_phone, visita)
+    try:
+        _send_visita_pdf_data(sender_phone, visita)
+    except Exception:
+        _safe_send_text(
+            sender_phone,
+            "❌ Não foi possível gerar o PDF do relatório. O conteúdo pode ser muito extenso. "
+            "Tente reduzir as descrições ou observações e tente novamente.",
+        )
+        return True  # Return True to indicate we handled the command, even though it failed
     return True
 
 
 def _send_visita_pdf_data(sender_phone: str, visita: dict) -> None:
-    content = build_visita_pdf(visita)
+    try:
+        content = build_visita_pdf(visita)
+    except Exception as exc:
+        logger.exception(
+            "Falha ao gerar PDF da visita %s: %s",
+            visita.get("id"),
+            exc,
+        )
+        # Re-raise to let caller handle the failure
+        raise
     send_whatsapp_document(
         sender_phone,
         content,
@@ -4270,7 +4311,6 @@ def _send_visita_pdf_data(sender_phone: str, visita: dict) -> None:
         caption=VISITA_PDF_CAPTION,
         mime_type=VISITA_PDF_MIME_TYPE,
     )
-
 
 def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str) -> str | None:
     command = parse_visit_report_command(normalized_text, text)
