@@ -37,9 +37,10 @@ def _restore_services(original_rdv, original_visitas):
     api_whatsapp.visita_active_states.clear()
 
 
-def test_menu_texto_mostra_opcao_transcrever_audio():
-    assert "🎙️ Transcrever áudio" in api_whatsapp.MAIN_MENU_MESSAGE
-    assert "* transcrever áudio" in api_whatsapp.MAIN_MENU_MESSAGE
+def test_menu_texto_oculta_transcricao_avulsa_preservada():
+    assert "🎙️ Transcrever áudio" not in api_whatsapp.MAIN_MENU_MESSAGE
+    assert "* transcrever áudio" not in api_whatsapp.MAIN_MENU_MESSAGE
+    assert callable(api_whatsapp.handle_whatsapp_audio_message)
 
 
 def test_escolher_transcricao_avulsa_coloca_sessao_aguardando_audio():

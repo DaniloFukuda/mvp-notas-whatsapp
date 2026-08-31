@@ -285,7 +285,8 @@ def test_comandos_diretos_continuam_funcionando():
         api_whatsapp.whatsapp_menu_states.clear()
 
 
-def test_payload_menu_principal_interativo():
+def test_payload_menu_principal_interativo(monkeypatch):
+    monkeypatch.setenv("ASSISTENTE_INTELIGENTE_ENABLED", "false")
     sent = []
     original_sender = api_whatsapp.send_whatsapp_list_message
     try:
@@ -315,50 +316,10 @@ def test_payload_menu_principal_interativo():
     rows = payload["interactive"]["action"]["sections"][0]["rows"]
     assert rows == [
         {
-            "id": "menu_rdv_receipt",
-            "title": "🧾 Lançar comprovante",
-            "description": "Enviar foto ou PDF",
-        },
-        {
-            "id": "menu_km",
-            "title": "🚗 Registrar KM",
-            "description": "Iniciar ou finalizar viagem",
-        },
-        {
             "id": "menu_visit_start",
             "title": "🌱 Nova visita técnica",
             "description": "Registrar fazenda visitada",
-        },
-        {
-            "id": "menu_audio_transcription",
-            "title": "🎙️ Transcrever áudio",
-            "description": "Receber a transcrição em texto",
-        },
-        {
-            "id": "menu_rdv_summary",
-            "title": "📊 Resumo RDV",
-            "description": "Ver resumo mensal",
-        },
-        {
-            "id": "menu_rdv_excel",
-            "title": "📎 Planilha RDV",
-            "description": "Receber Excel mensal",
-        },
-        {
-            "id": "menu_reports",
-            "title": "📋 Relatórios",
-            "description": "Ver relatórios disponíveis",
-        },
-        {
-            "id": "menu_help",
-            "title": "❓ Ajuda",
-            "description": "Ver comandos e orientações",
-        },
-        {
-            "id": "menu_assistente_inteligente",
-            "title": "🤖 Assistente Inteligente",
-            "description": "Canal de teste (modo simulado)",
-        },
+        }
     ]
 
 
@@ -373,15 +334,9 @@ def test_payload_menu_relatorios_interativo():
         assert sent[0]["to"] == "5500000000001"
         assert sent[0]["header"] == "Relatorios"
         assert [section["title"] for section in sent[0]["sections"]] == [
-            "RDV",
             "Visitas técnicas",
         ]
         assert [row["title"] for row in sent[0]["sections"][0]["rows"]] == [
-            "Resumo RDV",
-            "Planilha RDV",
-            "PDF RDV",
-        ]
-        assert [row["title"] for row in sent[0]["sections"][1]["rows"]] == [
             "Listar visitas",
             "Planilha visitas",
             "PDF visita",
@@ -396,10 +351,7 @@ def test_payload_menu_relatorios_interativo():
             for section in sent[0]["sections"]
             for row in section["rows"]
         ]
-        assert {row["id"] for row in rows} >= {
-            "menu_rdv_summary",
-            "menu_rdv_excel",
-            "menu_rdv_pdf",
+        assert {row["id"] for row in rows} == {
             "menu_visit_list",
             "menu_visit_excel",
             "menu_visit_pdf",
@@ -408,7 +360,6 @@ def test_payload_menu_relatorios_interativo():
             (row["title"], row["description"])
             for row in rows
         } >= {
-            ("PDF RDV", "Relatório mensal em PDF"),
             ("PDF visita", "Gerar PDF individual de uma visita"),
         }
     finally:

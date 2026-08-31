@@ -344,14 +344,25 @@ def mock_fake_transcription():
 # A. Wrapper central
 # =============================================================================
 
-def test_transcribe_audio_with_result_returns_transcription_result(tmp_path):
+def test_transcribe_audio_with_result_returns_transcription_result(monkeypatch, tmp_path):
     """_transcribe_audio_with_result retorna TranscriptionResult completo."""
     downloaded = tmp_path / "audio.ogg"
     downloaded.write_bytes(b"fake-audio")
 
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
+    fake_result = TranscriptionResult.success(
+        raw_text="texto local simulado",
+        reviewed_text="texto local simulado",
+        metadata=AudioMetadata(),
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_audio_transcription_service",
+        type("FakeService", (), {"transcrever_com_resultado": lambda self, path: fake_result})(),
+    )
+
     result = api_whatsapp._transcribe_audio_with_result(downloaded)
 
-    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
     assert isinstance(result, TranscriptionResult)
     assert hasattr(result, "ok")
     assert hasattr(result, "raw_text")
@@ -362,10 +373,22 @@ def test_transcribe_audio_with_result_returns_transcription_result(tmp_path):
     assert len(result.metadata.request_id) == 12
 
 
-def test_transcribe_audio_file_still_returns_string(tmp_path):
+def test_transcribe_audio_file_still_returns_string(monkeypatch, tmp_path):
     """_transcribe_audio_file continua retornando string (compatibilidade)."""
     downloaded = tmp_path / "audio.ogg"
     downloaded.write_bytes(b"fake-audio")
+
+    from services.audio_transcription_contract import TranscriptionResult, AudioMetadata
+    fake_result = TranscriptionResult.success(
+        raw_text="texto local simulado",
+        reviewed_text="texto local simulado",
+        metadata=AudioMetadata(),
+    )
+    monkeypatch.setattr(
+        api_whatsapp,
+        "_audio_transcription_service",
+        type("FakeService", (), {"transcrever_com_resultado": lambda self, path: fake_result})(),
+    )
 
     text = api_whatsapp._transcribe_audio_file(downloaded)
 

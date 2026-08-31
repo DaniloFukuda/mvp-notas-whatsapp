@@ -1,5 +1,6 @@
 # Ambiente
 .venv/
+.venv312/
 env/
 venv/
 __pycache__/

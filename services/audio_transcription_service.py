@@ -177,20 +177,17 @@ class AudioTranscriptionService:
         try:
             duration_seconds = self._duration_probe(str(path))
         except Exception as exc:
-            self._preserve_failed_audio(path, None)
-            return TranscriptionResult.failure(
-                error_code="DURATION_PROBE_FAILED",
-                error_message=f"Falha ao determinar duração: {exc}",
-                metadata=AudioMetadata(
-                    request_id=request_id,
-                    size_bytes=size_bytes,
-                    model_name=self.model_name,
-                    language=self.language,
-                ),
-                warnings=("preprocessing_failed",),
+            logger.warning(
+                "Duracao do audio indisponivel; tentando transcricao direta: "
+                "arquivo=%s tamanho_bytes=%s erro=%s",
+                path,
+                size_bytes,
+                type(exc).__name__,
             )
+            warnings.append("duration_probe_failed")
+            duration_seconds = 0.0
 
-        if duration_seconds <= 0:
+        if duration_seconds < 0:
             self._preserve_failed_audio(path, None)
             return TranscriptionResult.failure(
                 error_code="INVALID_DURATION",
@@ -219,50 +216,62 @@ class AudioTranscriptionService:
 
         model = self._load_model()
         audio_path_for_transcribe = str(path)
+        preprocessed_path_to_cleanup: Path | None = None
 
         # Preprocessamento se habilitado
         if self.preprocess_audio:
-            with tempfile.TemporaryDirectory(prefix="whisper_preprocess_") as temp_dir:
-                wav_path = Path(temp_dir) / "audio_preprocessado.wav"
-                try:
-                    self._audio_preprocessor(str(path), str(wav_path))
-                    wav_size_bytes = wav_path.stat().st_size
-                    wav_duration = self._duration_probe(str(wav_path))
-                    if wav_size_bytes <= 0 or wav_duration <= 0:
-                        raise RuntimeError("WAV preprocessado vazio ou com duração inválida.")
-                    logger.info(
-                        "Áudio Whisper preprocessado: caminho=%s tamanho_bytes=%s duracao_segundos=%.3f",
-                        wav_path, wav_size_bytes, wav_duration
-                    )
-                    preprocessed = True
-                    audio_path_for_transcribe = str(wav_path)
-                    duration_seconds = wav_duration
-                except Exception as exc:
-                    logger.exception(
-                        "Falha no preprocessamento de áudio Whisper; "
-                        "usando arquivo original: arquivo=%s erro=%s",
-                        path, exc
-                    )
-                    warnings.append("preprocessing_failed")
-                    # Continua com arquivo original
+            temporary_wav = tempfile.NamedTemporaryFile(
+                prefix="whisper_preprocess_",
+                suffix=".wav",
+                delete=False,
+            )
+            wav_path = Path(temporary_wav.name)
+            temporary_wav.close()
+            try:
+                self._audio_preprocessor(str(path), str(wav_path))
+                wav_size_bytes = wav_path.stat().st_size
+                wav_duration = self._duration_probe(str(wav_path))
+                if wav_size_bytes <= 0 or wav_duration <= 0:
+                    raise RuntimeError("WAV preprocessado vazio ou com duração inválida.")
+                logger.info(
+                    "Áudio Whisper preprocessado: caminho=%s tamanho_bytes=%s duracao_segundos=%.3f",
+                    wav_path, wav_size_bytes, wav_duration
+                )
+                preprocessed = True
+                audio_path_for_transcribe = str(wav_path)
+                preprocessed_path_to_cleanup = wav_path
+                duration_seconds = wav_duration
+            except Exception as exc:
+                wav_path.unlink(missing_ok=True)
+                logger.exception(
+                    "Falha no preprocessamento de áudio Whisper; "
+                    "usando arquivo original: arquivo=%s erro=%s",
+                    path, exc
+                )
+                warnings.append("preprocessing_failed")
+                # Continua com arquivo original
 
         # Transcrição com chunking se necessário
-        if duration_seconds <= self.chunk_seconds:
-            raw_text = self._transcribe_path(model, Path(audio_path_for_transcribe))
-        else:
-            chunk_count = math.ceil(duration_seconds / self.chunk_seconds)
-            warnings.append("chunking_used")
-            texts: list[str] = []
-            with tempfile.TemporaryDirectory(prefix="whisper_chunks_") as temp_dir:
-                for index in range(chunk_count):
-                    start = index * self.chunk_seconds
-                    chunk_duration = min(self.chunk_seconds, duration_seconds - start)
-                    chunk_path = Path(temp_dir) / f"chunk_{index:04d}.wav"
-                    self._chunk_extractor(str(path), str(chunk_path), start, chunk_duration)
-                    chunk_text = self._transcribe_path(model, chunk_path)
-                    if chunk_text:
-                        texts.append(chunk_text)
-            raw_text = " ".join(texts).strip()
+        try:
+            if duration_seconds <= self.chunk_seconds:
+                raw_text = self._transcribe_path(model, Path(audio_path_for_transcribe))
+            else:
+                chunk_count = math.ceil(duration_seconds / self.chunk_seconds)
+                warnings.append("chunking_used")
+                texts: list[str] = []
+                with tempfile.TemporaryDirectory(prefix="whisper_chunks_") as temp_dir:
+                    for index in range(chunk_count):
+                        start = index * self.chunk_seconds
+                        chunk_duration = min(self.chunk_seconds, duration_seconds - start)
+                        chunk_path = Path(temp_dir) / f"chunk_{index:04d}.wav"
+                        self._chunk_extractor(str(path), str(chunk_path), start, chunk_duration)
+                        chunk_text = self._transcribe_path(model, chunk_path)
+                        if chunk_text:
+                            texts.append(chunk_text)
+                raw_text = " ".join(texts).strip()
+        finally:
+            if preprocessed_path_to_cleanup is not None:
+                preprocessed_path_to_cleanup.unlink(missing_ok=True)
 
         # Se transcrição vazia, preserva áudio e retorna erro
         if not raw_text:
@@ -542,7 +551,7 @@ def _extract_audio_chunk(
             timeout=120,
         )
     except (
-        FileNotFoundFoundError,
+        FileNotFoundError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ) as exc:

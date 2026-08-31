@@ -49,16 +49,14 @@ def _capture_list_rows(monkeypatch):
     return captured
 
 
-def test_menu_texto_base_mantem_opcoes_existentes():
+def test_menu_texto_base_expoe_somente_visitas():
     texto = api_whatsapp.MAIN_MENU_MESSAGE
-    # Seções do menu textual atual (api_whatsapp.MAIN_MENU_MESSAGE).
-    assert "📌 RDV / Comprovantes" in texto
-    assert "Envie uma foto/PDF do comprovante" in texto
-    assert "🚗 KM / Viagens" in texto
     assert "🌱 Visitas técnicas" in texto
-    assert "🎙️ Transcrever áudio" in texto
-    assert "📊 Relatórios" in texto
-    assert "🤖 Assistente Inteligente" in texto
+    assert "RDV" not in texto
+    assert "Comprovantes" not in texto
+    assert "KM / Viagens" not in texto
+    assert "Transcrever áudio" not in texto
+    assert "Assistente Inteligente" not in texto
 
 
 def test_flag_ausente_nao_adiciona_item_interativo(monkeypatch):

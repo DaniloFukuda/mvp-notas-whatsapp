@@ -542,6 +542,46 @@ REPORTS_MENU_MESSAGE = "\n".join(
     ]
 )
 MENU_NUMBER_MESSAGE = 'Digite "menu" para ver os comandos disponíveis.'
+
+# Product navigation is intentionally visit-only. The RDV/KM/document and
+# standalone-transcription implementations remain available in code for a
+# future controlled reactivation, but are not advertised in the normal flow.
+MAIN_MENU_MESSAGE = "\n".join(
+    [
+        "Olá! Sou o assistente da Ciclus Agro.",
+        "",
+        "🌱 Visitas técnicas",
+        "Registra fazendas visitadas, gerente, área, fotos, localização e relatório.",
+        "",
+        "* visita — inicia uma visita técnica",
+        "* visita status — mostra sua visita em andamento",
+        "* visitas — lista visitas/fazendas registradas",
+        "* visitas abertas — lista visitas abertas da equipe",
+        "* ver visita 12 — mostra dados da visita",
+        "* editar visita 12 — corrige dados da visita",
+        "* fechar visita — finaliza a visita",
+        "* cancelar visita — cancela a visita em andamento",
+        "* planilha visitas — envia a planilha de visitas",
+        "* relatório visita 12 — gera PDF pelo ID da visita",
+        "",
+        "Digite qualquer comando acima para começar.",
+    ]
+)
+REPORTS_MENU_MESSAGE = "\n".join(
+    [
+        "Relatórios de visitas disponíveis:",
+        "",
+        "* planilha visitas — planilha com todas as visitas/fazendas registradas",
+        "* fazendas visitadas — atalho para a planilha de visitas",
+        "* visitas — lista visitas/fazendas registradas",
+        "* visitas abertas — lista visitas abertas da equipe",
+        "* ver visita 12 — mostra dados da visita",
+        "* editar visita 12 — corrige dados da visita",
+        "* relatório visita 12 — gera PDF pelo ID da visita",
+        "* relatório fazenda Nome da Fazenda — busca relatório pelo nome",
+        "* localização visita 12 — mostra GPS de uma visita pelo ID",
+    ]
+)
 VISITA_NUMBER_MESSAGE = (
     'Digite uma observação, envie foto/localização ou use "fechar visita" ou "cancelar visita".'
 )
@@ -979,6 +1019,13 @@ def send_main_menu_interactive(to: str) -> None:
             ],
         },
     ]
+    sections[0]["rows"] = [
+        {
+            "id": "menu_visit_start",
+            "title": "🌱 Nova visita técnica",
+            "description": "Registrar fazenda visitada",
+        }
+    ]
     if _is_assistente_inteligente_enabled():
         sections[0]["rows"].append(
             {
@@ -998,12 +1045,17 @@ def send_main_menu_interactive(to: str) -> None:
 
 
 def send_reports_menu_interactive(to: str) -> None:
+    sections = [
+        section
+        for section in report_menu_sections()
+        if section.get("title") == "Visitas técnicas"
+    ]
     send_whatsapp_list_message(
         to=to,
         header="Relatorios",
         body="Escolha qual relatorio deseja receber.",
         button_text="Ver relatorios",
-        sections=report_menu_sections(),
+        sections=sections,
         fallback_text=REPORTS_MENU_MESSAGE,
     )
 

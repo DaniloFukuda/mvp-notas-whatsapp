@@ -417,3 +417,53 @@ def test_whisper_enabled_from_env_respects_flag(monkeypatch):
     monkeypatch.setenv("AUDIO_TRANSCRIPTION_ENABLED", "true")
 
     assert whisper_enabled_from_env() is False
+
+
+def test_resultado_transcreve_diretamente_quando_ffprobe_indisponivel(tmp_path):
+    audio_path = tmp_path / "whatsapp.ogg"
+    audio_path.write_bytes(b"fake-audio")
+    fake_model = FakeModel()
+    service = AudioTranscriptionService(
+        preprocess_audio=False,
+        keep_failed_audio=False,
+        duration_probe=lambda path: (_ for _ in ()).throw(
+            RuntimeError("ffprobe indisponivel")
+        ),
+        model_loader=lambda name: fake_model,
+    )
+
+    result = service.transcrever_com_resultado(str(audio_path))
+
+    assert result.ok is True
+    assert result.raw_text == "comentario transcrito"
+    assert "duration_probe_failed" in result.warnings
+    assert fake_model.calls[0][0] == str(audio_path)
+
+
+def test_resultado_mantem_wav_preprocessado_ate_whisper_e_remove_depois(tmp_path):
+    audio_path = tmp_path / "whatsapp.ogg"
+    audio_path.write_bytes(b"audio-original")
+    observed_path = []
+
+    def preprocess(source, destination):
+        Path(destination).write_bytes(b"wav-preprocessado")
+
+    class ModelThatRequiresExistingFile:
+        def transcribe(self, audio_path, **kwargs):
+            path = Path(audio_path)
+            assert path.is_file()
+            observed_path.append(path)
+            return {"text": "visita transcrita"}
+
+    service = AudioTranscriptionService(
+        preprocess_audio=True,
+        audio_preprocessor=preprocess,
+        duration_probe=lambda path: 8,
+        model_loader=lambda name: ModelThatRequiresExistingFile(),
+    )
+
+    result = service.transcrever_com_resultado(str(audio_path))
+
+    assert result.ok is True
+    assert observed_path
+    assert not observed_path[0].exists()
