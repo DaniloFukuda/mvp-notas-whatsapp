@@ -968,7 +968,22 @@ class VisitasTecnicasService:
         }
         for column, definition in columns.items():
             if column not in existing:
-                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                try:
+                    connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                    )
+                except sqlite3.OperationalError:
+                    # Another initializer may have added the same column after
+                    # our PRAGMA snapshot. Confirm that benign race explicitly.
+                    current = {
+                        str(row["name"])
+                        for row in connection.execute(
+                            f"PRAGMA table_info({table})"
+                        ).fetchall()
+                    }
+                    if column not in current:
+                        raise
+                existing.add(column)
 
     def _next_media_index(self, connection: sqlite3.Connection, visita_id: int) -> int:
         row = connection.execute(
