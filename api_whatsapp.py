@@ -596,6 +596,7 @@ whatsapp_menu_states: dict[str, str] = {}
 visita_edit_states: dict[str, int] = {}
 visita_active_states: dict[str, int] = {}
 visita_new_visit_states: set[str] = set()
+visita_recently_finalized_states: dict[str, int] = {}
 rdv_comment_states: dict[str, dict] = {}
 rdv_receipt_review_states: dict[str, dict] = {}
 # Estado temporario (em memoria, sem persistencia) da confirmacao do resumo de
@@ -954,6 +955,14 @@ def send_main_menu_interactive(to: str) -> None:
             "description": "Receber a transcrição em texto",
         },
     ]
+    if _is_assistente_inteligente_enabled():
+        sections[0]["rows"].append(
+            {
+                "id": "menu_assistente_inteligente",
+                "title": "🤖 Assistente Inteligente",
+                "description": "Conversar com a Ciclus",
+            }
+        )
     send_whatsapp_list_message(
         to=to,
         header="🌱 Ciclus Agro",
@@ -1537,6 +1546,9 @@ def handle_rdv_text_message(
         return _handle_assistente_inteligente_message(sender_phone, text, normalized)
 
     if normalized in MENU_OPEN_COMMANDS:
+        active_visit = _get_active_visita_for_phone(sender_phone)
+        if active_visit is not None:
+            return _active_visita_menu_message(active_visit)
         send_main_menu_interactive(sender_phone)
         return None
 
@@ -2305,6 +2317,13 @@ def handle_visitas_text_message(
     open_visit = _get_active_visita_for_phone(sender_phone)
     phone = normalize_phone(sender_phone)
 
+    if (
+        open_visit is None
+        and normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS
+        and phone in visita_recently_finalized_states
+    ):
+        return True, "Esta visita já foi finalizada."
+
     if normalized_text in {"fechar edicao", "finalizar edicao"}:
         return True, _close_visita_edit(sender_phone)
 
@@ -2334,6 +2353,7 @@ def handle_visitas_text_message(
             sender_phone,
             tecnico_nome=(collaborator or {}).get("nome"),
         )
+        visita_recently_finalized_states.pop(phone, None)
         visita_active_states[phone] = int(visit["id"])
         return True, "\n".join(
             [
@@ -2407,9 +2427,7 @@ def handle_visitas_text_message(
             str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
             and normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS
         ):
-            closed = visitas_service.fechar_visita(open_visit["id"])
-            _clear_active_visita(sender_phone, open_visit["id"])
-            return True, _visita_finalizada_message(closed)
+            return True, _finalize_visita(sender_phone, open_visit)
         if _is_legacy_quick_visit(open_visit):
             return True, _start_visita_review(sender_phone, open_visit["id"])
         if visitas_service.existem_fotos_pendentes(open_visit["id"]):
@@ -2553,33 +2571,7 @@ def handle_visitas_text_message(
 
     if state == "aguardando_revisao_final":
         if normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS:
-            # Generate PDF first to ensure it works before marking visit as closed
-            # Create a snapshot with the intended final state for the PDF
-            visita_completa = visitas_service.obter_visita_completa(open_visit["id"])
-            # Mark as closed in the snapshot for PDF generation
-            visita_snapshot = dict(visita_completa)
-            visita_snapshot["status"] = "fechada"
-            visita_snapshot["estado_fluxo"] = "fechada"
-            visita_snapshot["fechado_em"] = _now()
-            try:
-                build_visita_pdf(visita_snapshot)
-            except Exception:
-                # PDF generation failed - keep visit open and notify user
-                logger.exception(
-                    "Falha ao gerar PDF ao fechar visita %s, mantendo visita aberta",
-                    open_visit["id"],
-                )
-                _safe_send_text(
-                    sender_phone,
-                    "❌ Não foi possível gerar o PDF do relatório. O conteúdo pode ser muito extenso. "
-                    "A visita permanece aberta. Tente reduzir as descrições ou observações e tente fechar novamente.",
-                )
-                return True, _visita_revisao_final_message()
-
-            # PDF generated successfully, now close the visit
-            closed = visitas_service.fechar_visita(open_visit["id"])
-            _clear_active_visita(sender_phone, open_visit["id"])
-            return True, _visita_finalizada_message(closed)
+            return True, _finalize_visita(sender_phone, open_visit)
         if _is_maps_location_text(text):
             visitas_service.salvar_localizacao_textual(open_visit["id"], text)
             return True, _visita_midia_atualizada_message("✅ Localização atualizada.")
@@ -2803,10 +2795,7 @@ def handle_visitas_text_message(
     if direct_reply is not None:
         return True, direct_reply
 
-    return True, (
-        "Visita em andamento. Envie foto, observação, localização, dado coletado "
-        "ou \"fechar visita\"."
-    )
+    return True, _active_visita_menu_message(open_visit)
 
 
 def handle_visitas_location_message(sender_phone: str, location: dict) -> str | None:
@@ -3252,32 +3241,40 @@ def _clear_active_visita(sender_phone: str, visita_id: int | None = None) -> Non
     if visita_id is None or current == int(visita_id):
         visita_active_states.pop(phone, None)
     visita_new_visit_states.discard(phone)
+    visita_edit_states.pop(phone, None)
+    visita_summary_confirmation_states.pop(phone, None)
 
 
 def _existing_open_visita_choice_message(visita: dict) -> str:
+    return _active_visita_menu_message(visita)
+
+
+def _active_visita_menu_message(visita: dict) -> str:
+    reviewing = str(visita.get("estado_fluxo") or "") == "aguardando_revisao_final"
     return "\n".join(
         [
-            "Você já possui uma visita aberta:",
+            "🌱 Visita em andamento",
             "",
-            f"#{visita.get('id')} - {visita.get('fazenda') or '-'}",
-            f"Status: {visita.get('status') or '-'}",
+            f"Visita #{visita.get('id')}",
+            f"Fazenda: {visita.get('fazenda') or '-'}",
+            f"Etapa: {'revisão antes da finalização' if reviewing else 'coleta de informações'}",
             "",
-            "Para continuar nela, envie:",
-            f"continuar visita {visita.get('id')}",
-            "",
-            "Para iniciar uma nova visita, envie:",
-            "nova visita",
-            "",
-            "Para fechar a atual, envie:",
-            "fechar visita",
+            f"Continuar visita: continuar visita {visita.get('id')}",
+            "Revisar e finalizar: fechar visita",
+            "Cancelar visita: cancelar visita",
         ]
     )
 
 
 def _start_new_visita_flow(sender_phone: str) -> str:
     phone = normalize_phone(sender_phone)
-    visita_active_states.pop(phone, None)
+    existing = visitas_service.obter_visita_aberta(phone)
+    if existing is not None:
+        visita_active_states[phone] = int(existing["id"])
+        visita_new_visit_states.discard(phone)
+        return _active_visita_menu_message(existing)
     visita_new_visit_states.add(phone)
+    visita_recently_finalized_states.pop(phone, None)
     return "\n".join(
         [
             "Vamos iniciar uma nova visita técnica.",
@@ -3295,12 +3292,21 @@ def _create_new_visita_from_farm(
     if not farm:
         return "Informe o nome da fazenda para iniciar a nova visita."
     phone = normalize_phone(sender_phone)
-    visita = visitas_service.criar_visita(
+    existing = visitas_service.obter_visita_aberta(sender_phone)
+    if existing is not None:
+        visita_new_visit_states.discard(phone)
+        visita_active_states[phone] = int(existing["id"])
+        return _active_visita_menu_message(existing)
+    visita = visitas_service.iniciar_visita(
         sender_phone,
         tecnico_nome=(collaborator or {}).get("nome"),
         fazenda=farm,
         estado_fluxo="visita_aberta",
     )
+    if not visita.pop("_created", True):
+        visita_new_visit_states.discard(phone)
+        visita_active_states[phone] = int(visita["id"])
+        return _active_visita_menu_message(visita)
     visita_active_states[phone] = int(visita["id"])
     visita_new_visit_states.discard(phone)
     return "\n".join(
@@ -3642,8 +3648,34 @@ def _start_visita_review(sender_phone: str, visita_id: int) -> str:
     visitas_service.atualizar_campo(visita_id, "estado_fluxo", "aguardando_revisao_final")
     visita = visitas_service.obter_visita_completa(visita_id)
     if visita is not None:
+        visita = dict(visita)
+        visita["report_kind"] = "preview"
         _send_visita_pdf_data(sender_phone, visita)
     return _visita_revisao_final_message()
+
+
+def _finalize_visita(sender_phone: str, visita: dict) -> str:
+    visita_id = int(visita["id"])
+    current = visitas_service.obter_visita(visita_id)
+    if current is None:
+        return NO_OPEN_VISITA_MESSAGE
+    if current.get("status") == "fechada":
+        _clear_active_visita(sender_phone, visita_id)
+        return "Esta visita já foi finalizada."
+    visita_completa = visitas_service.obter_visita_completa(visita_id) or current
+    snapshot = dict(visita_completa)
+    snapshot.update(status="fechada", estado_fluxo="fechada", fechado_em=_now())
+    try:
+        build_visita_pdf(snapshot)
+    except Exception:
+        logger.exception("Falha ao gerar PDF ao fechar visita %s", visita_id)
+        return "❌ Não foi possível gerar o PDF final. A visita permanece aberta."
+    closed = visitas_service.fechar_visita(visita_id)
+    _clear_active_visita(sender_phone, visita_id)
+    visita_recently_finalized_states[normalize_phone(sender_phone)] = visita_id
+    final_data = visitas_service.obter_visita_completa(visita_id) or closed
+    _send_visita_pdf_data(sender_phone, final_data)
+    return _visita_finalizada_message(closed)
 
 
 def _visita_revisao_final_message() -> str:

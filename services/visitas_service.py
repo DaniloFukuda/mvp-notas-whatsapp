@@ -177,13 +177,50 @@ class VisitasTecnicasService:
         self,
         telefone_origem: str,
         tecnico_nome: str | None = None,
+        fazenda: str | None = None,
+        estado_fluxo: str = "aguardando_fazenda",
     ) -> dict:
         self.ensure_schema()
-        open_visit = self.obter_visita_aberta(telefone_origem)
-        if open_visit is not None:
-            return open_visit
-
-        return self.criar_visita(telefone_origem, tecnico_nome=tecnico_nome)
+        phone = normalize_phone(telefone_origem)
+        now = _now()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"""
+                SELECT {", ".join(VISITA_COLUMNS)}
+                FROM visitas_tecnicas
+                WHERE telefone_origem = ? AND status = 'aberta'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (phone,),
+            ).fetchone()
+            if row is not None:
+                connection.commit()
+                existing = dict(row)
+                existing["_created"] = False
+                return existing
+            cursor = connection.execute(
+                """
+                INSERT INTO visitas_tecnicas (
+                    telefone_origem, tecnico_nome, fazenda, status, estado_fluxo,
+                    data_visita, criado_em, atualizado_em
+                ) VALUES (?, ?, ?, 'aberta', ?, ?, ?, ?)
+                """,
+                (
+                    phone,
+                    _clean(tecnico_nome),
+                    _clean(fazenda),
+                    _clean(estado_fluxo),
+                    date.today().isoformat(),
+                    now,
+                    now,
+                ),
+            )
+            visita_id = int(cursor.lastrowid)
+            connection.commit()
+        created = self.obter_visita(visita_id) or {}
+        created["_created"] = True
+        return created
 
     def criar_visita(
         self,
@@ -690,10 +727,18 @@ class VisitasTecnicasService:
 
     def fechar_visita(self, visita_id: int) -> dict:
         now = _now()
-        return self._update_visita(
-            visita_id,
-            {"status": "fechada", "estado_fluxo": "fechada", "fechado_em": now},
-        )
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                UPDATE visitas_tecnicas
+                SET status = 'fechada', estado_fluxo = 'fechada',
+                    fechado_em = ?, atualizado_em = ?
+                WHERE id = ? AND status = 'aberta'
+                """,
+                (now, now, int(visita_id)),
+            )
+            connection.commit()
+        return self.obter_visita(visita_id) or {}
 
     def cancelar_visita(self, visita_id: int) -> dict:
         now = _now()

@@ -303,7 +303,8 @@ def test_visita_revisao_corrige_observacoes_e_finaliza_por_texto():
             assert closed["observacoes_gerais"] == "Observacao revisada"
             assert closed["status"] == "fechada"
             assert closed["fechado_em"]
-            assert len(sent) == 1
+            assert len(sent) == 2
+            assert all(item[1] == f"relatorio_visita_{visita['id']}.pdf" for item in sent)
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -413,7 +414,7 @@ def test_visita_revisao_previa_apos_midia_reenvia_pdf_sem_fechar():
         api_whatsapp.send_whatsapp_document = original_sender
 
 
-def test_nova_visita_nao_usa_visita_aberta_antiga():
+def test_nova_visita_nao_cria_segunda_enquanto_existe_aberta():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     try:
@@ -425,23 +426,12 @@ def test_nova_visita_nao_usa_visita_aberta_antiga():
 
             start = api_whatsapp.handle_rdv_text_message(sender, "nova visita")
             created = api_whatsapp.handle_rdv_text_message(sender, "Itapuã Prestes")
-            reply = api_whatsapp.handle_visitas_media_message(
-                sender,
-                "image",
-                "media-1",
-                "foto-itapua.jpg",
-                caption="Talhao novo",
-            )
-
             data = visitas.listar_visitas_validas()
-            nova = next(item for item in data["visitas"] if item["fazenda"] == "Itapuã Prestes")
-            antiga_completa = visitas.obter_visita_completa(antiga["id"])
-            nova_completa = visitas.obter_visita_completa(nova["id"])
-            assert "Vamos iniciar uma nova visita técnica." in start
-            assert "Visita criada para ITAPUÃ PRESTES." in created
-            assert "Foto salva na visita Itapuã Prestes." in reply
-            assert antiga_completa["midias"] == []
-            assert len(nova_completa["midias"]) == 1
+            abertas = [item for item in data["visitas"] if item["status"] == "aberta"]
+            assert "Visita em andamento" in start
+            assert "Visita em andamento" in created
+            assert len(abertas) == 1
+            assert abertas[0]["id"] == antiga["id"]
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -460,9 +450,9 @@ def test_visita_com_aberta_existente_pede_escolha():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "visita")
 
-            assert "Você já possui uma visita aberta:" in reply
+            assert "Visita em andamento" in reply
             assert f"continuar visita {visita['id']}" in reply
-            assert "nova visita" in reply
+            assert "Revisar e finalizar" in reply
             assert "fechar visita" in reply
     finally:
         api_whatsapp.rdv_service = original_rdv

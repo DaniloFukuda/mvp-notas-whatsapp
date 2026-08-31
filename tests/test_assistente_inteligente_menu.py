@@ -87,7 +87,7 @@ def test_flag_false_nao_adiciona_item_interativo(monkeypatch):
     assert "menu_assistente_inteligente" not in ids
 
 
-def test_flag_true_nao_altera_menu_publico(monkeypatch):
+def test_flag_true_adiciona_assistente_ao_menu_publico(monkeypatch):
     monkeypatch.setenv("ASSISTENTE_INTELIGENTE_ENABLED", "true")
     captured = _capture_list_rows(monkeypatch)
     with tempfile.TemporaryDirectory() as td:
@@ -97,7 +97,11 @@ def test_flag_true_nao_altera_menu_publico(monkeypatch):
         finally:
             _restore(orig_r, orig_v)
     ids = [row["id"] for row in captured["sections"][0]["rows"]]
-    assert ids == ["menu_visit_start", "menu_audio_transcription"]
+    assert ids == [
+        "menu_visit_start",
+        "menu_audio_transcription",
+        "menu_assistente_inteligente",
+    ]
 
 
 def test_item_interativo_convertido_para_comando_assistente():

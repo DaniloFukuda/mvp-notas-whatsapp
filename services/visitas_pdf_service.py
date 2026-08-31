@@ -54,7 +54,18 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         title="Relatorio de Visita Tecnica",
     )
     styles = _styles()
-    story = [
+    story = []
+    if _text(visita_data.get("report_kind")).lower() == "preview":
+        story.extend(
+            [
+                Paragraph(
+                    "PRÉVIA — VISITA AINDA ABERTA",
+                    styles["Title"],
+                ),
+                Spacer(1, 0.2 * cm),
+            ]
+        )
+    story.extend([
         _hero_header(visita_data, styles),
         Spacer(1, 0.35 * cm),
         _main_cards(visita_data, styles),
@@ -76,7 +87,7 @@ def build_visita_pdf(visita_data: dict) -> bytes:
         *_section("Resumo da visita", styles),
         _note_box_flowable(_executive_summary(visita_data), styles),
         Spacer(1, 0.28 * cm),
-    ]
+    ])
 
     dados = visita_data.get("dados_coletados") or []
     if dados:
@@ -136,7 +147,12 @@ def _hero_header(visita: dict, styles: dict) -> Table:
     farm_name = _text(visita.get("fazenda")) or "Fazenda não informada"
     visit_line = f"Visita técnica registrada em {_format_date(visita.get('data_visita'))}"
     technician = _text(visita.get("tecnico_nome")) or "-"
-    status = _text(visita.get("status")).capitalize() or "-"
+    raw_status = _text(visita.get("status")).lower()
+    status = {
+        "aberta": "Aberta",
+        "fechada": "Finalizada",
+        "cancelada": "Cancelada",
+    }.get(raw_status, raw_status.capitalize() or "-")
     highlight = Table(
         [
             [Paragraph(farm_name.upper(), styles["HeroFarm"])],

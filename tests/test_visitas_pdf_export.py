@@ -129,6 +129,18 @@ def test_build_visita_pdf_basico():
     assert "Localizações e pontos de referência" in text
     assert "Abrir no Google Maps" in text
     assert "Quantidade de vídeos" in text
+    assert "Status: Finalizada" in text
+
+
+def test_build_visita_pdf_preview_fica_inequivocamente_aberta():
+    visita = _visita_completa()
+    visita.update(status="aberta", fechado_em=None, report_kind="preview")
+
+    text = _extract_pdf_text(visitas_pdf_service.build_visita_pdf(visita))
+
+    assert "PRÉVIA — VISITA AINDA ABERTA" in text
+    assert "Status: Aberta" in text
+    assert "Fechado em" in text
 
 
 def test_build_visita_pdf_com_logo_nao_quebra():
