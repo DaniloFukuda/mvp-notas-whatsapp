@@ -1133,7 +1133,7 @@ def test_fechar_edicao():
             saved = visitas.obter_visita(visita["id"])
             assert "Edição finalizada." in close_reply
             assert saved["gerente"] == "Marcos"
-            assert next_reply == api_whatsapp.RDV_MENU
+            assert next_reply == api_whatsapp.MAIN_MENU_MESSAGE
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas

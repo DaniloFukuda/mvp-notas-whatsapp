@@ -49,13 +49,15 @@ def _capture_list_rows(monkeypatch):
     return captured
 
 
-def test_menu_texto_base_expoe_somente_visitas():
+def test_menu_texto_base_expoe_somente_visitas_e_transcricao():
     texto = api_whatsapp.MAIN_MENU_MESSAGE
-    assert "🌱 Visitas técnicas" in texto
+    assert "Nova visita técnica" in texto
+    assert "Transcrever áudio" in texto
     assert "RDV" not in texto
     assert "Comprovantes" not in texto
-    assert "KM / Viagens" not in texto
-    assert "Transcrever áudio" not in texto
+    assert "KM" not in texto
+    assert "resumo" not in texto.lower()
+    assert "planilha" not in texto.lower()
     assert "Assistente Inteligente" not in texto
 
 
@@ -85,7 +87,7 @@ def test_flag_false_nao_adiciona_item_interativo(monkeypatch):
     assert "menu_assistente_inteligente" not in ids
 
 
-def test_flag_true_adiciona_item_interativo(monkeypatch):
+def test_flag_true_nao_altera_menu_publico(monkeypatch):
     monkeypatch.setenv("ASSISTENTE_INTELIGENTE_ENABLED", "true")
     captured = _capture_list_rows(monkeypatch)
     with tempfile.TemporaryDirectory() as td:
@@ -95,7 +97,7 @@ def test_flag_true_adiciona_item_interativo(monkeypatch):
         finally:
             _restore(orig_r, orig_v)
     ids = [row["id"] for row in captured["sections"][0]["rows"]]
-    assert "menu_assistente_inteligente" in ids
+    assert ids == ["menu_visit_start", "menu_audio_transcription"]
 
 
 def test_item_interativo_convertido_para_comando_assistente():

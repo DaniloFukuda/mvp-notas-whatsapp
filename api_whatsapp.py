@@ -441,72 +441,6 @@ ASSISTENTE_INTELIGENTE_EXIT_MESSAGE = (
     "✅ Assistente Inteligente encerrado.\n"
     "Você voltou ao menu principal."
 )
-MAIN_MENU_MESSAGE = "\n".join(
-    [
-        "Olá! Sou o assistente da Ciclus Agro.",
-        "",
-        "Veja o que posso fazer:",
-        "",
-        "📌 RDV / Comprovantes",
-        "Registra despesas por foto, PDF ou imagem de comprovante.",
-        "Comandos:",
-        "",
-        "* Envie uma foto/PDF do comprovante",
-        "* resumo — mostra o resumo mensal do RDV",
-        "* planilha — envia a planilha mensal do RDV",
-        "* pdf — envia o relatorio mensal do RDV em PDF",
-        "* resumo semanal — mostra o resumo da semana",
-        "* planilha semanal — envia a planilha da semana",
-        "* pdf semanal — envia o relatorio semanal do RDV em PDF",
-        "",
-        "🚗 KM / Viagens",
-        "Registra deslocamentos com KM inicial, origem, destino e KM final.",
-        "Comandos:",
-        "",
-        "* km inicio 120350 — inicia uma viagem",
-        "* km termino 120500 — finaliza a viagem",
-        "* km cancelar — cancela uma viagem aberta",
-        "",
-        "🌱 Visitas técnicas",
-        "Registra fazendas visitadas, gerente, área, fotos, localização e relatório.",
-        "Comandos:",
-        "",
-        "* visita — inicia uma visita técnica",
-        "* visita status — mostra sua visita em andamento",
-        "* ver visita 12 — mostra dados da visita",
-        "* editar visita 12 — corrige dados da visita",
-        "* fechar edição — encerra modo edição",
-        "* cancelar edição — sai do modo edição",
-        "* visitas — lista visitas/fazendas registradas",
-        "* visitas abertas — lista visitas abertas da equipe",
-        "* fechar visita — finaliza a visita",
-        "* cancelar visita — cancela a visita em andamento",
-        "* localização visita 12 — mostra GPS de uma visita pelo ID",
-        "* planilha visitas — envia a planilha com fazendas visitadas",
-        "* relatório visita 12 — gera PDF pelo ID da visita",
-        "* relatório fazenda Nome da Fazenda — busca relatório pelo nome da fazenda",
-        "",
-        "📊 Relatórios",
-        "Lista as opções de relatórios disponíveis.",
-        "Comando:",
-        "",
-        "* relatórios",
-        "",
-        "🎙️ Transcrever áudio",
-        "Transforma um áudio do WhatsApp em texto, sem salvar em visita ou RDV.",
-        "Comando:",
-        "",
-        "* transcrever áudio",
-        "",
-        "🤖 Assistente Inteligente",
-        "Canal de teste para perguntas gerais. Modo simulado.",
-        "Comando:",
-        "",
-        "* assistente",
-        "",
-        "Digite qualquer comando acima para começar.",
-    ]
-)
 REPORTS_MENU_MESSAGE = "\n".join(
     [
         "Relatórios disponíveis:",
@@ -543,28 +477,17 @@ REPORTS_MENU_MESSAGE = "\n".join(
 )
 MENU_NUMBER_MESSAGE = 'Digite "menu" para ver os comandos disponíveis.'
 
-# Product navigation is intentionally visit-only. The RDV/KM/document and
-# standalone-transcription implementations remain available in code for a
-# future controlled reactivation, but are not advertised in the normal flow.
+# Product navigation intentionally exposes only visits and standalone audio.
+# RDV/KM/document implementations remain available internally, but are not
+# advertised in the normal flow.
 MAIN_MENU_MESSAGE = "\n".join(
     [
-        "Olá! Sou o assistente da Ciclus Agro.",
+        "🌱 Ciclus Agro",
         "",
-        "🌱 Visitas técnicas",
-        "Registra fazendas visitadas, gerente, área, fotos, localização e relatório.",
+        "Escolha uma opção para continuar:",
         "",
-        "* visita — inicia uma visita técnica",
-        "* visita status — mostra sua visita em andamento",
-        "* visitas — lista visitas/fazendas registradas",
-        "* visitas abertas — lista visitas abertas da equipe",
-        "* ver visita 12 — mostra dados da visita",
-        "* editar visita 12 — corrige dados da visita",
-        "* fechar visita — finaliza a visita",
-        "* cancelar visita — cancela a visita em andamento",
-        "* planilha visitas — envia a planilha de visitas",
-        "* relatório visita 12 — gera PDF pelo ID da visita",
-        "",
-        "Digite qualquer comando acima para começar.",
+        "1. Nova visita técnica",
+        "2. Transcrever áudio",
     ]
 )
 REPORTS_MENU_MESSAGE = "\n".join(
@@ -1024,16 +947,13 @@ def send_main_menu_interactive(to: str) -> None:
             "id": "menu_visit_start",
             "title": "🌱 Nova visita técnica",
             "description": "Registrar fazenda visitada",
-        }
+        },
+        {
+            "id": "menu_audio_transcription",
+            "title": "🎙️ Transcrever áudio",
+            "description": "Receber a transcrição em texto",
+        },
     ]
-    if _is_assistente_inteligente_enabled():
-        sections[0]["rows"].append(
-            {
-                "id": "menu_assistente_inteligente",
-                "title": "🤖 Assistente Inteligente",
-                "description": "Canal de teste (modo simulado)",
-            }
-        )
     send_whatsapp_list_message(
         to=to,
         header="🌱 Ciclus Agro",
@@ -1679,7 +1599,7 @@ def handle_rdv_text_message(
             return MENU_NUMBER_MESSAGE
         if normalized.startswith("km "):
             return KM_HELP_MESSAGE
-        return RDV_MENU
+        return MAIN_MENU_MESSAGE
 
     state = pending.get("status_fluxo")
     if state == "aguardando_valor":

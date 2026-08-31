@@ -319,8 +319,55 @@ def test_payload_menu_principal_interativo(monkeypatch):
             "id": "menu_visit_start",
             "title": "🌱 Nova visita técnica",
             "description": "Registrar fazenda visitada",
-        }
+        },
+        {
+            "id": "menu_audio_transcription",
+            "title": "🎙️ Transcrever áudio",
+            "description": "Receber a transcrição em texto",
+        },
     ]
+
+
+def test_menu_publico_nao_envia_instrucoes_legadas(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        api_whatsapp,
+        "send_whatsapp_list_message",
+        lambda **kwargs: sent.append(kwargs),
+    )
+
+    api_whatsapp.send_main_menu_interactive("5500000000001")
+
+    menu = sent[0]
+    visible = " ".join(
+        [menu["header"], menu["body"], menu["fallback_text"]]
+        + [
+            " ".join(str(value) for value in row.values())
+            for section in menu["sections"]
+            for row in section["rows"]
+        ]
+    ).lower()
+    assert "ciclus agro - rdv por whatsapp" not in visible
+    assert "digite km" not in visible
+    assert "digite resumo" not in visible
+    assert "digite planilha" not in visible
+    assert "comprovante" not in visible
+
+
+def test_fallback_textual_desconhecido_retorna_menu_publico():
+    original_rdv = api_whatsapp.rdv_service
+    original_visitas = api_whatsapp.visitas_service
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, _, sender = _install_services(temp_dir)
+        try:
+            reply = api_whatsapp.handle_rdv_text_message(
+                sender, "comando inexistente"
+            )
+            assert reply == api_whatsapp.MAIN_MENU_MESSAGE
+            assert "Ciclus Agro - RDV por WhatsApp" not in reply
+        finally:
+            api_whatsapp.rdv_service = original_rdv
+            api_whatsapp.visitas_service = original_visitas
 
 
 def test_payload_menu_relatorios_interativo():
