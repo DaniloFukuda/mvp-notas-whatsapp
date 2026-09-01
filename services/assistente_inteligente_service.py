@@ -22,6 +22,7 @@ Este módulo:
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
@@ -52,6 +53,23 @@ _FALLBACK_TEXT = (
     "⚠️ O Assistente Inteligente está temporariamente indisponível.\n\n"
     "Tente novamente em alguns instantes ou envie *sair* para voltar ao menu."
 )
+
+# Alguns providers/modelos podem incluir classificacoes internas junto da
+# resposta textual. Esses labels participam da decisao de safety no provider,
+# mas nunca fazem parte do contrato publico do Assistente.
+_SAFETY_METADATA_LINE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:user|response)\s+safety\s*:\s*"
+    r"(?:safe|unsafe|allowed|blocked)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _public_response_text(value: object) -> str:
+    """Remove apenas labels internos de safety, preservando a resposta real."""
+    lines = str(value or "").splitlines()
+    return "\n".join(
+        line for line in lines if not _SAFETY_METADATA_LINE.fullmatch(line)
+    ).strip()
 
 
 def _env_str(name: str, default: str) -> str:
@@ -283,9 +301,8 @@ class AssistenteInteligenteService:
 
         latency_ms = (time.perf_counter() - start_time) * 1000
 
-        if not getattr(response, "ok", False) or not str(
-            getattr(response, "text", "") or ""
-        ).strip():
+        public_text = _public_response_text(getattr(response, "text", ""))
+        if not getattr(response, "ok", False) or not public_text:
             record_request_end(
                 request_id=request_id,
                 success=False,
@@ -308,22 +325,20 @@ class AssistenteInteligenteService:
         key = self._history_key(sender_key)
         turns = self._history.setdefault(key, [])
         turns.append(AssistenteMessage(role="user", text=raw))
-        turns.append(
-            AssistenteMessage(role="assistant", text=str(response.text))
-        )
+        turns.append(AssistenteMessage(role="assistant", text=public_text))
         self._trim_history(sender_key)
 
         record_request_end(
             request_id=request_id,
             success=True,
             latency_ms=latency_ms,
-            output_chars=len(str(response.text)),
+            output_chars=len(public_text),
             used_fallback=bool(getattr(response, "used_fallback", False)),
         )
 
         return AssistenteResponse(
             ok=True,
-            text=str(response.text),
+            text=public_text,
             provider=getattr(response, "provider", self.provider_name)
             or self.provider_name,
             used_fallback=bool(getattr(response, "used_fallback", False)),

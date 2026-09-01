@@ -415,7 +415,7 @@ INTERACTIVE_COMMAND_IDS = {
     "menu_assistente_inteligente": "assistente",
 }
 INTERACTIVE_COMMAND_IDS.update(interactive_report_commands())
-# Assistente Inteligente Ciclus (Módulo 1): estado exclusivo, simulado, desligado.
+# Assistente Inteligente Ciclus: estado exclusivo e controlado por feature flag.
 ASSISTENTE_INTELIGENTE_COMMANDS = {"assistente", "assistente inteligente"}
 ASSISTENTE_INTELIGENTE_EXIT_COMMANDS = {"sair", "menu", "cancelar", "voltar"}
 ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE = (
@@ -424,13 +424,15 @@ ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE = (
 )
 ASSISTENTE_INTELIGENTE_ENTRY_MESSAGE = (
     "🤖 *Assistente Inteligente Ciclus*\n\n"
-    "Modo de teste ativado.\n\n"
-    "Envie uma pergunta em texto para validar o novo canal.\n"
-    "Para voltar ao sistema, envie *sair* ou *menu*."
+    "Como posso ajudar? Envie sua pergunta em texto.\n\n"
+    "Posso apoiar com dúvidas gerais sobre agricultura, agronomia, rotina "
+    "de campo, manejo e organização das informações de visitas.\n\n"
+    "Para voltar ao sistema, envie *sair*, *menu*, *cancelar* ou *voltar*."
 )
 ASSISTENTE_INTELIGENTE_SIMULATED_REPLY = (
     "🤖 Recebi sua pergunta.\n\n"
-    "O canal do Assistente Inteligente está funcionando. A integração com as consultas da Ciclus será adicionada na próxima etapa.\n\n"
+    "O Assistente Inteligente está temporariamente indisponível. Tente "
+    "novamente em alguns instantes.\n\n"
     "Para voltar ao menu, envie *sair*."
 )
 ASSISTENTE_INTELIGENTE_MEDIA_REPLY = (
@@ -611,14 +613,14 @@ _audio_transcription_intelligence_service = AudioTranscriptionIntelligenceServic
 )
 standalone_transcription_modes: dict[str, str] = {}
 
-# Estado exclusivo do Assistente Inteligente Ciclus (Módulo 1).
+# Estado exclusivo do Assistente Inteligente Ciclus.
 # Chaveado pelo telefone normalizado. Em memoria, sem persistencia.
 # A sessão pode ser perdida apos o restart do servico (aceitavel no MVP).
 assistente_inteligente_states: dict[str, dict] = {}
 
-# Serviço isolado de conversa do Assistente Inteligente (Módulo 2A).
+# Serviço isolado de conversa do Assistente Inteligente.
 # O handler NÃO conhece o provider; só chama generate(request). Provider
-# mock por padrão; nenhuma chamada externa ocorre nesta etapa.
+# O provider é selecionado por configuração; testes injetam provider fake.
 _assistente_inteligente_service = AssistenteInteligenteService()
 
 
@@ -684,8 +686,8 @@ def _assistente_exit(sender_phone: str) -> None:
 
 def _handle_assistente_inteligente_message(sender_phone: str, text: str, normalized: str) -> str | None:
     # Chamado APENAS quando o Assistente ja esta ativo.
-    # Intercepta antes dos fluxos de RDV/KM/visitas. Nunca chama API externa,
-    # nao consulta banco alem da autorizacao e nao altera dados.
+    # Intercepta antes dos fluxos de RDV/KM/visitas. Nao consulta banco alem
+    # da autorizacao e nao altera dados; a geracao fica isolada no servico.
     if normalized in ASSISTENTE_INTELIGENTE_EXIT_COMMANDS:
         _assistente_exit(sender_phone)
         send_main_menu_interactive(sender_phone)
