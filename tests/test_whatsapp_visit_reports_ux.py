@@ -79,7 +79,11 @@ def test_historico_lista_so_fechadas_do_usuario_e_limita_dez(monkeypatch):
         assert f"visita_relatorio_{aberta['id']}" not in ids
         assert f"visita_relatorio_{cancelada['id']}" not in ids
         assert f"visita_relatorio_{alheia['id']}" not in ids
-        assert all("Finalizada" in row["description"] for row in rows)
+        assert all(
+            "Finalizada" in row["description"]
+            for row in rows
+            if row["id"].startswith("visita_relatorio_")
+        )
 
 
 def test_historico_vazio_usa_mensagem_amigavel(monkeypatch):
@@ -126,7 +130,7 @@ def test_pdf_de_outro_usuario_nao_e_exposto(monkeypatch):
             OTHER, f"relatorio visita {visita['id']}"
         )
 
-        assert "Não encontrei" in reply
+        assert reply == "Relatório não encontrado."
         assert sent == []
 
 

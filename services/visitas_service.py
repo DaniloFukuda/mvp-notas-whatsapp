@@ -74,7 +74,8 @@ class VisitasTecnicasService:
                     localizacao_texto TEXT,
                     criado_em TEXT NOT NULL,
                     atualizado_em TEXT,
-                    fechado_em TEXT
+                    fechado_em TEXT,
+                    is_test INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -846,26 +847,61 @@ class VisitasTecnicasService:
         return self.listar_visitas_validas(fazenda=nome_fazenda, limite=limite)
 
     def listar_relatorios_finalizados(
-        self, telefone_origem: str, limite: int = 10
+        self,
+        telefone_origem: str | None,
+        limite: int = 9,
+        offset: int = 0,
+        incluir_todos: bool = False,
+        incluir_testes: bool = False,
     ) -> list[dict]:
-        """Lista visitas fechadas pertencentes ao telefone informado."""
+        """Lista relatórios fechados; o default nunca remove ownership."""
         self.ensure_schema()
         phone = normalize_phone(telefone_origem)
-        if not phone:
+        if not incluir_todos and not phone:
             return []
-        safe_limit = max(0, min(int(limite), 10))
+        safe_limit = max(0, min(int(limite), 100))
+        safe_offset = max(0, int(offset))
+        clauses = ["status = 'fechada'"]
+        values: list[object] = []
+        if not incluir_testes:
+            clauses.append("is_test = 0")
+        if not incluir_todos:
+            clauses.append("telefone_origem = ?")
+            values.append(phone)
+        values.extend([safe_limit, safe_offset])
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 f"""
-                SELECT {", ".join(VISITA_COLUMNS)}
+                SELECT {", ".join(VISITA_COLUMNS)}, is_test
                 FROM visitas_tecnicas
-                WHERE telefone_origem = ? AND status = 'fechada'
+                WHERE {" AND ".join(clauses)}
                 ORDER BY COALESCE(fechado_em, atualizado_em, criado_em) DESC, id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (phone, safe_limit),
+                values,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def obter_relatorio_finalizado(
+        self,
+        visita_id: int,
+        telefone_origem: str | None,
+        incluir_todos: bool = False,
+    ) -> dict | None:
+        phone = normalize_phone(telefone_origem)
+        if not incluir_todos and not phone:
+            return None
+        clauses = ["id = ?", "status = 'fechada'", "is_test = 0"]
+        values: list[object] = [int(visita_id)]
+        if not incluir_todos:
+            clauses.append("telefone_origem = ?")
+            values.append(phone)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"SELECT id FROM visitas_tecnicas WHERE {' AND '.join(clauses)}",
+                values,
+            ).fetchone()
+        return self.obter_visita_completa(int(row["id"])) if row is not None else None
 
     def obter_visita_por_id(self, visita_id: int) -> dict | None:
         return self.obter_visita(visita_id)

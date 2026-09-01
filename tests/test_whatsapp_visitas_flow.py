@@ -1055,6 +1055,7 @@ def test_editar_visita_observacoes_reflete_no_pdf():
                 sender,
                 "observações = Cliente solicitou orçamento.",
             )
+            visitas.fechar_visita(visita["id"])
             reply = api_whatsapp.handle_rdv_text_message(sender, f"relatorio visita {visita['id']}")
 
             saved = visitas.obter_visita_completa(visita["id"])
@@ -1182,6 +1183,7 @@ def test_relatorio_visita_envia_pdf():
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
             visitas.atualizar_campo(visita["id"], "gerente", "Paulo Silva")
             visitas.adicionar_observacao(visita["id"], "Pedido de 300T")
+            visitas.fechar_visita(visita["id"])
             sent = []
 
             def fake_send(to, content, filename, caption, mime_type):
@@ -1255,7 +1257,7 @@ def test_relatorio_visita_por_id_de_outro_telefone_nao_expoe_pdf():
                 f"relatorio visita {visita['id']}",
             )
 
-            assert "Não encontrei" in reply
+            assert reply == "Relatório não encontrado."
             assert sent == []
     finally:
         api_whatsapp.rdv_service = original_rdv
@@ -1272,6 +1274,7 @@ def test_pdf_visita_por_id_envia_pdf_individual():
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1308,6 +1311,7 @@ def test_pdf_visita_sem_id_lista_visitas_sem_gerar_pdf():
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             visitas.fechar_visita(visita["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
@@ -1475,7 +1479,7 @@ def test_relatorio_visita_id_cancelado_bloqueia():
                 f"relatório visita {visita['id']}",
             )
 
-            assert reply == api_whatsapp.CANCELED_VISITA_REPORT_MESSAGE
+            assert reply == "Relatório não encontrado."
             assert sent == []
     finally:
         api_whatsapp.rdv_service = original_rdv
@@ -1962,6 +1966,7 @@ def test_comandos_visita_aceitam_acentos_e_sem_acentos():
             assert api_whatsapp.handle_rdv_text_message(
                 sender, "localização visita"
             ).startswith("Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             assert api_whatsapp.handle_rdv_text_message(
                 sender,
                 f"relatorio visita {visita['id']}",

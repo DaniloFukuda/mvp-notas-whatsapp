@@ -82,6 +82,7 @@ from services.visita_validation import (
     visita_observacao_total_max_chars,
 )
 from services.visitas_service import VisitasTecnicasService, normalize_phone, _now
+from services.visit_reports_auth import is_reports_manager
 from services.visita_summary_service import _env_flag
 from services.whatsapp_meta_client import send_payload as send_meta_whatsapp_payload
 from services.whatsapp_meta_error_service import WhatsAppSendError
@@ -1014,14 +1015,79 @@ def _main_menu_fallback_message() -> str:
     return "\n".join(lines)
 
 
+VISIT_REPORTS_FIRST_PAGE_SIZE = 9
+VISIT_REPORTS_OTHER_PAGE_SIZE = 8
+
+
 def send_reports_menu_interactive(to: str) -> None:
-    visitas = visitas_service.listar_relatorios_finalizados(to, limite=10)
-    if not visitas:
-        send_whatsapp_text(
-            to,
-            "Você ainda não possui relatórios de visitas finalizadas.",
+    if is_reports_manager(to):
+        send_whatsapp_list_message(
+            to=to,
+            header="Relatórios de visitas",
+            body="Escolha quais relatórios deseja consultar.",
+            button_text="Ver relatórios",
+            sections=[
+                {
+                    "title": "Escopo",
+                    "rows": [
+                        {
+                            "id": "visit_reports:own:page:1",
+                            "title": "📄 Meus relatórios",
+                            "description": "Minhas visitas finalizadas",
+                        },
+                        {
+                            "id": "visit_reports:team:page:1",
+                            "title": "👥 Relatórios da equipe",
+                            "description": "Visitas finalizadas da equipe",
+                        },
+                    ],
+                }
+            ],
+            fallback_text=(
+                "Relatórios de visitas\n\n"
+                "Envie: meus relatórios\n"
+                "Ou: relatórios da equipe"
+            ),
         )
         return
+    _send_visit_reports_page(to, "own", 1)
+
+
+def _visit_reports_page_window(page: int) -> tuple[int, int]:
+    if page == 1:
+        return VISIT_REPORTS_FIRST_PAGE_SIZE, 0
+    return (
+        VISIT_REPORTS_OTHER_PAGE_SIZE,
+        VISIT_REPORTS_FIRST_PAGE_SIZE
+        + (page - 2) * VISIT_REPORTS_OTHER_PAGE_SIZE,
+    )
+
+
+def _send_visit_reports_page(to: str, scope: str, page: int) -> str | None:
+    if scope not in {"own", "team"} or page < 1 or page > 10_000:
+        return "Página de relatórios inválida. Abra o menu de relatórios novamente."
+    team = scope == "team"
+    if team and not is_reports_manager(to):
+        return "Relatório não encontrado."
+    page_size, offset = _visit_reports_page_window(page)
+    results = visitas_service.listar_relatorios_finalizados(
+        to,
+        limite=page_size + 1,
+        offset=offset,
+        incluir_todos=team,
+    )
+    has_next = len(results) > page_size
+    visitas = results[:page_size]
+    if not visitas:
+        if page > 1:
+            return "Página de relatórios inválida. Abra o menu de relatórios novamente."
+        message = (
+            "A equipe ainda não possui relatórios de visitas finalizadas."
+            if team
+            else "Você ainda não possui relatórios de visitas finalizadas."
+        )
+        send_whatsapp_text(to, message)
+        return None
     rows = []
     for visita in visitas:
         farm = str(visita.get("fazenda") or "Fazenda não informada")
@@ -1030,25 +1096,49 @@ def send_reports_menu_interactive(to: str) -> None:
             date_label = datetime.fromisoformat(raw_date).strftime("%d/%m/%Y")
         except ValueError:
             date_label = raw_date or "Data não informada"
+        description = (
+            f"{visita.get('tecnico_nome') or 'Técnico não informado'} — {date_label}"
+            if team
+            else f"{date_label} — Finalizada"
+        )
         rows.append(
             {
                 "id": f"visita_relatorio_{visita['id']}",
                 "title": f"#{visita['id']} — {farm}"[:24],
-                "description": f"{date_label} — Finalizada"[:72],
+                "description": description[:72],
+            }
+        )
+    if page > 1:
+        rows.append(
+            {
+                "id": f"visit_reports:{scope}:page:{page - 1}",
+                "title": "⬅️ Anterior",
+                "description": "Voltar uma página",
+            }
+        )
+    if has_next:
+        rows.append(
+            {
+                "id": f"visit_reports:{scope}:page:{page + 1}",
+                "title": "➡️ Próxima",
+                "description": "Ver mais relatórios",
             }
         )
     send_whatsapp_list_message(
         to=to,
         header="Relatórios de visitas",
-        body="Escolha um relatório finalizado para abrir.",
+        body=f"{'Equipe' if team else 'Meus relatórios'} — página {page}",
         button_text="Ver relatórios",
         sections=[{"title": "Visitas finalizadas", "rows": rows}],
-        fallback_text=_visit_reports_fallback_message(visitas),
+        fallback_text=_visit_reports_fallback_message(visitas, team=team, page=page),
     )
+    return None
 
 
-def _visit_reports_fallback_message(visitas: list[dict]) -> str:
-    lines = ["📄 Relatórios de visitas", ""]
+def _visit_reports_fallback_message(
+    visitas: list[dict], *, team: bool = False, page: int = 1
+) -> str:
+    lines = [f"📄 Relatórios de visitas — página {page}", ""]
     for visita in visitas:
         raw_date = str(visita.get("fechado_em") or visita.get("data_visita") or "")[:10]
         try:
@@ -1058,7 +1148,11 @@ def _visit_reports_fallback_message(visitas: list[dict]) -> str:
         lines.extend(
             [
                 f"#{visita['id']} — {visita.get('fazenda') or 'Fazenda não informada'}",
-                f"{date_label} — Finalizada",
+                (
+                    f"{visita.get('tecnico_nome') or 'Técnico não informado'} — {date_label}"
+                    if team
+                    else f"{date_label} — Finalizada"
+                ),
                 f"Envie: relatório visita {visita['id']}",
                 "",
             ]
@@ -1734,6 +1828,11 @@ def handle_rdv_text_message(
             return _active_visita_menu_message(active_visit)
         send_main_menu_interactive(sender_phone)
         return None
+
+    reports_page = _parse_visit_reports_page_command(normalized)
+    if reports_page is not None:
+        scope, page = reports_page
+        return _send_visit_reports_page(sender_phone, scope, page)
 
     if normalized == "relatorios":
         send_reports_menu_interactive(sender_phone)
@@ -4570,7 +4669,7 @@ def _send_visita_pdf(sender_phone: str, normalized_text: str = "") -> bool:
     command = parse_visit_report_command(normalized_text)
     if command is None or command.kind != "by_id" or command.visita_id is None:
         return False
-    visita = _select_visita_for_pdf(command.visita_id)
+    visita = _select_visita_for_pdf(command.visita_id, sender_phone)
     if visita is None:
         return False
     try:
@@ -4611,9 +4710,12 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
 
     if command.kind == "by_fazenda":
         query = command.fazenda_query
+        manager = is_reports_manager(sender_phone)
         visitas = [
             visita
-            for visita in visitas_service.listar_relatorios_finalizados(sender_phone, limite=10)
+            for visita in visitas_service.listar_relatorios_finalizados(
+                sender_phone, limite=100, incluir_todos=manager
+            )
             if query.lower() in str(visita.get("fazenda") or "").lower()
         ]
         if not visitas:
@@ -4632,10 +4734,7 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
     if command.kind == "by_id" and command.visita_id is not None:
         visita = _select_visita_for_pdf(command.visita_id, sender_phone)
         if visita is None:
-            return (
-                "Não encontrei essa visita técnica.\n"
-                'Envie "visitas" para listar visitas válidas.'
-            )
+            return "Relatório não encontrado."
         _send_visita_pdf_data(sender_phone, visita)
         return None
 
@@ -4646,19 +4745,13 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
 
 
 def _select_visita_for_pdf(visita_id: int, sender_phone: str | None = None) -> dict | None:
-    raw_visita = visitas_service.obter_visita_por_id(visita_id)
-    if raw_visita is None:
+    if not sender_phone:
         return None
-    if sender_phone and normalize_phone(raw_visita.get("telefone_origem")) != normalize_phone(sender_phone):
-        return None
-    if raw_visita.get("status") == "cancelada":
-        raise ValueError("visita_cancelada")
-    visita = visitas_service.obter_visita_completa(visita_id)
-    if visita is None:
-        return None
-    if visita.get("status") not in {"aberta", "fechada"}:
-        return None
-    return visita
+    return visitas_service.obter_relatorio_finalizado(
+        visita_id,
+        sender_phone,
+        incluir_todos=is_reports_manager(sender_phone),
+    )
 
 
 def _multiple_fazenda_visitas_message(query: str, visitas: list[dict]) -> str:
@@ -5712,6 +5805,12 @@ def _extract_interactive_command(message: dict) -> str:
 
 
 def _interactive_visit_command(reply_id: str) -> str:
+    page_match = re.fullmatch(
+        r"visit_reports:(own|team):page:(\d+)",
+        str(reply_id or "").strip(),
+    )
+    if page_match:
+        return f"visit_reports:{page_match.group(1)}:page:{page_match.group(2)}"
     report_match = re.fullmatch(r"visita_relatorio_(\d+)", str(reply_id or "").strip())
     if report_match:
         return f"relatorio visita {report_match.group(1)}"
@@ -5719,6 +5818,19 @@ def _interactive_visit_command(reply_id: str) -> str:
     if match:
         return match.group(2)
     return ""
+
+
+def _parse_visit_reports_page_command(text: str) -> tuple[str, int] | None:
+    aliases = {
+        "meus relatorios": ("own", 1),
+        "relatorios da equipe": ("team", 1),
+    }
+    if text in aliases:
+        return aliases[text]
+    match = re.fullmatch(r"visit_reports:(own|team):page:(\d+)", text)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2))
 
 
 def _extract_interactive_reply_id(message: dict) -> str:
