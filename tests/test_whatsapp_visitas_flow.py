@@ -1226,13 +1226,13 @@ def test_relatorio_visita_sem_visita():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "relatorio visita")
 
-            assert reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert reply == "Você ainda não possui relatórios de visitas finalizadas."
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
 
 
-def test_relatorio_visita_por_id_de_outro_telefone():
+def test_relatorio_visita_por_id_de_outro_telefone_nao_expoe_pdf():
     original_rdv = api_whatsapp.rdv_service
     original_visitas = api_whatsapp.visitas_service
     original_sender = api_whatsapp.send_whatsapp_document
@@ -1242,6 +1242,7 @@ def test_relatorio_visita_por_id_de_outro_telefone():
             other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
             visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1254,11 +1255,8 @@ def test_relatorio_visita_por_id_de_outro_telefone():
                 f"relatorio visita {visita['id']}",
             )
 
-            assert reply is None
-            assert len(sent) == 1
-            assert sent[0][0] == other
-            assert sent[0][1] == f"relatorio_visita_{visita['id']}.pdf"
-            assert sent[0][4].startswith(b"%PDF")
+            assert "Não encontrei" in reply
+            assert sent == []
     finally:
         api_whatsapp.rdv_service = original_rdv
         api_whatsapp.visitas_service = original_visitas
@@ -1310,6 +1308,7 @@ def test_pdf_visita_sem_id_lista_visitas_sem_gerar_pdf():
             _, visitas, sender = _install_services(temp_dir)
             visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1336,11 +1335,12 @@ def test_relatorio_visita_sem_id_com_multiplas_visitas_lista_opcoes():
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             rdv, visitas, sender = _install_services(temp_dir)
-            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
             primeira = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
-            segunda = visitas.iniciar_visita(other, tecnico_nome="Marcelo")
+            visitas.fechar_visita(primeira["id"])
+            segunda = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Boi Dourado 3J")
+            visitas.fechar_visita(segunda["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1367,8 +1367,9 @@ def test_relatorio_fazenda_um_resultado():
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             _, visitas, sender = _install_services(temp_dir)
-            visita = visitas.iniciar_visita("5500000000002", tecnico_nome="Marcelo")
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1397,11 +1398,12 @@ def test_relatorio_fazenda_multiplos_resultados():
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             rdv, visitas, sender = _install_services(temp_dir)
-            other = rdv.get_collaborator_by_phone("5500000000002")["telefone_whatsapp"]
             primeira = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(primeira["id"], "fazenda", "Fazenda Imperial")
-            segunda = visitas.iniciar_visita(other, tecnico_nome="Marcelo")
+            visitas.fechar_visita(primeira["id"])
+            segunda = visitas.iniciar_visita(sender, tecnico_nome="Danilo")
             visitas.atualizar_campo(segunda["id"], "fazenda", "Fazenda Imperial Norte")
+            visitas.fechar_visita(segunda["id"])
             sent = []
             api_whatsapp.send_whatsapp_document = (
                 lambda to, content, filename, caption, mime_type: sent.append(
@@ -1443,7 +1445,7 @@ def test_relatorio_visita_nao_gera_pdf_de_cancelada():
 
             reply = api_whatsapp.handle_rdv_text_message(sender, "relatório visita")
 
-            assert reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert reply == "Você ainda não possui relatórios de visitas finalizadas."
             assert sent == []
     finally:
         api_whatsapp.rdv_service = original_rdv
@@ -1888,7 +1890,7 @@ def test_canceladas_nao_aparecem():
 
             assert list_reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
             assert planilha_reply is None
-            assert relatorio_reply == api_whatsapp.NO_VALID_VISITA_MESSAGE
+            assert relatorio_reply == "Você ainda não possui relatórios de visitas finalizadas."
             assert "Não encontrei visita técnica válida" in fazenda_reply
             workbook = load_workbook(BytesIO(sent[0][4]))
             assert workbook["Visitas"].max_row == 1

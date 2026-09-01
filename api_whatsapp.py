@@ -271,8 +271,8 @@ VISITA_OBSERVACOES_FINALIZADAS_MESSAGE = "\n".join(
     [
         "Observações salvas.",
         "",
-        "Agora você pode enviar fotos da visita.",
-        "Cada foto poderá receber um comentário próprio no relatório.",
+        "Agora você pode enviar fotos e vídeos da visita.",
+        "Cada arquivo pode receber uma legenda.",
         "",
         "Quando terminar a visita, envie: fechar visita",
     ]
@@ -505,6 +505,7 @@ MAIN_MENU_MESSAGE = "\n".join(
         "",
         "1. Nova visita técnica",
         "2. Transcrever áudio",
+        "3. Relatórios de visitas",
     ]
 )
 REPORTS_MENU_MESSAGE = "\n".join(
@@ -980,30 +981,89 @@ def send_main_menu_interactive(to: str) -> None:
                 "description": "Conversar com a Ciclus",
             }
         )
+    sections[0]["rows"].append(
+        {
+            "id": "menu_reports",
+            "title": "📄 Relatórios visitas",
+            "description": "Consultar visitas finalizadas",
+        }
+    )
     send_whatsapp_list_message(
         to=to,
         header="🌱 Ciclus Agro",
         body="Escolha uma opção para continuar:",
         button_text="Abrir menu",
         sections=sections,
-        fallback_text=MAIN_MENU_MESSAGE,
+        fallback_text=_main_menu_fallback_message(),
     )
+
+
+def _main_menu_fallback_message() -> str:
+    lines = [
+        "🌱 Ciclus Agro",
+        "",
+        "Escolha uma opção para continuar:",
+        "",
+        "1. Nova visita técnica",
+        "2. Transcrever áudio",
+    ]
+    if _is_assistente_inteligente_enabled():
+        lines.extend(["3. Assistente Inteligente", "4. Relatórios de visitas"])
+    else:
+        lines.append("3. Relatórios de visitas")
+    return "\n".join(lines)
 
 
 def send_reports_menu_interactive(to: str) -> None:
-    sections = [
-        section
-        for section in report_menu_sections()
-        if section.get("title") == "Visitas técnicas"
-    ]
+    visitas = visitas_service.listar_relatorios_finalizados(to, limite=10)
+    if not visitas:
+        send_whatsapp_text(
+            to,
+            "Você ainda não possui relatórios de visitas finalizadas.",
+        )
+        return
+    rows = []
+    for visita in visitas:
+        farm = str(visita.get("fazenda") or "Fazenda não informada")
+        raw_date = str(visita.get("fechado_em") or visita.get("data_visita") or "")[:10]
+        try:
+            date_label = datetime.fromisoformat(raw_date).strftime("%d/%m/%Y")
+        except ValueError:
+            date_label = raw_date or "Data não informada"
+        rows.append(
+            {
+                "id": f"visita_relatorio_{visita['id']}",
+                "title": f"#{visita['id']} — {farm}"[:24],
+                "description": f"{date_label} — Finalizada"[:72],
+            }
+        )
     send_whatsapp_list_message(
         to=to,
-        header="Relatorios",
-        body="Escolha qual relatorio deseja receber.",
-        button_text="Ver relatorios",
-        sections=sections,
-        fallback_text=REPORTS_MENU_MESSAGE,
+        header="Relatórios de visitas",
+        body="Escolha um relatório finalizado para abrir.",
+        button_text="Ver relatórios",
+        sections=[{"title": "Visitas finalizadas", "rows": rows}],
+        fallback_text=_visit_reports_fallback_message(visitas),
     )
+
+
+def _visit_reports_fallback_message(visitas: list[dict]) -> str:
+    lines = ["📄 Relatórios de visitas", ""]
+    for visita in visitas:
+        raw_date = str(visita.get("fechado_em") or visita.get("data_visita") or "")[:10]
+        try:
+            date_label = datetime.fromisoformat(raw_date).strftime("%d/%m/%Y")
+        except ValueError:
+            date_label = raw_date or "Data não informada"
+        lines.extend(
+            [
+                f"#{visita['id']} — {visita.get('fazenda') or 'Fazenda não informada'}",
+                f"{date_label} — Finalizada",
+                f"Envie: relatório visita {visita['id']}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
 
 
 def send_visita_review_menu_interactive(to: str, fallback_text: str | None = None) -> None:
@@ -1589,6 +1649,12 @@ def handle_rdv_text_message(
             return ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE
         if normalized in MENU_OPEN_COMMANDS:
             return _active_visita_menu_message(active_visit)
+        if normalized == "relatorios":
+            return (
+                "⚠️ Existe uma visita em andamento. Conclua ou cancele a visita atual "
+                "antes de consultar relatórios.\n\n"
+                + _active_visita_menu_message(active_visit)
+            )
         visita_handled, visita_reply = handle_visitas_text_message(
             sender_phone,
             text,
@@ -3382,7 +3448,18 @@ def _clear_active_visita(sender_phone: str, visita_id: int | None = None) -> Non
 
 
 def _existing_open_visita_choice_message(visita: dict) -> str:
-    return _active_visita_menu_message(visita)
+    return _new_visita_blocked_message(visita)
+
+
+def _new_visita_blocked_message(visita: dict) -> str:
+    return "\n".join(
+        [
+            "⚠️ Já existe uma visita em andamento.",
+            "Você precisa continuar, revisar/finalizar ou cancelar a visita atual antes de iniciar uma nova.",
+            "",
+            _active_visita_menu_message(visita),
+        ]
+    )
 
 
 def _active_visita_menu_message(visita: dict) -> str:
@@ -3488,7 +3565,7 @@ def _start_new_visita_flow(sender_phone: str) -> str:
     if existing is not None:
         visita_active_states[phone] = int(existing["id"])
         visita_new_visit_states.discard(phone)
-        return _active_visita_menu_message(existing)
+        return _new_visita_blocked_message(existing)
     visita_new_visit_states.add(phone)
     visita_recently_finalized_states.pop(phone, None)
     return "\n".join(
@@ -3512,7 +3589,7 @@ def _create_new_visita_from_farm(
     if existing is not None:
         visita_new_visit_states.discard(phone)
         visita_active_states[phone] = int(existing["id"])
-        return _active_visita_menu_message(existing)
+        return _new_visita_blocked_message(existing)
     visita = visitas_service.iniciar_visita(
         sender_phone,
         tecnico_nome=(collaborator or {}).get("nome"),
@@ -3522,7 +3599,7 @@ def _create_new_visita_from_farm(
     if not visita.pop("_created", True):
         visita_new_visit_states.discard(phone)
         visita_active_states[phone] = int(visita["id"])
-        return _active_visita_menu_message(visita)
+        return _new_visita_blocked_message(visita)
     visita_active_states[phone] = int(visita["id"])
     visita_new_visit_states.discard(phone)
     return "\n".join(
@@ -4534,8 +4611,11 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
 
     if command.kind == "by_fazenda":
         query = command.fazenda_query
-        data = visitas_service.buscar_visitas_por_fazenda(query)
-        visitas = data.get("visitas") or []
+        visitas = [
+            visita
+            for visita in visitas_service.listar_relatorios_finalizados(sender_phone, limite=10)
+            if query.lower() in str(visita.get("fazenda") or "").lower()
+        ]
         if not visitas:
             return (
                 f'Não encontrei visita técnica válida para "{query}".\n'
@@ -4543,14 +4623,14 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
             )
         if len(visitas) > 1:
             return _multiple_fazenda_visitas_message(query, visitas)
-        visita = visitas_service.obter_visita_completa(visitas[0]["id"])
+        visita = _select_visita_for_pdf(visitas[0]["id"], sender_phone)
         if visita is None:
             return NO_VALID_VISITA_MESSAGE
         _send_visita_pdf_data(sender_phone, visita)
         return None
 
     if command.kind == "by_id" and command.visita_id is not None:
-        visita = _select_visita_for_pdf(command.visita_id)
+        visita = _select_visita_for_pdf(command.visita_id, sender_phone)
         if visita is None:
             return (
                 "Não encontrei essa visita técnica.\n"
@@ -4559,16 +4639,17 @@ def _handle_relatorio_visita(sender_phone: str, text: str, normalized_text: str)
         _send_visita_pdf_data(sender_phone, visita)
         return None
 
-    data = visitas_service.listar_visitas_validas(limite=10)
-    visitas = data.get("visitas") or []
+    visitas = visitas_service.listar_relatorios_finalizados(sender_phone, limite=10)
     if not visitas:
-        return NO_VALID_VISITA_MESSAGE
+        return "Você ainda não possui relatórios de visitas finalizadas."
     return _multiple_visitas_report_message(visitas)
 
 
-def _select_visita_for_pdf(visita_id: int) -> dict | None:
+def _select_visita_for_pdf(visita_id: int, sender_phone: str | None = None) -> dict | None:
     raw_visita = visitas_service.obter_visita_por_id(visita_id)
     if raw_visita is None:
+        return None
+    if sender_phone and normalize_phone(raw_visita.get("telefone_origem")) != normalize_phone(sender_phone):
         return None
     if raw_visita.get("status") == "cancelada":
         raise ValueError("visita_cancelada")
@@ -5631,6 +5712,9 @@ def _extract_interactive_command(message: dict) -> str:
 
 
 def _interactive_visit_command(reply_id: str) -> str:
+    report_match = re.fullmatch(r"visita_relatorio_(\d+)", str(reply_id or "").strip())
+    if report_match:
+        return f"relatorio visita {report_match.group(1)}"
     match = re.fullmatch(r"visita_apagar_(foto|video)_(\d+)", str(reply_id or "").strip())
     if match:
         return match.group(2)

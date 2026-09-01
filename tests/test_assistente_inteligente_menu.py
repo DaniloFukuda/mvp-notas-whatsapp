@@ -59,6 +59,7 @@ def test_menu_texto_base_expoe_somente_visitas_e_transcricao():
     assert "resumo" not in texto.lower()
     assert "planilha" not in texto.lower()
     assert "Assistente Inteligente" not in texto
+    assert "Relatórios de visitas" in texto
 
 
 def test_flag_ausente_nao_adiciona_item_interativo(monkeypatch):
@@ -101,6 +102,7 @@ def test_flag_true_adiciona_assistente_ao_menu_publico(monkeypatch):
         "menu_visit_start",
         "menu_audio_transcription",
         "menu_assistente_inteligente",
+        "menu_reports",
     ]
 
 

@@ -845,6 +845,28 @@ class VisitasTecnicasService:
     def buscar_visitas_por_fazenda(self, nome_fazenda: str, limite: int | None = None) -> dict:
         return self.listar_visitas_validas(fazenda=nome_fazenda, limite=limite)
 
+    def listar_relatorios_finalizados(
+        self, telefone_origem: str, limite: int = 10
+    ) -> list[dict]:
+        """Lista visitas fechadas pertencentes ao telefone informado."""
+        self.ensure_schema()
+        phone = normalize_phone(telefone_origem)
+        if not phone:
+            return []
+        safe_limit = max(0, min(int(limite), 10))
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {", ".join(VISITA_COLUMNS)}
+                FROM visitas_tecnicas
+                WHERE telefone_origem = ? AND status = 'fechada'
+                ORDER BY COALESCE(fechado_em, atualizado_em, criado_em) DESC, id DESC
+                LIMIT ?
+                """,
+                (phone, safe_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def obter_visita_por_id(self, visita_id: int) -> dict | None:
         return self.obter_visita(visita_id)
 

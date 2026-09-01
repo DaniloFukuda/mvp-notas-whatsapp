@@ -333,6 +333,11 @@ def test_payload_menu_principal_interativo(monkeypatch):
             "title": "🎙️ Transcrever áudio",
             "description": "Receber a transcrição em texto",
         },
+        {
+            "id": "menu_reports",
+            "title": "📄 Relatórios visitas",
+            "description": "Consultar visitas finalizadas",
+        },
     ]
 
 
@@ -380,44 +385,25 @@ def test_fallback_textual_desconhecido_retorna_menu_publico():
 
 def test_payload_menu_relatorios_interativo():
     sent = []
+    original_visitas = api_whatsapp.visitas_service
     original_sender = api_whatsapp.send_whatsapp_list_message
     try:
-        api_whatsapp.send_whatsapp_list_message = lambda **kwargs: sent.append(kwargs)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _, visitas, sender = _install_services(temp_dir)
+            visita = visitas.iniciar_visita(sender, tecnico_nome="Danilo", fazenda="Fazenda Imperial")
+            visitas.fechar_visita(visita["id"])
+            api_whatsapp.send_whatsapp_list_message = lambda **kwargs: sent.append(kwargs)
 
-        api_whatsapp.send_reports_menu_interactive("5500000000001")
+            api_whatsapp.send_reports_menu_interactive(sender)
 
-        assert sent[0]["to"] == "5500000000001"
-        assert sent[0]["header"] == "Relatorios"
-        assert [section["title"] for section in sent[0]["sections"]] == [
-            "Visitas técnicas",
-        ]
-        assert [row["title"] for row in sent[0]["sections"][0]["rows"]] == [
-            "Listar visitas",
-            "Planilha visitas",
-            "PDF visita",
-        ]
-        assert all(
-            row["title"] not in {"Resumo semanal", "Planilha semanal", "PDF semanal"}
-            for section in sent[0]["sections"]
-            for row in section["rows"]
-        )
-        rows = [
-            row
-            for section in sent[0]["sections"]
-            for row in section["rows"]
-        ]
-        assert {row["id"] for row in rows} == {
-            "menu_visit_list",
-            "menu_visit_excel",
-            "menu_visit_pdf",
-        }
-        assert {
-            (row["title"], row["description"])
-            for row in rows
-        } >= {
-            ("PDF visita", "Gerar PDF individual de uma visita"),
-        }
+            assert sent[0]["to"] == sender
+            assert sent[0]["header"] == "Relatórios de visitas"
+            assert sent[0]["sections"][0]["title"] == "Visitas finalizadas"
+            rows = sent[0]["sections"][0]["rows"]
+            assert rows[0]["id"] == f"visita_relatorio_{visita['id']}"
+            assert "Finalizada" in rows[0]["description"]
     finally:
+        api_whatsapp.visitas_service = original_visitas
         api_whatsapp.send_whatsapp_list_message = original_sender
 
 
