@@ -258,6 +258,14 @@ def test_comandos_diretos_continuam_funcionando():
             visitas.atualizar_campo(visita["id"], "fazenda", "Fazenda Imperial")
             visitas.atualizar_campo(visita["id"], "estado_fluxo", "visita_aberta")
 
+            # Com visita ativa, o contexto da visita vence comandos legados.
+            assert "Visita em andamento" in api_whatsapp.handle_rdv_text_message(
+                sender, "resumo"
+            )
+            assert monthly == []
+            visitas.fechar_visita(visita["id"])
+            api_whatsapp.visita_active_states.pop(sender, None)
+
             assert "Resumo geral do mes" in api_whatsapp.handle_rdv_text_message(sender, "resumo")
             assert api_whatsapp.handle_rdv_text_message(sender, "planilha") is None
             assert api_whatsapp.handle_rdv_text_message(sender, "planilha visitas") is None

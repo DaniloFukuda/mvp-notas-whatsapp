@@ -433,6 +433,9 @@ def test_invalid_document_receipt_does_not_create_launch():
             )
             api_whatsapp.rdv_receipt_analysis_service = _InvalidReceiptAnalyzer()
             api_whatsapp._was_whatsapp_message_processed = lambda message_id: False
+            api_whatsapp.whatsapp_menu_states[sender] = (
+                api_whatsapp.RDV_WAITING_RECEIPT_STATE
+            )
 
             api_whatsapp._handle_whatsapp_message(
                 {

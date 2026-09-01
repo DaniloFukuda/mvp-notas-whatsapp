@@ -206,6 +206,21 @@ VISITA_FLOW_STEPS = {
     "aguardando_localizacao": ("localizacao_texto", "📏 Qual a área total da fazenda?\n\nExemplos:\n500 hectares\n120 alqueires\n35 hectares\nPular"),
     "aguardando_area": ("area", ""),
 }
+VISITA_STATE_PROMPTS = {
+    "aguardando_fazenda": "Qual o nome da fazenda ou propriedade visitada?",
+    "aguardando_proprietario": "Qual o nome do proprietário da fazenda/propriedade?",
+    "aguardando_telefone_proprietario": "Qual o telefone do proprietário?",
+    "aguardando_gerente": "Qual o nome do gerente ou responsável local pela propriedade?",
+    "aguardando_telefone_gerente": "Qual o telefone do gerente ou responsável local?",
+    "aguardando_localizacao": (
+        "📍 Envie a localização da fazenda/propriedade.\n\n"
+        "Você pode compartilhar a localização, enviar um link/endereço ou digitar \"pular\"."
+    ),
+    "aguardando_area": (
+        "📏 Qual a área total da fazenda?\n\n"
+        "Exemplos: 500 hectares, 120 alqueires ou \"pular\"."
+    ),
+}
 VISITA_DESCRICAO_MESSAGE = "\n".join(
     [
         "Descrição da visita",
@@ -1267,6 +1282,78 @@ def _handle_whatsapp_message(message: dict) -> None:
         )
         return
 
+    # Resolve primeiro o contexto persistido da visita para qualquer midia.
+    # Uma visita aberta sempre vence Assistente, transcritor e RDV legados.
+    open_visit = _get_active_visita_for_phone(sender_phone)
+    if open_visit is not None:
+        if message_type == "location":
+            reply = handle_visitas_location_message(
+                sender_phone, message.get("location") or {}
+            )
+            _safe_send_text(
+                sender_phone,
+                reply or _visita_media_blocked_for_state(open_visit, message_type),
+            )
+            return
+        if message_type in {"audio", "voice"}:
+            _safe_send_text(
+                sender_phone,
+                handle_whatsapp_audio_message(sender_phone, media_id, mime_type),
+            )
+            return
+        if message_type == "video":
+            _safe_send_text(
+                sender_phone,
+                handle_visitas_video_message(sender_phone, media_id, mime_type),
+            )
+            return
+        if message_type in {"image", "document"}:
+            if not _visita_state_accepts_media(open_visit):
+                _safe_send_text(
+                    sender_phone,
+                    _visita_media_blocked_for_state(open_visit, message_type),
+                )
+                return
+            if not media_id:
+                _safe_send_text(
+                    sender_phone,
+                    "Nao consegui salvar essa midia da visita. Tente enviar novamente.",
+                )
+                return
+            destination = _build_media_destination(
+                sender_phone=sender_phone,
+                media_id=media_id,
+                mime_type=mime_type,
+            )
+            try:
+                downloaded_path = download_media(media_id, destination)
+            except Exception as exc:
+                logger.exception(
+                    "Falha ao baixar foto da visita tecnica: media_id=%s status_code=%s erro=%s",
+                    _mask_media_id(media_id),
+                    _http_status_from_exception(exc) or "-",
+                    _safe_exception_summary(exc),
+                )
+                _safe_send_text(
+                    sender_phone,
+                    "Nao consegui salvar a foto da visita. Tente enviar novamente.",
+                )
+                return
+            reply = handle_visitas_media_message(
+                sender_phone=sender_phone,
+                message_type=message_type,
+                media_id=media_id,
+                file_path=str(downloaded_path),
+                caption=caption,
+            )
+            _safe_send_text(sender_phone, reply)
+            return
+        _safe_send_text(
+            sender_phone,
+            _visita_media_blocked_for_state(open_visit, message_type),
+        )
+        return
+
     # Assistente Inteligente ativo: intercepta TODA midia nao textual antes
     # dos handlers normais. Nao baixa a midia e nao toca visita/RDV/comprovante.
     if _assistente_active(sender_phone):
@@ -1344,6 +1431,14 @@ def _handle_whatsapp_message(message: dict) -> None:
             caption=caption,
         )
         _safe_send_text(sender_phone, reply)
+        return
+
+    if not _rdv_media_context_active(sender_phone):
+        _safe_send_text(
+            sender_phone,
+            "Recebi a mídia, mas não há uma visita ou lançamento de RDV em andamento.\n\n"
+            "Envie *menu* para escolher uma opção.",
+        )
         return
 
     if (
@@ -1484,6 +1579,26 @@ def handle_rdv_text_message(
     summary_reply = _handle_visita_summary_confirmation(sender_phone, text)
     if summary_reply is not None:
         return summary_reply
+
+    # Uma visita aberta, recuperada do SQLite, possui prioridade sobre todos
+    # os fluxos legados. Depois que este contexto vence, a mensagem nao pode
+    # continuar para transcritor, Assistente, RDV ou KM.
+    active_visit = _get_active_visita_for_phone(sender_phone)
+    if active_visit is not None:
+        if normalized in ASSISTENTE_INTELIGENTE_COMMANDS:
+            return ASSISTENTE_INTELIGENTE_ENTRY_BLOCKED_MESSAGE
+        if normalized in MENU_OPEN_COMMANDS:
+            return _active_visita_menu_message(active_visit)
+        visita_handled, visita_reply = handle_visitas_text_message(
+            sender_phone,
+            text,
+            collaborator,
+            normalized,
+            is_audio_transcription=is_audio_transcription,
+        )
+        if visita_handled:
+            return visita_reply
+        return _resume_visita_from_persisted_state(active_visit)
 
     menu_state = whatsapp_menu_states.get(sender_phone)
     if menu_state in {
@@ -1826,6 +1941,19 @@ def handle_whatsapp_audio_message(
     media_id: str,
     mime_type: str = "",
 ) -> str:
+    active_visit = _get_active_visita_for_phone(sender_phone)
+    if active_visit is not None:
+        state = str(active_visit.get("estado_fluxo") or "")
+        audio_states = {
+            "aguardando_descricao_visita",
+            "aguardando_edicao_descricao",
+            "aguardando_observacoes_gerais",
+            "aguardando_adicao_observacao",
+            "aguardando_reescrita_observacoes",
+        }
+        if state not in audio_states:
+            return _visita_media_blocked_for_state(active_visit, "audio")
+
     menu_state = whatsapp_menu_states.get(sender_phone)
     standalone_mode = menu_state == STANDALONE_TRANSCRIPTION_STATE
     if menu_state == STANDALONE_TRANSCRIPTION_MODE_STATE:
@@ -2425,8 +2553,14 @@ def handle_visitas_text_message(
     if normalized_text in VISITA_CLOSE_COMMANDS:
         if open_visit is None:
             return True, NO_OPEN_VISITA_MESSAGE
+        current_state = str(open_visit.get("estado_fluxo") or "")
+        if current_state in VISITA_FLOW_STEPS or current_state in {
+            "aguardando_descricao_visita",
+            "aguardando_observacoes_gerais",
+        }:
+            return True, _visita_premature_close_message(open_visit)
         if (
-            str(open_visit.get("estado_fluxo") or "") == "aguardando_revisao_final"
+            current_state == "aguardando_revisao_final"
             and normalized_text in VISITA_REVIEW_FINALIZE_COMMANDS
         ):
             return True, _finalize_visita(sender_phone, open_visit)
@@ -2806,7 +2940,7 @@ def handle_visitas_location_message(sender_phone: str, location: dict) -> str | 
         return _visita_closed_media_message_if_applicable(sender_phone)
     state = str(open_visit.get("estado_fluxo") or "")
     if state not in {"visita_aberta", "aguardando_localizacao", "aguardando_revisao_final"}:
-        return None
+        return _visita_media_blocked_for_state(open_visit, "location")
     latitude = location.get("latitude")
     longitude = location.get("longitude")
     if latitude is None or longitude is None:
@@ -3268,6 +3402,86 @@ def _active_visita_menu_message(visita: dict) -> str:
     )
 
 
+def _resume_visita_from_persisted_state(visita: dict) -> str:
+    """Reconstrói a pergunta atual usando apenas o estado persistido."""
+    state = str(visita.get("estado_fluxo") or "")
+    if state in VISITA_STATE_PROMPTS:
+        return VISITA_STATE_PROMPTS[state]
+    if state == "aguardando_descricao_visita":
+        return VISITA_DESCRICAO_MESSAGE
+    if state == "aguardando_observacoes_gerais":
+        return VISITA_OBSERVACOES_MESSAGE
+    if state == "aguardando_revisao_final":
+        return _visita_revisao_final_message()
+    if state == "visita_aberta":
+        return "\n".join(
+            [
+                f"Você voltou para a visita #{visita.get('id')} - {visita.get('fazenda') or '-'}.",
+                'Envie foto, observação, localização, dado coletado ou "fechar visita".',
+            ]
+        )
+    if state in {
+        "aguardando_decisao_comentario_foto",
+        "aguardando_decisao_comentario_foto_revisao",
+    }:
+        pending = visitas_service.proxima_foto_pendente(int(visita["id"]))
+        if pending is not None:
+            return _visita_pending_media_message(pending)
+    if state.startswith("aguardando_legenda_video:") or state.startswith(
+        "aguardando_legenda_video_revisao:"
+    ):
+        pending = visitas_service.proximo_video_pendente(int(visita["id"]))
+        if pending is not None:
+            return _visita_pending_media_message(pending)
+    return _active_visita_menu_message(visita)
+
+
+def _visita_premature_close_message(visita: dict) -> str:
+    state = str(visita.get("estado_fluxo") or "")
+    field_labels = {
+        "aguardando_fazenda": "o nome da fazenda",
+        "aguardando_proprietario": "o nome do proprietário",
+        "aguardando_telefone_proprietario": "o telefone do proprietário",
+        "aguardando_gerente": "o nome do gerente ou responsável local",
+        "aguardando_telefone_gerente": "o telefone do gerente ou responsável local",
+        "aguardando_localizacao": "a localização da propriedade",
+        "aguardando_area": "a área total da fazenda",
+        "aguardando_descricao_visita": "a descrição da visita",
+        "aguardando_observacoes_gerais": "a conclusão das observações",
+    }
+    label = field_labels.get(state, "uma informação da visita")
+    prompt = _resume_visita_from_persisted_state(visita)
+    skip_hint = (
+        " Informe o dado ou envie *pular*."
+        if state in VISITA_FLOW_STEPS and state != "aguardando_fazenda"
+        else ""
+    )
+    return f"Antes de revisar, falta {label}.{skip_hint}\n\n{prompt}"
+
+
+def _visita_media_blocked_for_state(visita: dict, message_type: str) -> str:
+    state = str(visita.get("estado_fluxo") or "")
+    if state in {"aguardando_telefone_proprietario", "aguardando_telefone_gerente"}:
+        owner = (
+            "proprietário"
+            if state == "aguardando_telefone_proprietario"
+            else "gerente ou responsável local"
+        )
+        return (
+            f"Neste momento estou aguardando o telefone do {owner}. "
+            "Envie somente números com DDD ou digite *pular*."
+        )
+    return (
+        "Esta mídia pertence à visita atual, mas ainda preciso concluir a etapa pendente.\n\n"
+        + _resume_visita_from_persisted_state(visita)
+    )
+
+
+def _rdv_media_context_active(sender_phone: str) -> bool:
+    phone = normalize_phone(sender_phone)
+    return whatsapp_menu_states.get(phone) == RDV_WAITING_RECEIPT_STATE
+
+
 def _start_new_visita_flow(sender_phone: str) -> str:
     phone = normalize_phone(sender_phone)
     existing = visitas_service.obter_visita_aberta(phone)
@@ -3337,12 +3551,7 @@ def _continue_visita(sender_phone: str, normalized_text: str) -> str:
     phone = normalize_phone(sender_phone)
     visita_active_states[phone] = visita_id
     visita_new_visit_states.discard(phone)
-    return "\n".join(
-        [
-            f"Você voltou para a visita #{visita_id} - {visita.get('fazenda') or '-'}.",
-            'Envie foto, observação, localização, dado coletado ou "fechar visita".',
-        ]
-    )
+    return _resume_visita_from_persisted_state(visita)
 
 
 def _is_ver_visita_command(normalized_text: str) -> bool:
